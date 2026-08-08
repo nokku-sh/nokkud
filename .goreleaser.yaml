@@ -68,7 +68,7 @@ nfpms:
   - vendor: "MizuchiLabs"
     homepage: "https://github.com/nokku-sh/nokkud"
     description: "Nokku Daemon - SSH certificate management daemon"
-    maintainer: "d34dscene <d34dscene@mizuchi.dev>"
+    maintainer: "Nokku <support@mizuchi.dev>"
     license: Apache-2.0
     bindir: /usr/bin
     formats:
