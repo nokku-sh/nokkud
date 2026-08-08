@@ -35,6 +35,8 @@ curl -fsSL https://get.nokku.sh/nokkud | sudo sh
 The installer prefers your distro's package (deb/rpm/apk) via the Cloudsmith
 repository and falls back to the GitHub release tarball.
 
+Prefer manual packages? See the [package repository](https://broadcasts.cloudsmith.com/nokku/nokkud) for apt/dnf/apk install instructions.
+
 Open port 4022 on your firewall (nokkud serves SSH directly):
 
 ```bash
@@ -106,3 +108,9 @@ Then stop and disable the service and remove the binary:
 sudo systemctl disable --now nokkud
 rm -f /usr/bin/nokkud
 ```
+
+## Hosting
+
+<img alt="Static Badge" src="https://img.shields.io/badge/OSS%20hosting%20by-cloudsmith-blue?logo=cloudsmith&style=flat-square&link=https%3A%2F%2Fcloudsmith.com"></img>
+
+Package repository hosting is graciously provided by [Cloudsmith](https://cloudsmith.com).
