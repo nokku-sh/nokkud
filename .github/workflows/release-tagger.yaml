@@ -26,15 +26,17 @@ jobs:
         id: version
         run: |
           CURRENT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          NEXT_TAG=$(git-cliff --bumped-version)
+          CURRENT_VERSION="${CURRENT_TAG#v}"
+          NEXT_VERSION=$(git-cliff --bumped-version)
+          NEXT_VERSION="${NEXT_VERSION#v}"
 
-          if [ "$CURRENT_TAG" = "$NEXT_TAG" ]; then
+          if [ "$CURRENT_VERSION" = "$NEXT_VERSION" ]; then
             echo "No conventional commits warranting a release. Skipping."
             echo "bump=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Bumping $CURRENT_TAG to $NEXT_TAG"
+            echo "Bumping v$CURRENT_VERSION to v$NEXT_VERSION"
             echo "bump=true" >> "$GITHUB_OUTPUT"
-            echo "version=${NEXT_TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate changelog
