@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+
+name="nokkud"
+description="Nokku Daemon"
+command="/usr/bin/nokkud"
+pidfile="/run/${RC_SVCNAME}.pid"
+command_background=true
+
+depend() {
+    need net
+    after firewall
+}

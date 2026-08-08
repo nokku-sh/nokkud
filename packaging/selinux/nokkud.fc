@@ -1,0 +1,2 @@
+/usr/bin/nokkud        --    gen_context(system_u:object_r:nokkud_exec_t,s0)
+/var/lib/nokkud(/.*)?        gen_context(system_u:object_r:nokkud_var_lib_t,s0)

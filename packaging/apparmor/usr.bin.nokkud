@@ -1,0 +1,34 @@
+#include <tunables/global>
+
+/usr/bin/nokkud {
+  #include <abstractions/base>
+  #include <abstractions/nameservice> # Allows DNS resolution
+
+  # --- File Access ---
+  # Everything the daemon owns (state, host key, certificates, trusted CA,
+  # recordings, audit logs) lives under /var/lib/nokkud.
+  /var/lib/nokkud/ rw,
+  /var/lib/nokkud/** rw,
+
+  # --- Capabilities ---
+  # Sessions are spawned with the authenticated user's privileges, which
+  # requires setuid/setgid in addition to the file-permission capabilities.
+  capability setuid,
+  capability setgid,
+  capability dac_override,
+  capability chown,
+  capability fowner,
+
+  # --- Networking ---
+  network tcp,
+  network udp,
+  # Agent-forwarding sockets live in the daemon's private tmp.
+  network unix,
+
+  # --- Sessions ---
+  # nokkud is a session daemon: it executes arbitrary user commands (shells,
+  # SFTP, user tools) as the target user. Like OpenSSH, those session
+  # processes run unconfined; the POSIX user boundary is the isolation.
+  # Requires AppArmor 3+ (Ux = execute unconfined).
+  /** rwlixU,
+}

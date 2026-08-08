@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags: [v*]
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+        description: "Version tag to release, e.g. v1.2.3"
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: "go.mod"
+
+      - name: Install UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx
+
+      - uses: sigstore/cosign-installer@v4.1.2
+
+      - uses: anchore/sbom-action@v0
+        with:
+          upload-release-assets: false
+
+      - name: Compile SELinux Policy
+        run: |
+          docker run --rm -v ${{ github.workspace }}/packaging/selinux:/selinux almalinux:9 \
+            bash -c "dnf install -y make selinux-policy-devel && \
+                     cd /selinux && \
+                     make -f /usr/share/selinux/devel/Makefile nokkud.pp"
+
+          # Verify the file was created
+          ls -l packaging/selinux/nokkud.pp
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          args: --timeout=10m
+
+      - uses: golang/govulncheck-action@v1
+        with:
+          repo-checkout: false
+
+      - uses: taiki-e/install-action@git-cliff
+
+      - name: Generate release notes
+        run: git-cliff --latest --strip header --config cliff.toml -o "$RUNNER_TEMP/CHANGELOG.md"
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: latest
+          args: release --clean --release-notes=$RUNNER_TEMP/CHANGELOG.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_YES: "true"
+
+      - uses: cloudsmith-io/cloudsmith-cli-action@v3
+        with:
+          api-key: ${{ secrets.CLOUDSMITH_API_KEY }}
+
+      - name: Push .deb packages to Cloudsmith
+        run: |
+          for pkg in dist/*.deb; do
+            cloudsmith push deb nokku/nokkud/any-distro/any-version "$pkg"
+          done
+
+      - name: Push .rpm packages to Cloudsmith
+        run: |
+          for pkg in dist/*.rpm; do
+            cloudsmith push rpm nokku/nokkud/any-distro/any-version "$pkg"
+          done
+
+      - name: Push .apk packages to Cloudsmith
+        run: |
+          for pkg in dist/*.apk; do
+            cloudsmith push alpine nokku/nokkud/alpine/any-version "$pkg"
+          done

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommits", ":disableDependencyDashboard"],
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
+  "timezone": "Europe/Vienna",
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest", "bump"],
+      "groupName": "GitHub Actions non-major",
+      "automerge": true,
+      "automergeType": "branch"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "matchPackagePatterns": ["*"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest", "bump"],
+      "groupName": "non-major dependencies",
+      "automerge": true,
+      "automergeType": "branch"
+    },
+    {
+      "matchPackagePatterns": ["*"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ],
+  "platformAutomerge": true,
+  "vulnerabilityAlerts": { "enabled": true },
+  "osvVulnerabilityAlerts": true
+}

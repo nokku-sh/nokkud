@@ -1,0 +1,46 @@
+policy_module(nokkud, 1.0.0)
+
+# --- Requirements ---
+require {
+   type cgroup_t;
+
+   class file { create open read write execute getattr setattr rename unlink lock map };
+   class dir { search read getattr write add_name remove_name setattr };
+   class fd { use };
+   class fifo_file { read write getattr };
+   class capability { setuid setgid };
+}
+
+# --- Type Declarations & Systemd Integration ---
+type nokkud_t;
+type nokkud_exec_t;
+
+# This macro handles domain_type, domain_entry_file,
+# auto-transitions from init_t, AND assigns nokkud_t to the system_r role!
+init_daemon_domain(nokkud_t, nokkud_exec_t)
+
+type nokkud_var_lib_t;
+files_type(nokkud_var_lib_t)
+
+# Allow nokkud to read and write to the Cgroup
+allow nokkud_t cgroup_t:dir search;
+allow nokkud_t cgroup_t:file { open read getattr };
+
+# --- Internal State Management (/var/lib/nokkud) ---
+manage_dirs_pattern(nokkud_t, nokkud_var_lib_t, nokkud_var_lib_t)
+manage_files_pattern(nokkud_t, nokkud_var_lib_t, nokkud_var_lib_t)
+
+# --- Networking ---
+# Allow outbound connections for fetching certs
+sysnet_dns_name_resolve(nokkud_t)
+corenet_tcp_connect_all_ports(nokkud_t)
+
+# --- Embedded SSH server / sessions ---
+# nokkud spawns sessions with the authenticated user's privileges.
+allow nokkud_t self:capability { setuid setgid };
+
+# NOTE: session processes currently run in the nokkud_t domain. A full
+# session-domain policy (user home access, shell exec, per-role transitions,
+# like sshd_t) is deliberately out of scope here; deployments that enforce
+# SELinux should either extend this policy for their target roles or run
+# nokkud_t permissive until such a policy lands.

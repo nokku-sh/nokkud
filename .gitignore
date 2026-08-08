@@ -1,0 +1,37 @@
+### Go ###
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.envrc
+.dec
+*.env
+.bak
+
+# Selinux
+*.pp
+*.if
+packaging/selinux/tmp/
+
+# Builds and extra
+.task/
+dist/
+bin/
