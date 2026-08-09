@@ -93,6 +93,19 @@ install_package() {
 		fi
 	fi
 
+	# Cloudsmith's repo config pins sslcacert=/etc/pki/tls/certs/ca-bundle.crt,
+	# which Fedora 44+ no longer ships; drop it so dnf uses its default CA store.
+	if [ "$PM" = rpm ]; then
+		for repo in /etc/yum.repos.d/nokku-*.repo; do
+			[ -f "$repo" ] || continue
+			ssl_ca=$(sed -n 's/^sslcacert=//p' "$repo" | head -n 1)
+			if [ -n "$ssl_ca" ] && [ ! -e "$ssl_ca" ]; then
+				echo "note: $repo pins a CA bundle that does not exist; removing sslcacert."
+				as_root sed -i '/^sslcacert=/d' "$repo"
+			fi
+		done
+	fi
+
 	case "$PM" in
 	deb)
 		as_root apt-get install -y "$BINARY_NAME"
@@ -111,8 +124,15 @@ install_package() {
 		;;
 	esac
 
-	if ! command -v "$BINARY_NAME" >/dev/null 2>&1; then
-		echo "warning: package install did not put '${BINARY_NAME}' on PATH; falling back to the GitHub binary." >&2
+	pkg_installed=false
+	case "$PM" in
+	deb) dpkg -s "$BINARY_NAME" >/dev/null 2>&1 && pkg_installed=true ;;
+	rpm) rpm -q "$BINARY_NAME" >/dev/null 2>&1 && pkg_installed=true ;;
+	alpine) apk info -e "$BINARY_NAME" >/dev/null 2>&1 && pkg_installed=true ;;
+	esac
+
+	if [ "$pkg_installed" != true ]; then
+		echo "warning: '${BINARY_NAME}' package is not installed; falling back to the GitHub binary." >&2
 		rm -rf "$TMP_DIR"
 		return 1
 	fi
