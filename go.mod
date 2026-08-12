@@ -3,20 +3,20 @@ module github.com/nokku-sh/nokkud
 go 1.26.5
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260709200747-435963d16310.1
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260709200747-435963d16310.1
 	connectrpc.com/connect v1.20.0
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/cenkalti/backoff/v7 v7.0.0
 	github.com/google/go-tpm v0.9.8
-	github.com/mizuchilabs/kata v0.1.2
+	github.com/mizuchilabs/kata v0.1.3
 	github.com/pkg/sftp v1.13.11
 	github.com/urfave/cli-altsrc/v3 v3.1.0
 	github.com/urfave/cli/v3 v3.10.1
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.55.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/time v0.15.0
-	google.golang.org/genproto/googleapis/api v0.0.0-20260807164820-c8921c73eeea
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/genproto/googleapis/api v0.0.0-20260810153831-ec0a7760b754
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
