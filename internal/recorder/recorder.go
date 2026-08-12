@@ -90,7 +90,8 @@ func New(p paths.Paths, opts Options) (*Recorder, error) {
 	filename := recordingFilename(time.Now(), safeLabel, opts.SessionID)
 
 	// The filename is fully self-constructed (timestamp, sanitized label,
-	// pid), so joining it with the records dir carries no traversal risk.
+	// sanitized session id, pid), so joining it with the records dir carries
+	// no traversal risk.
 	path := filepath.Join(p.RecordsDir, filename)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600) // #nosec G304
 	if err != nil {
@@ -229,7 +230,9 @@ func (r *Recorder) Close() {
 func recordingFilename(now time.Time, safeLabel, sessionID string) string {
 	parts := []string{now.Format("20060102T150405Z"), safeLabel}
 	if id := shortSessionID(sessionID); id != "" {
-		parts = append(parts, id)
+		// The ID must never smuggle path separators into the filename, so
+		// sanitize it exactly like the label.
+		parts = append(parts, util.ToSnakeCase(id))
 	}
 	parts = append(parts, strconv.Itoa(os.Getpid()))
 	return strings.Join(parts, "-") + ".cast.gz"
