@@ -24,9 +24,8 @@ func testEchoServer(t *testing.T) net.Listener {
 	}
 	go func() {
 		for {
-			var c net.Conn
-			c, err = ln.Accept()
-			if err != nil {
+			c, aerr := ln.Accept()
+			if aerr != nil {
 				return
 			}
 			go func() {
@@ -118,9 +117,8 @@ func TestServerRemoteForward(t *testing.T) {
 	// each inbound server-side connection, echoing the data.
 	go func() {
 		for {
-			var c net.Conn
-			c, err = ln.Accept()
-			if err != nil {
+			c, aerr := ln.Accept()
+			if aerr != nil {
 				return
 			}
 			go func() {
@@ -221,9 +219,8 @@ func TestServerRemoteForwardLocalhost(t *testing.T) {
 
 	go func() {
 		for {
-			var c net.Conn
-			c, err = ln.Accept()
-			if err != nil {
+			c, aerr := ln.Accept()
+			if aerr != nil {
 				return
 			}
 			go func() {
@@ -393,14 +390,13 @@ func TestServerForwardingLargeTransfer(t *testing.T) {
 	}
 	defer ln.Close()
 	go func() {
-		var c net.Conn
-		c, err = ln.Accept()
-		if err != nil {
+		c, aerr := ln.Accept()
+		if aerr != nil {
 			return
 		}
 		defer c.Close()
-		if _, err = io.Copy(io.Discard, c); err != nil {
-			t.Errorf("server read: %v", err)
+		if _, copyErr := io.Copy(io.Discard, c); copyErr != nil {
+			t.Errorf("server read: %v", copyErr)
 		}
 	}()
 	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
