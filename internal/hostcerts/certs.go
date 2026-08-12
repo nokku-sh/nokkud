@@ -191,9 +191,14 @@ func parseCertificateBytes(data []byte) (*ssh.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	cert, ok := pub.(*ssh.Certificate)
 	if !ok {
 		return nil, errors.New("not a certificate")
+	}
+
+	if cert.CertType != ssh.HostCert {
+		return nil, fmt.Errorf("not a host certificate (type %d)", cert.CertType)
 	}
 	return cert, nil
 }
