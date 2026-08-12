@@ -1,8 +1,6 @@
 package hostcerts
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,43 +11,13 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// seedCertText builds a self-signed certificate plus its CA public key in
-// authorized_keys format, used as the valid seed for the fuzzers.
-func seedCertText(t testing.TB) (certText, caText []byte) {
-	t.Helper()
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate CA key: %v", err)
-	}
-	caSigner, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatalf("CA signer: %v", err)
-	}
-	caPub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatalf("CA public key: %v", err)
-	}
-
-	cert := &ssh.Certificate{
-		Key:             caPub,
-		CertType:        ssh.HostCert,
-		KeyId:           "test-host",
-		ValidPrincipals: []string{"some-target-id"},
-		ValidAfter:      0,
-		ValidBefore:     ssh.CertTimeInfinity,
-	}
-	if err = cert.SignCert(rand.Reader, caSigner); err != nil {
-		t.Fatalf("sign cert: %v", err)
-	}
-	return ssh.MarshalAuthorizedKey(cert), ssh.MarshalAuthorizedKey(caPub)
-}
-
 // FuzzParseCertificate feeds arbitrary bytes into the certificate parser that
 // consumes control-plane responses. It must never panic, only accept host
 // certificates, and any certificate it does accept must round-trip through
 // authorized_keys serialization and never crash the renewal/validity checks.
 func FuzzParseCertificate(f *testing.F) {
-	certText, _ := seedCertText(f)
+	ca := newTestCA(f)
+	certText, _ := signHostCert(f, ca, "some-target-id", 0, ssh.CertTimeInfinity)
 	f.Add(certText)
 	f.Add([]byte(""))
 	f.Add([]byte("not a key"))
@@ -80,7 +48,8 @@ func FuzzParseCertificate(f *testing.F) {
 // from the control plane against a scratch dir. Any accepted pair must leave
 // parseable files behind, and nothing may panic.
 func FuzzSaveCertificate(f *testing.F) {
-	certText, caText := seedCertText(f)
+	ca := newTestCA(f)
+	certText, caText := signHostCert(f, ca, "some-target-id", 0, ssh.CertTimeInfinity)
 	f.Add(certText, caText)
 	f.Add([]byte("garbage"), []byte("garbage"))
 	f.Add([]byte(""), []byte(""))
