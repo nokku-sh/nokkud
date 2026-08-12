@@ -37,6 +37,18 @@ tasks:
       - go test -cover ./...
       - golangci-lint run
 
+  fuzz:
+    desc: Fuzz every fuzz target for FUZZTIME (default 30s)
+    vars:
+      FUZZTIME: '{{.FUZZTIME | default "30s"}}'
+    cmds:
+      - |
+        for pkg in $(go list ./...); do
+          for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz'); do
+            go test "$pkg" -run='^$' -fuzz="^${target}$" -fuzztime="{{.FUZZTIME}}"
+          done
+        done
+
   snapshot:
     desc: Build snapshot
     cmds:
