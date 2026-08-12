@@ -9,6 +9,9 @@ import (
 
 var posixUserRE = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
+// maxSnakeCaseLen bounds the result so it always fits a single filename.
+const maxSnakeCaseLen = 64
+
 // ValidatePrincipal ensures the principal is a safe POSIX username.
 func ValidatePrincipal(principal string) error {
 	if principal == "" {
@@ -38,6 +41,9 @@ func ToSnakeCase(s string) string {
 	}
 
 	res := b.String()
+	if len(res) > maxSnakeCaseLen {
+		res = strings.ToValidUTF8(res[:maxSnakeCaseLen], "")
+	}
 	if len(res) > 0 && res[len(res)-1] == '_' {
 		res = res[:len(res)-1]
 	}
