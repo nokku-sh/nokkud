@@ -126,13 +126,16 @@ func (m *Manager) NextRenewal(targetID string) time.Time {
 		}
 	}
 
-	if !earliest.IsZero() {
-		slog.Debug(
-			"certificate renewal scheduled",
-			"next_renewal",
-			time.Until(earliest).Round(time.Second),
-		)
+	// Nothing valid to wait for (no certs, or only infinite ones): schedule
+	// immediately so the renewal path runs and produces one.
+	if earliest.IsZero() {
+		return now
 	}
+	slog.Debug(
+		"certificate renewal scheduled",
+		"next_renewal",
+		time.Until(earliest).Round(time.Second),
+	)
 	return earliest
 }
 
