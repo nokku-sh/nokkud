@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# nokkud — Nokku Edge Daemon installer
+# nokkud - Nokku Edge Daemon installer
 #
 # Preferred: sets up the Cloudsmith repository for your distro's package
 # manager and installs the nokkud package (deb/rpm/apk).

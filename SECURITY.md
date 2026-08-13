@@ -21,7 +21,7 @@ Use GitHub's private vulnerability reporting instead:
    - Any supporting logs (redact secrets)
 
 Reports are handled confidentially. We will acknowledge receipt, and if you
-would like to be credited in the release advisory or changelog, let us know —
+would like to be credited in the release advisory or changelog, let us know;
 this is optional but appreciated.
 
 ### Response timeline
@@ -35,7 +35,7 @@ this is optional but appreciated.
 
 The following are in scope for security reports:
 
-- The `nokkud` daemon binary itself — enrollment token handling, generation
+- The `nokkud` daemon binary itself: enrollment token handling, generation
   and renewal of SSH host certificates, the embedded SSH server's
   certificate authentication and session handling, and the authenticated
   outbound control stream to the backend.
@@ -63,7 +63,7 @@ control stream to the backend.
 - Principal checks fall back to the last local cache when the backend is
   unreachable; new policy updates and certificate renewals require a
   reconnect.
-- Releases are built via GoReleaser and signed/checksummed — verify downloads
+- Releases are built via GoReleaser and signed/checksummed. Verify downloads
   against the published checksums and signatures.
 
 ### Embedded SSH server
@@ -77,7 +77,7 @@ control stream to the backend.
   access grants can never outlive the cert. Revocation of a user while
   offline takes effect at the latest when that user's certificate expires.
 - **Client environment is whitelisted.** Sessions accept only locale/terminal
-  variables (`TERM`, `LANG`, `LC_*`, `TZ`, ...) from clients — never
+  variables (`TERM`, `LANG`, `LC_*`, `TZ`, ...) from clients, never
   shell/loader-affecting variables (`PATH`, `LD_*`, `BASH_ENV`, `ENV`) or
   connection metadata (`SSH_*`). Certificates carrying a `force-command`
   critical option refuse all client-supplied environment.

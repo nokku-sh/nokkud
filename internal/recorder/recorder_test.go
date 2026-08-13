@@ -60,7 +60,7 @@ func TestRecorderCorrelatesSessionID(t *testing.T) {
 }
 
 // New returns (nil, nil) when recording is unavailable (e.g. low disk
-// space). A nil Recorder must be a safe no-op — sessions rely on it and
+// space). A nil Recorder must be a safe no-op: sessions rely on it and
 // must never panic, including via interface-wrapped nil receivers.
 func TestNilRecorderIsNoOp(t *testing.T) {
 	t.Parallel()
