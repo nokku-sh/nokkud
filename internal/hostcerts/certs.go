@@ -26,47 +26,74 @@ type KeyPair struct {
 	PublicKeyData []byte
 }
 
-// OutdatedHostCerts returns the host keys whose certificate is missing,
-// signed for another principal, or within renewBeforeExpiry of expiring.
-func (m *Manager) OutdatedHostCerts(targetID string) ([]KeyPair, error) {
-	privKeys, err := m.paths.PrivateKeys()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list private keys: %w", err)
-	}
-
-	var toSign []KeyPair
-	for _, privFile := range privKeys {
-		pubFile := privFile + ".pub"
-		certFile := privFile + "-cert.pub"
-
-		var pubBytes []byte
-		pubBytes, err = os.ReadFile(filepath.Clean(pubFile))
-		if err != nil {
+// hostKeyPair returns the active host key: the TPM-backed key when it
+// exists, otherwise the on-disk software key. ok is false when no host key
+// exists yet (e.g. the SSH server has never started).
+func (m *Manager) hostKeyPair() (KeyPair, bool) {
+	for _, c := range []struct{ pub, cert string }{
+		{m.paths.TPMHostKeyPub(), m.paths.TPMHostKeyCert()},
+		{m.paths.SoftwareHostKeyPub(), m.paths.SoftwareHostKeyCert()},
+	} {
+		data, readErr := os.ReadFile(filepath.Clean(c.pub))
+		if readErr != nil {
 			continue
 		}
-
-		var cert *ssh.Certificate
-		cert, err = parseCertificate(certFile)
-		if err != nil || !isValid(cert, targetID) {
-			toSign = append(toSign, KeyPair{
-				PublicKeyPath: pubFile,
-				CertPath:      certFile,
-				PublicKeyData: pubBytes,
-			})
-		}
+		return KeyPair{
+			PublicKeyPath: c.pub,
+			CertPath:      c.cert,
+			PublicKeyData: data,
+		}, true
 	}
-	return toSign, nil
+	return KeyPair{}, false
 }
 
-// RenewHostCerts signs and stores a fresh certificate for every outdated
-// host key via sign. Returns the count; failures are logged and the first
-// one returned.
+// OutdatedHostCerts returns the host key when its certificate is missing,
+// signed for another principal, signed for another key, or within
+// renewBeforeExpiry of expiring.
+func (m *Manager) OutdatedHostCerts(targetID string) ([]KeyPair, error) {
+	kp, ok := m.hostKeyPair()
+	if !ok {
+		return nil, nil
+	}
+
+	cert, parseErr := parseCertificate(kp.CertPath)
+	if parseErr != nil || !isValid(cert, targetID) || !matchesKey(cert, kp) {
+		return []KeyPair{kp}, nil
+	}
+	return nil, nil
+}
+
+// matchesKey reports whether the certificate was issued for the key in kp.
+// A certificate for a previous key (e.g. after a TPM clear or replacement)
+// must be re-issued even though its validity window is still fine.
+func matchesKey(cert *ssh.Certificate, kp KeyPair) bool {
+	pub, _, _, _, err := ssh.ParseAuthorizedKey(bytes.TrimSpace(kp.PublicKeyData))
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(cert.Key.Marshal(), pub.Marshal())
+}
+
+// RenewHostCerts signs and stores a fresh certificate for the host key via
+// sign. When force is set, the key is re-signed regardless of validity —
+// used after a CA rollover to refetch the CA and re-sign the host identity
+// under the new authority. Returns the count; failures are logged and the
+// first one returned.
 func (m *Manager) RenewHostCerts(
 	ctx context.Context,
 	targetID string,
 	sign func(context.Context, KeyPair) (*nokkuv1.SignSSHCertificateResponse, error),
+	force bool,
 ) (int, error) {
-	pairs, err := m.OutdatedHostCerts(targetID)
+	var pairs []KeyPair
+	var err error
+	if force {
+		if kp, ok := m.hostKeyPair(); ok {
+			pairs = []KeyPair{kp}
+		}
+	} else {
+		pairs, err = m.OutdatedHostCerts(targetID)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -95,48 +122,34 @@ func (m *Manager) RenewHostCerts(
 	return renewed, firstErr
 }
 
-// NextRenewal returns the earliest renewal deadline across host certs
-// (now, if any is already out of date).
+// NextRenewal returns the renewal deadline for the host certificate (now,
+// if it is already out of date or none exists yet).
 func (m *Manager) NextRenewal(targetID string) time.Time {
-	var earliest time.Time
 	now := time.Now()
 
-	matches, err := m.paths.Certificates()
+	kp, ok := m.hostKeyPair()
+	if !ok {
+		return now
+	}
+	cert, err := parseCertificate(kp.CertPath)
 	if err != nil {
-		slog.Debug("list certificates", "error", err)
+		slog.Debug("parse certificate", "path", kp.CertPath, "error", err)
+		return now
+	}
+	if !isValid(cert, targetID) {
+		return now
+	}
+	if cert.ValidBefore == ssh.CertTimeInfinity {
 		return now
 	}
 
-	for _, path := range matches {
-		var cert *ssh.Certificate
-		cert, err = parseCertificate(path)
-		if err != nil {
-			slog.Debug("parse certificate", "path", path, "error", err)
-			continue
-		}
-		if !isValid(cert, targetID) {
-			return now
-		}
-		if cert.ValidBefore == ssh.CertTimeInfinity {
-			continue
-		}
-		renewalTime := uint64ToUnixTime(cert.ValidBefore).Add(-renewBeforeExpiry)
-		if earliest.IsZero() || renewalTime.Before(earliest) {
-			earliest = renewalTime
-		}
-	}
-
-	// Nothing valid to wait for (no certs, or only infinite ones): schedule
-	// immediately so the renewal path runs and produces one.
-	if earliest.IsZero() {
-		return now
-	}
+	renewalTime := uint64ToUnixTime(cert.ValidBefore).Add(-renewBeforeExpiry)
 	slog.Debug(
 		"certificate renewal scheduled",
 		"next_renewal",
-		time.Until(earliest).Round(time.Second),
+		time.Until(renewalTime).Round(time.Second),
 	)
-	return earliest
+	return renewalTime
 }
 
 // saveCertificate verifies the cert was signed by the returned CA key,
@@ -157,6 +170,25 @@ func (m *Manager) saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path 
 
 	if cert.SignatureKey == nil || !bytes.Equal(cert.SignatureKey.Marshal(), caPub.Marshal()) {
 		return errors.New("invalid signature: certificate not signed by provided CA")
+	}
+
+	// A new signing CA: park the current one before switching so the SSH
+	// server can keep trusting certificates it signed during the rollover
+	// grace window (see sshd.loadTrustedCAs). The retired file's mtime is
+	// stamped with the retirement time so the grace window starts at the
+	// rollover, not when the old CA was last written.
+	if current, readErr := os.ReadFile(filepath.Clean(m.paths.UserCAFile())); readErr == nil &&
+		!bytes.Equal(bytes.TrimSpace(current), caPubKey) {
+		if renameErr := os.Rename(
+			filepath.Clean(m.paths.UserCAFile()),
+			filepath.Clean(m.paths.RetiredCAFile()),
+		); renameErr != nil {
+			return fmt.Errorf("retire previous CA: %w", renameErr)
+		}
+		now := time.Now()
+		if stampErr := os.Chtimes(m.paths.RetiredCAFile(), now, now); stampErr != nil {
+			return fmt.Errorf("stamp retired CA: %w", stampErr)
+		}
 	}
 
 	if err = util.WriteIfChanged(m.paths.UserCAFile(), caPubKey, 0o644); err != nil {

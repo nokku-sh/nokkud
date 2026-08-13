@@ -15,8 +15,15 @@ const (
 	cacheFilename       = "cache.json"
 	signerStateFilename = "state.json"
 	userCAFilename      = "nokku_ca.pub"
+	retiredCAFilename   = "nokku_ca.previous.pub"
 	recordsDir          = "recordings"
 	auditDir            = "audit"
+
+	// The daemon embeds its own SSH server and owns exactly one host key:
+	// a TPM-backed ECDSA key when a TPM 2.0 is present, otherwise the
+	// on-disk ed25519 key below. The system sshd's keys are never read.
+	softwareHostKeyName = "ssh_host_ed25519_key"
+	tpmHostKeyName      = "ssh_host_ecdsa_key"
 )
 
 // Paths holds the filesystem locations the application reads and writes.
@@ -56,14 +63,37 @@ func (p Paths) UserCAFile() string {
 	return filepath.Join(p.ConfigDir, userCAFilename)
 }
 
-// PrivateKeys returns the daemon's SSH host private keys.
-func (p Paths) PrivateKeys() ([]string, error) {
-	return filepath.Glob(filepath.Join(p.ConfigDir, "ssh_host_*_key"))
+// RetiredCAFile returns the path where the previously trusted CA key is kept
+// during a rollover. Certificates signed by it stay valid until they expire,
+// so the SSH server trusts both files for a grace window after a rollover.
+func (p Paths) RetiredCAFile() string {
+	return filepath.Join(p.ConfigDir, retiredCAFilename)
 }
 
-// Certificates returns the daemon's SSH host certificate paths.
-func (p Paths) Certificates() ([]string, error) {
-	return filepath.Glob(filepath.Join(p.ConfigDir, "ssh_host_*-cert.pub"))
+// SoftwareHostKey returns the on-disk software host key path.
+func (p Paths) SoftwareHostKey() string {
+	return filepath.Join(p.ConfigDir, softwareHostKeyName)
+}
+
+// SoftwareHostKeyPub returns the software host key's public half.
+func (p Paths) SoftwareHostKeyPub() string {
+	return p.SoftwareHostKey() + ".pub"
+}
+
+// SoftwareHostKeyCert returns the software host key's certificate path.
+func (p Paths) SoftwareHostKeyCert() string {
+	return p.SoftwareHostKey() + "-cert.pub"
+}
+
+// TPMHostKeyPub returns the TPM-backed host key's public half. Only this
+// file exists on disk; the private half never leaves the TPM.
+func (p Paths) TPMHostKeyPub() string {
+	return filepath.Join(p.ConfigDir, tpmHostKeyName+".pub")
+}
+
+// TPMHostKeyCert returns the TPM-backed host key's certificate path.
+func (p Paths) TPMHostKeyCert() string {
+	return filepath.Join(p.ConfigDir, tpmHostKeyName+"-cert.pub")
 }
 
 // Verify creates the owned directories and checks that the SSH paths exist.

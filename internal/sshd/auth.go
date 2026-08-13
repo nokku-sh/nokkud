@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -15,13 +16,38 @@ import (
 
 var errNoCertificates = errors.New("sshd: only certificate authentication is supported")
 
-// loadTrustedCAs reads every CA public key from the daemon's cached CA file.
+// retiredCAGrace is how long the previously trusted CA remains accepted after
+// a rollover, so user certificates it signed keep working until they expire
+// (the backend's default user TTLs are at most 7 days).
+const retiredCAGrace = 8 * 24 * time.Hour
+
+// loadTrustedCAs reads every CA public key from the daemon's cached CA files:
+// the active CA plus, within retiredCAGrace of the rollover, the retired one.
 func loadTrustedCAs(p paths.Paths) ([]ssh.PublicKey, error) {
-	data, err := os.ReadFile(p.UserCAFile())
+	keys, err := parseCAFile(p.UserCAFile())
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("sshd: no cached CA public key at %s", p.UserCAFile())
+		return nil, err
+	}
+
+	// The retired CA is best-effort: a corrupt or missing retired file must
+	// never take down authentication, which the active CA still provides.
+	if st, statErr := os.Stat(p.RetiredCAFile()); statErr == nil {
+		if time.Since(st.ModTime()) < retiredCAGrace {
+			if retired, parseErr := parseCAFile(p.RetiredCAFile()); parseErr == nil {
+				keys = append(keys, retired...)
+			}
 		}
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("sshd: no CA public keys found in %s", p.UserCAFile())
+	}
+	return keys, nil
+}
+
+// parseCAFile parses every authorized-key line from path.
+func parseCAFile(path string) ([]ssh.PublicKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return nil, fmt.Errorf("sshd: read CA public key: %w", err)
 	}
 
@@ -33,9 +59,6 @@ func loadTrustedCAs(p paths.Paths) ([]ssh.PublicKey, error) {
 		}
 		keys = append(keys, pub)
 		data = rest
-	}
-	if len(keys) == 0 {
-		return nil, fmt.Errorf("sshd: no CA public keys found in %s", p.UserCAFile())
 	}
 	return keys, nil
 }

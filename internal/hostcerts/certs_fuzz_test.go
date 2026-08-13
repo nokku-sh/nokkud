@@ -17,7 +17,7 @@ import (
 // authorized_keys serialization and never crash the renewal/validity checks.
 func FuzzParseCertificate(f *testing.F) {
 	ca := newTestCA(f)
-	certText, _ := signHostCert(f, ca, "some-target-id", 0, ssh.CertTimeInfinity)
+	certText, _ := signHostCert(f, ca, newHostPub(f), "some-target-id", 0, ssh.CertTimeInfinity)
 	f.Add(certText)
 	f.Add([]byte(""))
 	f.Add([]byte("not a key"))
@@ -49,7 +49,14 @@ func FuzzParseCertificate(f *testing.F) {
 // parseable files behind, and nothing may panic.
 func FuzzSaveCertificate(f *testing.F) {
 	ca := newTestCA(f)
-	certText, caText := signHostCert(f, ca, "some-target-id", 0, ssh.CertTimeInfinity)
+	certText, caText := signHostCert(
+		f,
+		ca,
+		newHostPub(f),
+		"some-target-id",
+		0,
+		ssh.CertTimeInfinity,
+	)
 	f.Add(certText, caText)
 	f.Add([]byte("garbage"), []byte("garbage"))
 	f.Add([]byte(""), []byte(""))

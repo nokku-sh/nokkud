@@ -319,18 +319,24 @@ func currentUser(t *testing.T) string {
 func TestHostKeysStable(t *testing.T) {
 	p := paths.Paths{ConfigDir: t.TempDir()}
 
-	s1, err := loadHostKeys(p)
+	s1, c1, err := loadHostKeys(p)
 	if err != nil {
 		t.Fatalf("load host keys: %v", err)
+	}
+	for _, c := range c1 {
+		defer func() { _ = c.Close() }()
 	}
 	if len(s1) == 0 {
 		t.Fatal("expected at least one host key")
 	}
 	first := s1[0].PublicKey().Marshal()
 
-	s2, err := loadHostKeys(p)
+	s2, c2, err := loadHostKeys(p)
 	if err != nil {
 		t.Fatalf("reload host keys: %v", err)
+	}
+	for _, c := range c2 {
+		defer func() { _ = c.Close() }()
 	}
 	second := s2[0].PublicKey().Marshal()
 	if !bytes.Equal(first, second) {

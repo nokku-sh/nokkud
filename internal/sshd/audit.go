@@ -3,12 +3,26 @@ package sshd
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
 	"net"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/audit"
+	"github.com/nokku-sh/nokkud/internal/paths"
 )
+
+// newAuditSink opens the local JSONL audit log under the config dir. It
+// returns nil when the sink cannot be prepared so the server keeps running
+// without audit rather than failing to start.
+func newAuditSink(p paths.Paths) *audit.Sink {
+	s, err := audit.New(p.AuditDir)
+	if err != nil {
+		slog.Warn("audit log unavailable", "error", err)
+		return nil
+	}
+	return s
+}
 
 // newSessionID returns a random hex string used to correlate audit events for
 // one session.

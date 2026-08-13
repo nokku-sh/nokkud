@@ -1,11 +1,13 @@
 // Package sshd implements the embedded SSH server that replaces sshd on the
 // host. It authenticates users by SSH certificate against the cached CA
 // public key and principal map, runs sessions with the target user's
-// privileges, and records/audits them inline.
+// privileges, and records and audits them inline.
 package sshd
 
 import (
+	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"net"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/paths"
+	"github.com/nokku-sh/nokkud/internal/state"
 )
 
 // PrincipalsFunc reports the subject UUIDs allowed to log in as username.
@@ -57,6 +60,10 @@ type Server struct {
 	certsMu    sync.RWMutex
 	trustedCAs []ssh.PublicKey
 	hostKeys   []ssh.Signer
+	// hostKeyProvider rebuilds the host identity on Reload; hostKeyClosers
+	// release the swapped-out identity's resources (e.g. TPM handles).
+	hostKeyProvider func() ([]ssh.Signer, error)
+	hostKeyClosers  []io.Closer
 
 	// connection limits
 	maxConns      int
@@ -64,6 +71,10 @@ type Server struct {
 	aliveInterval time.Duration
 
 	closeOnce sync.Once
+
+	// mu guards the listener installed by ListenAndServe so Close can stop it.
+	mu       sync.Mutex
+	listener net.Listener
 
 	// subsystemHandlers dispatches SSH subsystems ("sftp", ...) to handlers.
 	subsystemHandlers map[string]SubsystemHandler
@@ -77,8 +88,8 @@ type Options struct {
 	// which local user.
 	Principals PrincipalsFunc
 	// Authorize is an optional post-auth policy hook: it runs after the
-	// certificate passed the CA + principal checks and can deny the login or
-	// enforce certificate extensions / device trust / MFA.
+	// certificate passed the CA + principal checks and can deny the login
+	// or enforce extensions / device trust / MFA.
 	Authorize AuthorizeFunc
 	// Audit is an optional sink for security events. When nil, no audit
 	// events are emitted.
@@ -86,6 +97,11 @@ type Options struct {
 	// TrustedCAs lists the CA public keys that may sign user certificates.
 	// When empty, the CAs are loaded from Paths.UserCAFile().
 	TrustedCAs []ssh.PublicKey
+	// HostKeys optionally supplies the server's host key signers; it is
+	// called at startup and on every Reload. When nil, the default loader
+	// is used: a TPM-resident host key when a TPM 2.0 is present,
+	// otherwise the on-disk software key.
+	HostKeys func() ([]ssh.Signer, error)
 	// Record enables session recording via the recorder package.
 	Record bool
 	// AllowForwarding enables port forwarding (-L/-D via direct-tcpip channels,
@@ -96,10 +112,9 @@ type Options struct {
 	// default.
 	AllowAgentForwarding bool
 	// GatewayPorts allows remote (-R) forwards to bind addresses other than
-	// the loopback address. Like OpenSSH's GatewayPorts=no, the default forces
-	// every remote forward onto 127.0.0.1 regardless of the address the client
-	// requests, so an authorized user cannot expose a service on the server's
-	// external interfaces.
+	// loopback. Like OpenSSH's GatewayPorts=no, the default forces every
+	// remote forward onto 127.0.0.1, so an authorized user cannot expose a
+	// service on the server's external interfaces.
 	GatewayPorts bool
 	// MaxSessions caps the number of session channels a single connection may
 	// open (OpenSSH's MaxSessions). Zero means no per-connection cap.
@@ -111,6 +126,25 @@ type Options struct {
 	// an idle client; a client that fails to respond for 3 intervals is
 	// disconnected (OpenSSH's ClientAliveInterval). Zero disables probing.
 	ClientAliveInterval time.Duration
+}
+
+// OptionsFrom returns the daemon's standard SSH server policy: the principal
+// map from the shared cache, forwarding and agent forwarding on, a session
+// cap, and the local audit sink. record enables session recording.
+func OptionsFrom(p paths.Paths, cache *state.Cache, record bool) Options {
+	return Options{
+		Paths: p,
+		Principals: func(username string) ([]string, bool) {
+			return cache.GetUUIDs(username), true
+		},
+		Record:               record,
+		AllowForwarding:      true,
+		AllowAgentForwarding: true,
+		MaxSessions:          10,
+		MaxConnections:       100,
+		ClientAliveInterval:  60 * time.Second,
+		Audit:                newAuditSink(p),
+	}
 }
 
 // New builds a Server, loading host keys and wiring certificate auth.
@@ -137,14 +171,15 @@ func New(opts Options) (*Server, error) {
 	}
 
 	s := &Server{
-		logger:        logger,
-		paths:         opts.Paths,
-		principals:    opts.Principals,
-		authorize:     opts.Authorize,
-		audit:         opts.Audit,
-		trustedCAs:    trusted,
-		maxConns:      opts.MaxConnections,
-		aliveInterval: opts.ClientAliveInterval,
+		logger:          logger,
+		paths:           opts.Paths,
+		principals:      opts.Principals,
+		authorize:       opts.Authorize,
+		audit:           opts.Audit,
+		trustedCAs:      trusted,
+		hostKeyProvider: opts.HostKeys,
+		maxConns:        opts.MaxConnections,
+		aliveInterval:   opts.ClientAliveInterval,
 		subsystemHandlers: map[string]SubsystemHandler{
 			sftpSubsystem: func(sess *session) uint32 { return sess.runSFTP() },
 		},
@@ -158,11 +193,12 @@ func New(opts Options) (*Server, error) {
 		s.connSlots = make(chan struct{}, opts.MaxConnections)
 	}
 
-	hostKeys, err := loadHostKeys(opts.Paths)
+	hostKeys, hostClosers, err := s.loadHostIdentity()
 	if err != nil {
 		return nil, err
 	}
 	s.hostKeys = hostKeys
+	s.hostKeyClosers = hostClosers
 
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback: s.publicKeyCallback,
@@ -177,27 +213,38 @@ func New(opts Options) (*Server, error) {
 	return s, nil
 }
 
-// Reload refreshes the trusted CAs and host keys from disk. It is safe to
-// call while the server is serving: new connections use the fresh identity,
-// established connections are unaffected. It is invoked after a certificate
-// sync so a renewed host cert or rotated CA applies without a restart.
+// loadHostIdentity resolves the server's host key signers, preferring the
+// configured provider and falling back to the default disk/TPM loader.
+func (s *Server) loadHostIdentity() ([]ssh.Signer, []io.Closer, error) {
+	if s.hostKeyProvider != nil {
+		keys, err := s.hostKeyProvider()
+		return keys, nil, err
+	}
+	return loadHostKeys(s.paths)
+}
+
+// Reload refreshes the trusted CAs and host keys from disk while serving:
+// new connections use the fresh identity, established ones are unaffected.
+// Called after a certificate sync so a renewed host cert or rotated CA
+// applies without a restart.
 func (s *Server) Reload() error {
 	trusted, err := loadTrustedCAs(s.paths)
 	if err != nil {
-		// Fail closed: a CA that can no longer be read (e.g. revoked by
-		// removal) must not keep granting logins from a stale in-memory list.
-		// Surface it so ops sees why new connections are being denied.
+		// Fail closed: a CA that can no longer be read must not keep
+		// granting logins from a stale in-memory list.
 		s.logger.Warn("sshd: reload trusted CAs", "error", err)
 	}
 
-	hostKeys, err := loadHostKeys(s.paths)
+	hostKeys, hostClosers, err := s.loadHostIdentity()
 	if err != nil {
 		return err
 	}
 
 	s.certsMu.Lock()
+	oldClosers := s.hostKeyClosers
 	s.trustedCAs = trusted
 	s.hostKeys = hostKeys
+	s.hostKeyClosers = hostClosers
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback: s.publicKeyCallback,
 		ServerVersion:     "SSH-2.0-nokkud",
@@ -207,6 +254,14 @@ func (s *Server) Reload() error {
 	}
 	s.cfg = cfg
 	s.certsMu.Unlock()
+
+	// Release the swapped-out identity's resources (TPM handles) now that
+	// no handshake can pick them up anymore.
+	for _, c := range oldClosers {
+		if closeErr := c.Close(); closeErr != nil {
+			s.logger.Debug("sshd: close replaced host key", "error", closeErr)
+		}
+	}
 
 	s.logger.Debug(
 		"sshd: reloaded identity",
@@ -260,13 +315,28 @@ func (s *Server) releaseConn() {
 	}
 }
 
-// Close stops accepting new connections and closes the audit sink. It does
-// not forcibly kill active sessions; it is called on daemon shutdown.
+// Close stops the listener (if ListenAndServe started one) and closes the
+// audit sink. It does not forcibly kill active sessions. Safe to call more
+// than once and concurrently with serving.
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		l := s.listener
+		s.mu.Unlock()
+		if l != nil {
+			_ = l.Close()
+		}
 		if s.audit != nil {
 			if c, ok := s.audit.(interface{ Close() error }); ok {
 				_ = c.Close()
+			}
+		}
+		s.certsMu.RLock()
+		closers := append([]io.Closer(nil), s.hostKeyClosers...)
+		s.certsMu.RUnlock()
+		for _, c := range closers {
+			if err := c.Close(); err != nil {
+				s.logger.Debug("sshd: close host key", "error", err)
 			}
 		}
 	})
@@ -285,13 +355,49 @@ func sessionCapToInt32(n int) int32 {
 }
 
 // SetOptions applies runtime-tunable options (record, forwarding, session
-// cap) live, without restarting. Safe to call while serving.
+// cap) live, without restarting. It replaces every tunable, so pass the full
+// set: an unspecified field disables that feature.
 func (s *Server) SetOptions(opts Options) {
 	s.record.Store(opts.Record)
 	s.forwarding.Store(opts.AllowForwarding)
 	s.agentForwarding.Store(opts.AllowAgentForwarding)
 	s.gatewayPorts.Store(opts.GatewayPorts)
 	s.maxSessions.Store(sessionCapToInt32(opts.MaxSessions))
+}
+
+// SetRecord toggles session recording live, without touching the other
+// tunables. It is driven by the backend's daemon config after each sync.
+func (s *Server) SetRecord(record bool) {
+	s.record.Store(record)
+}
+
+// ListenAndServe binds addr, starts serving on it, and returns the bound
+// address. The listener closes automatically when ctx is cancelled, so the
+// daemon's lifecycle is driven by a single context. Serve errors are logged
+// rather than returned; use Serve directly when the caller needs them.
+func (s *Server) ListenAndServe(ctx context.Context, addr string) (net.Addr, error) {
+	var lc net.ListenConfig
+	l, err := lc.Listen(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.listener = l
+	s.mu.Unlock()
+
+	go func() {
+		if serr := s.Serve(l); serr != nil {
+			s.logger.Error("sshd: serve", "error", serr)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		_ = s.Close()
+	}()
+
+	s.logger.Info("sshd: server listening", "addr", l.Addr().String())
+	return l.Addr(), nil
 }
 
 // currentConfig returns the current server config under the certs lock so a
@@ -313,9 +419,9 @@ func (s *Server) HandleConn(nc net.Conn) {
 func (s *Server) handleConn(nc net.Conn) {
 	defer nc.Close()
 
-	// Client-alive probing: wrap the conn so inbound traffic (including
-	// keepalive replies) refreshes a read deadline; the probing goroutine
-	// below disconnects a client that never responds.
+	// Client-alive probing: wrap the conn so inbound traffic refreshes a
+	// read deadline; the probing goroutine disconnects a client that never
+	// responds.
 	var alive *aliveConn
 	if s.aliveInterval > 0 {
 		alive = &aliveConn{Conn: nc, timeout: 3 * s.aliveInterval}
@@ -323,7 +429,7 @@ func (s *Server) handleConn(nc net.Conn) {
 	}
 
 	// Bound the handshake: a peer that never completes it must not hold a
-	// goroutine (or a connection) open forever.
+	// goroutine or connection open forever.
 	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		return
 	}
@@ -372,9 +478,9 @@ func (s *Server) handleConn(nc net.Conn) {
 			continue
 		}
 		wg.Go(func() {
-			// A handler may reject the channel without accepting it, in which
-			// case there is no channel to close on panic; a late Reject is a
-			// no-op and closes the pending channel.
+			// A handler may reject the channel without accepting it, so
+			// there may be no channel to close on panic; a late Reject
+			// is a no-op and closes the pending channel.
 			var ch ssh.Channel
 			defer s.recoverAndLog("channel "+newCh.ChannelType(), func() {
 				if ch != nil {
