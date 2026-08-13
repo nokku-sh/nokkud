@@ -21,9 +21,8 @@ import (
 
 // Software keys are wrapped at rest with a key derived from the machine's
 // identity. Copying the state directory to another machine yields nothing
-// usable: the wrap key only exists on the machine that created it. This
-// protects against stolen or cloned state, not against root on the machine
-// itself.
+// usable, since the wrap key only exists on the creating machine. This
+// protects against stolen or cloned state, not against root on the machine.
 const (
 	softScryptN = 1 << 15
 	softScryptR = 8
