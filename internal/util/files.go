@@ -11,9 +11,9 @@ import (
 	"runtime"
 )
 
-// WriteFile atomically writes data to a file. When gid is provided, the file
-// group is set before the rename (Unix only). On Windows the gid is ignored.
-func WriteFile(filename string, data []byte, perm os.FileMode, gid ...int) error {
+// WriteFile atomically writes data to a file with the given mode. On
+// non-Windows platforms the mode is applied before the rename.
+func WriteFile(filename string, data []byte, perm os.FileMode) error {
 	if filename == "" {
 		return fmt.Errorf("empty filename")
 	}
@@ -42,11 +42,6 @@ func WriteFile(filename string, data []byte, perm os.FileMode, gid ...int) error
 		if err = f.Chmod(perm); err != nil {
 			return err
 		}
-		if len(gid) > 0 {
-			if err = f.Chown(0, gid[0]); err != nil {
-				return err
-			}
-		}
 	}
 
 	if err = f.Sync(); err != nil {
@@ -62,14 +57,14 @@ func WriteFile(filename string, data []byte, perm os.FileMode, gid ...int) error
 
 // WriteIfChanged atomically writes only when data differs from disk;
 // reports whether it wrote.
-func WriteIfChanged(filename string, data []byte, perm os.FileMode, gid ...int) error {
+func WriteIfChanged(filename string, data []byte, perm os.FileMode) error {
 	filename = filepath.Clean(filename)
 	fi, err := os.Stat(filename)
 
 	if err == nil {
 		// Fast path: if sizes differ, the content definitely differs
 		if fi.Size() != int64(len(data)) {
-			return WriteFile(filename, data, perm, gid...)
+			return WriteFile(filename, data, perm)
 		}
 
 		// Slow path: sizes match, so we must compare the actual bytes
@@ -81,7 +76,7 @@ func WriteIfChanged(filename string, data []byte, perm os.FileMode, gid ...int) 
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return WriteFile(filename, data, perm, gid...)
+	return WriteFile(filename, data, perm)
 }
 
 // FileExists checks if a file exists and is a regular file.
