@@ -1,5 +1,5 @@
-// Package sysutil provides OS-level helpers for the SSH server: user and
-// group resolution (getent fallbacks), session env, shells, disk checks.
+// Package sysutil provides OS-level helpers for the SSH server, like user
+// resolution, session env, shells, and disk checks.
 package sysutil
 
 import (
@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// LookupUser resolves a user by name, falling back to getent so NSS / LDAP
-// users still work in static (CGO-less) builds where os/user only reads /etc/passwd.
+// LookupUser resolves a user by name, falling back to getent for NSS / LDAP
+// users invisible to static (CGO-less) builds.
 func LookupUser(name string) (*user.User, error) {
 	if u, err := user.Lookup(name); err == nil {
 		return u, nil
@@ -55,10 +55,9 @@ func GroupIDs(u *user.User) ([]string, error) {
 	return strings.Fields(string(out)), nil
 }
 
-// CmdEnv builds the target user's session environment: a fresh
-// HOME/USER/SHELL/PATH plus a locale/terminal allowlist. Connection
-// variables like SSH_AUTH_SOCK are set per session by the caller, so
-// one user's session cannot leak the admin's agent socket.
+// CmdEnv builds the target user's session environment: a fresh HOME/USER/
+// SHELL/PATH plus a locale allowlist. Connection variables like SSH_AUTH_SOCK
+// are set per session by the caller, so sessions cannot leak the admin's agent.
 func CmdEnv(sysUser *user.User, shell string) []string {
 	envMap := map[string]string{
 		"HOME":    sysUser.HomeDir,
@@ -68,13 +67,11 @@ func CmdEnv(sysUser *user.User, shell string) []string {
 		"PATH":    "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
 	}
 
-	// Only innocuous locale/terminal variables are inherited from the daemon's
-	// own environment. Connection-scoped variables (SSH_CONNECTION, SSH_TTY,
-	// SSH_AUTH_SOCK) are set per session by the caller; inheriting them would
-	// leak the enrolling admin's agent socket and connection details into
-	// other users' sessions (the documented enrollment flow starts the daemon
-	// from an interactive SSH session). X11 is not supported, so DISPLAY and
-	// XAUTHORITY are never set either.
+	// Only innocuous locale/terminal variables are inherited. Connection
+	// variables are set per session by the caller, since inheriting them
+	// would leak the enrolling admin's agent socket and connection details
+	// into other users' sessions. DISPLAY and XAUTHORITY are never set
+	// because X11 is unsupported.
 	passThrough := []string{
 		"TERM",
 		"LANG",
@@ -102,7 +99,7 @@ func CmdEnv(sysUser *user.User, shell string) []string {
 }
 
 // UserShell resolves the user's login shell (getent, then SHELL, then
-// /bin/sh; COMSPEC on Windows), used only if it is executable.
+// /bin/sh; COMSPEC on Windows), only if it is executable.
 func UserShell(u *user.User) string {
 	if runtime.GOOS == "windows" {
 		if shell := os.Getenv("COMSPEC"); shell != "" {
@@ -137,7 +134,7 @@ func UserShell(u *user.User) string {
 }
 
 // IsExecutable checks whether path is a regular file with execute permission.
-// It uses stat(2) instead of [exec.LookPath] because the path is always absolute.
+// Uses stat(2) because the path is always absolute.
 func IsExecutable(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0
