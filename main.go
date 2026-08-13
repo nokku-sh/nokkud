@@ -66,7 +66,6 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				return err
 			}
 			cfg.APIURL = cmd.String("api")
-			cfg.CAID = cmd.String("ca")
 			cfg.SSHAddr = cmd.String("ssh-addr")
 			if err := cfg.Save(); err != nil {
 				return err
@@ -261,12 +260,9 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				),
 			},
 			&cli.StringFlag{
-				Name:  "ca",
-				Usage: "SSH certificate authority uuid",
-				Sources: cli.NewValueSourceChain(
-					cli.EnvVar("NOKKUD_CA_ID"),
-					json.JSON("ca_id", altsrc.NewStringPtrSourcer(new(p.ConfigFile()))),
-				),
+				Name:    "ca",
+				Usage:   "SSH certificate authority uuid",
+				Sources: cli.EnvVars("NOKKUD_CA_ID"),
 			},
 			&cli.StringFlag{
 				Name:    "enroll",

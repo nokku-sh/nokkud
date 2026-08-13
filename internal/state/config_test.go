@@ -21,7 +21,6 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	c.TargetID = "tgt-1"
 	c.DaemonID = "daemon-1"
 	c.APIURL = "https://api.example.com"
-	c.CAID = "ca-1"
 	c.SSHAddr = ":4022"
 
 	if err := c.Save(); err != nil {
@@ -34,7 +33,7 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	}
 	if loaded.WorkspaceID != "ws-1" || loaded.TargetID != "tgt-1" ||
 		loaded.DaemonID != "daemon-1" || loaded.APIURL != "https://api.example.com" ||
-		loaded.CAID != "ca-1" || loaded.SSHAddr != ":4022" {
+		loaded.SSHAddr != ":4022" {
 		t.Fatalf("loaded config = %+v, want all fields set", loaded)
 	}
 }

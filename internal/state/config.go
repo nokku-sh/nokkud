@@ -13,13 +13,12 @@ import (
 )
 
 // Config is the persisted enrollment state: target/daemon IDs, API
-// endpoint, CA and runtime options. paths is never serialized.
+// endpoint and runtime options. paths is never serialized.
 type Config struct {
 	WorkspaceID  string                `json:"workspace_id,omitempty"`
 	TargetID     string                `json:"target_id,omitempty"`
 	DaemonID     string                `json:"daemon_id,omitempty"`
 	APIURL       string                `json:"api_url,omitempty"`
-	CAID         string                `json:"ca_id,omitempty"`
 	SSHAddr      string                `json:"ssh_addr,omitempty"`
 	DaemonConfig *nokkuv1.DaemonConfig `json:"daemon_config,omitempty"`
 

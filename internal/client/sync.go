@@ -72,9 +72,6 @@ func (c *Client) signHostCert(
 		PublicKey:   new(string(kp.PublicKeyData)),
 		Type:        nokkuv1.SignSSHCertificateRequest_CERTIFICATE_TYPE_HOST.Enum(),
 	}
-	if c.config.CAID != "" {
-		req.CaId = &c.config.CAID
-	}
 	return c.cc.SignSSHCertificate(ctx, req)
 }
 

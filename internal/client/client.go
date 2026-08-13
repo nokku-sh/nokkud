@@ -78,7 +78,7 @@ func New(
 	if err = c.enroll(
 		ctx,
 		cmd.String("enroll"),
-		config.CAID,
+		cmd.String("ca"),
 	); err != nil {
 		return nil, err
 	}
