@@ -7,6 +7,7 @@ package sshd
 import (
 	"errors"
 	"log/slog"
+	"math"
 	"net"
 	"runtime/debug"
 	"sync"
@@ -277,8 +278,8 @@ func sessionCapToInt32(n int) int32 {
 	if n <= 0 {
 		return 0
 	}
-	if n > int(^uint32(0)>>1) {
-		return int32(^uint32(0) >> 1)
+	if n > math.MaxInt32 {
+		return math.MaxInt32
 	}
 	return int32(n)
 }
@@ -336,9 +337,11 @@ func (s *Server) handleConn(nc net.Conn) {
 		_ = conn.Close()
 		return
 	}
+	var aliveDone chan struct{}
 	if alive != nil {
 		alive.activate()
-		go s.clientAlive(conn, s.aliveInterval)
+		aliveDone = make(chan struct{})
+		go s.clientAlive(conn, s.aliveInterval, aliveDone)
 	}
 
 	s.logger.Info(
@@ -354,13 +357,16 @@ func (s *Server) handleConn(nc net.Conn) {
 
 	var wg sync.WaitGroup
 	defer func() {
+		if aliveDone != nil {
+			close(aliveDone)
+		}
 		st.close()
 		wg.Wait()
 		_ = conn.Close()
 	}()
 
 	for newCh := range chans {
-		handler, ok := s.channelHandlers()[newCh.ChannelType()]
+		handler, ok := channelHandlers[newCh.ChannelType()]
 		if !ok {
 			_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel type")
 			continue
@@ -382,26 +388,31 @@ func (s *Server) handleConn(nc net.Conn) {
 	}
 }
 
+// channelHandler serves one accepted SSH channel type.
+type channelHandler func(*Server, *ssh.ServerConn, *connState, ssh.NewChannel, *ssh.Channel)
+
 // channelHandlers maps SSH channel types to handlers ("session",
 // "direct-tcpip") so new types slot in without touching the accept loop.
-func (s *Server) channelHandlers() map[string]func(*Server, *ssh.ServerConn, *connState, ssh.NewChannel, *ssh.Channel) {
-	return map[string]func(*Server, *ssh.ServerConn, *connState, ssh.NewChannel, *ssh.Channel){
-		"session": func(s *Server, conn *ssh.ServerConn, st *connState, newCh ssh.NewChannel, ch *ssh.Channel) {
-			if !st.acquireSession(int(s.maxSessions.Load())) {
-				_ = newCh.Reject(ssh.ResourceShortage, "too many sessions")
-				return
-			}
-			defer st.releaseSession()
-			c, reqs, err := newCh.Accept()
-			if err != nil {
-				s.logger.Debug("sshd: accept session channel", "error", err)
-				return
-			}
-			*ch = c
-			s.serveSession(conn, c, reqs)
-		},
-		"direct-tcpip": s.serveDirectTCPIP,
+var channelHandlers = map[string]channelHandler{
+	"session":      (*Server).handleSession,
+	"direct-tcpip": (*Server).serveDirectTCPIP,
+}
+
+// handleSession accepts a "session" channel and serves its request stream,
+// enforcing the per-connection session cap.
+func (s *Server) handleSession(conn *ssh.ServerConn, st *connState, newCh ssh.NewChannel, ch *ssh.Channel) {
+	if !st.acquireSession(int(s.maxSessions.Load())) {
+		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions")
+		return
 	}
+	defer st.releaseSession()
+	c, reqs, err := newCh.Accept()
+	if err != nil {
+		s.logger.Debug("sshd: accept session channel", "error", err)
+		return
+	}
+	*ch = c
+	s.serveSession(conn, c, reqs)
 }
 
 // recoverAndLog contains a panic on the current goroutine, logs it with a

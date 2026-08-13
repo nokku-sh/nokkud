@@ -71,7 +71,6 @@ func (st *connState) close() {
 // serveDirectTCPIP handles a direct-tcpip channel (-L/-D): connect to the
 // requested destination and relay bytes both ways.
 func (s *Server) serveDirectTCPIP(
-	_ *Server,
 	_ *ssh.ServerConn,
 	st *connState,
 	newCh ssh.NewChannel,
