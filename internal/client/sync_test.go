@@ -1,6 +1,13 @@
 package client
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/nokku-sh/nokkud/internal/paths"
+)
 
 func TestSSHPort(t *testing.T) {
 	t.Parallel()
@@ -51,5 +58,35 @@ func TestValidPort(t *testing.T) {
 				t.Errorf("validPort(%q) = %q, want %q", tt.port, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCaMatches verifies the cached CA comparison used to detect rollovers:
+// content equality, whitespace tolerance, and the missing-file case.
+func TestCaMatches(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "nokku_ca.pub")
+	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFw2BPSytSBKCcOmfUWab8JA2uRKsEUO/FtuZACsJccE"
+
+	c := &Client{paths: paths.Paths{ConfigDir: dir}}
+
+	if c.caMatches(key) {
+		t.Fatal("caMatches must report false when no CA file exists")
+	}
+
+	if err := os.WriteFile(caPath, []byte(key+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !c.caMatches(key) {
+		t.Fatal("caMatches must match the cached CA")
+	}
+	if !c.caMatches(key + "\n   ") {
+		t.Fatal("caMatches must tolerate surrounding whitespace")
+	}
+	if c.caMatches(key[:len(key)-1] + "X") {
+		t.Fatal("caMatches must reject a different CA")
+	}
+	if c.caMatches(strings.TrimSpace(key)) && !c.caMatches(key) {
+		t.Fatal("unexpected result")
 	}
 }

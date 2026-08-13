@@ -1,10 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
@@ -12,24 +15,21 @@ import (
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
+const syncTimeout = 15 * time.Second
+
 func (c *Client) syncAll(ctx context.Context) error {
 	if c.config.DaemonID == "" {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, syncTimeout)
 	defer cancel()
 
 	if err := c.syncDaemon(ctx); err != nil {
 		return err
 	}
-	if err := c.syncCertificates(ctx); err != nil {
+	if err := c.renewHostCerts(ctx, false); err != nil {
 		return err
-	}
-	if c.sshReload != nil {
-		if err := c.sshReload(); err != nil {
-			slog.Warn("reload embedded ssh server", "error", err)
-		}
 	}
 	return nil
 }
@@ -43,23 +43,80 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	switch res.GetStatus() {
+	case nokkuv1.DaemonStatus_DAEMON_STATUS_REJECTED:
+		// The backend revoked this daemon: clear the enrollment and stop.
+		c.config.Clear()
+		if saveErr := c.config.Save(); saveErr != nil {
+			slog.Error("persist cleared config on rejection", "error", saveErr)
+		}
+		slog.Error("daemon rejected, exiting")
+		return errDaemonRejected
+	case nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED:
+		// Apply below.
+	case nokkuv1.DaemonStatus_DAEMON_STATUS_UNSPECIFIED,
+		nokkuv1.DaemonStatus_DAEMON_STATUS_PENDING:
+		return nil // Nothing to apply
+	}
+
 	c.config.DaemonConfig = res.GetConfig()
 
-	if c.sshApplyConfig != nil {
-		c.sshApplyConfig(res.GetConfig().GetRecordSessions())
+	if c.sshSrv != nil {
+		c.sshSrv.SetRecord(res.GetConfig().GetRecordSessions())
 	}
 
 	c.cache.Clear()
 	for _, p := range res.GetPrincipals() {
 		c.cache.SetUUIDs(p.GetUsername(), p.GetIds())
 	}
-	return c.cache.Save()
+
+	// CA rollover: re-sign the host certificate under the new authority and
+	// reload the server before acknowledging the new state. A failure keeps
+	// our state version stale so the next heartbeat/update retries it.
+	if ca := res.GetCaPublicKey(); ca != "" && !c.caMatches(ca) {
+		if renewErr := c.renewHostCerts(ctx, true); renewErr != nil {
+			slog.Warn("renew host certificates after CA rollover", "error", renewErr)
+			return renewErr
+		}
+	}
+
+	c.cache.SetStateVersion(res.GetStateVersion())
+	if saveErr := c.cache.Save(); saveErr != nil {
+		return saveErr
+	}
+
+	return nil
 }
 
-func (c *Client) syncCertificates(ctx context.Context) error {
-	_, err := c.ssh.RenewHostCerts(ctx, c.config.TargetID, c.signHostCert)
-	slog.Debug("renew host certificates", "error", err)
-	return err
+// caMatches reports whether the cached CA file already holds key.
+func (c *Client) caMatches(key string) bool {
+	data, err := os.ReadFile(c.paths.UserCAFile())
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(bytes.TrimSpace(data), []byte(strings.TrimSpace(key)))
+}
+
+func (c *Client) renewHostCerts(ctx context.Context, force bool) error {
+	renewed, err := c.ssh.RenewHostCerts(ctx, c.config.TargetID, c.signHostCert, force)
+	slog.Debug("renew host certificates", "renewed", renewed, "force", force, "error", err)
+	if err != nil {
+		return err
+	}
+	if renewed > 0 {
+		c.reloadSSH()
+	}
+	return nil
+}
+
+func (c *Client) reloadSSH() {
+	if c.sshSrv == nil {
+		return
+	}
+	if err := c.sshSrv.Reload(); err != nil {
+		slog.Warn("reload embedded ssh server", "error", err)
+	}
 }
 
 // signHostCert requests a fresh host certificate for kp from the backend.
@@ -76,8 +133,7 @@ func (c *Client) signHostCert(
 }
 
 // sshEndpoints combines each private IP with the SSH listen port, so the
-// backend knows how to reach the daemon. Returns nil when the embedded SSH
-// server is disabled or its address is unusable.
+// backend knows how to reach the daemon.
 func (c *Client) sshEndpoints() []string {
 	port := sshPort(c.config.SSHAddr)
 	if port == "" {
@@ -92,10 +148,7 @@ func (c *Client) sshEndpoints() []string {
 	return endpoints
 }
 
-// sshPort extracts the TCP port from an SSH listen address. Both host:port
-// (":4022", "0.0.0.0:4022") and bare-port ("4022") forms are accepted, the
-// latter matching how [net.Listen] treats a plain port. An empty string is
-// returned when the server is disabled or the port is out of range.
+// sshPort extracts the TCP port from an SSH listen address.
 func sshPort(addr string) string {
 	if addr == "" {
 		return ""

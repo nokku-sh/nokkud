@@ -8,31 +8,13 @@ import (
 
 const (
 	defaultDelay = 30 * time.Second
-	syncInterval = 12 * time.Hour
 )
 
 func (c *Client) startWatchers(ctx context.Context) {
 	go c.watchCertificates(ctx)
-	go c.watchSync(ctx)
 }
 
-// watchSync periodically re-runs the full sync as a safety net.
-func (c *Client) watchSync(ctx context.Context) {
-	ticker := time.NewTicker(syncInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := c.syncAll(ctx); err != nil {
-				slog.Debug("periodic sync", "error", err)
-			}
-		}
-	}
-}
-
+// watchCertificates renews host certificates from their local expiry deadlines.
 func (c *Client) watchCertificates(ctx context.Context) {
 	delay := max(time.Until(c.ssh.NextRenewal(c.config.TargetID)), defaultDelay)
 	timer := time.NewTimer(delay)
@@ -43,7 +25,7 @@ func (c *Client) watchCertificates(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			if err := c.syncCertificates(ctx); err != nil {
+			if err := c.renewHostCerts(ctx, false); err != nil {
 				slog.Warn("certificate renewal", "error", err)
 			}
 

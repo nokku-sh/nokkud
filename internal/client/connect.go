@@ -4,12 +4,20 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"time"
+
+	"connectrpc.com/connect"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 )
 
+const heartbeatInterval = 5 * time.Minute
+
+// runControlStream keeps the control stream open until ctx is cancelled.
+// The stream is the daemon's only periodic contact: an immediate heartbeat
+// reports our state version, later heartbeats keep it alive, and the server
+// pushes state updates. A fatal error (daemon rejection) is returned so Run
+// can surface it instead of reconnecting.
 func (c *Client) runControlStream(ctx context.Context) error {
 	controlCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -19,65 +27,73 @@ func (c *Client) runControlStream(ctx context.Context) error {
 		return err
 	}
 
-	// Heartbeats keep the stream alive and surface liveness server-side.
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-controlCtx.Done():
-				return
-			case <-ticker.C:
-				if sendErr := stream.Send(&nokkuv1.ConnectRequest{
-					Msg: &nokkuv1.ConnectRequest_Heartbeat{Heartbeat: &nokkuv1.Heartbeat{}},
-				}); sendErr != nil {
-					return
-				}
-			}
-		}
-	}()
+	go c.sendHeartbeats(controlCtx, stream)
 
-	// Serialized notification processor, prevents concurrent syncs and panics
-	notifyCh := make(chan *nokkuv1.Notification, 1)
-	notifyDone := make(chan struct{})
-	go func() {
-		defer close(notifyDone)
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("notification processor panicked", "panic", r)
-			}
-		}()
-		for n := range notifyCh {
-			c.handleNotification(ctx, n)
-		}
-	}()
-
-	// Pump receives through a channel so we can select on context cancellation.
 	recvCh := make(chan receiveResult, 1)
-	go func() {
-		for {
-			msg, recvErr := stream.Receive()
-			select {
-			case recvCh <- receiveResult{msg, recvErr}:
-			case <-controlCtx.Done():
-				return
-			}
-		}
-	}()
+	go pumpReceives(controlCtx, stream, recvCh)
 
 	for {
 		select {
 		case <-controlCtx.Done():
-			close(notifyCh)
-			<-notifyDone
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return context.Canceled
 		case r := <-recvCh:
 			if r.err != nil {
-				close(notifyCh)
-				<-notifyDone
 				return r.err
 			}
-			c.handleServerMessage(ctx, r.msg, notifyCh)
+			if handleErr := c.handleServerMessage(ctx, r.msg); handleErr != nil {
+				cancel()
+				return handleErr
+			}
+		}
+	}
+}
+
+// sendHeartbeats sends an immediate heartbeat and then keeps the stream alive.
+func (c *Client) sendHeartbeats(
+	ctx context.Context,
+	stream *connect.BidiStreamForClientSimple[nokkuv1.ConnectRequest, nokkuv1.ConnectResponse],
+) {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	send := func() bool {
+		version := c.cache.GetStateVersion()
+		return stream.Send(&nokkuv1.ConnectRequest{
+			Msg: &nokkuv1.ConnectRequest_Heartbeat{
+				Heartbeat: &nokkuv1.Heartbeat{StateVersion: &version},
+			},
+		}) == nil
+	}
+
+	send()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !send() {
+				return
+			}
+		}
+	}
+}
+
+// pumpReceives forwards stream messages to recvCh so the run loop can
+// select on context cancellation alongside incoming messages.
+func pumpReceives(
+	ctx context.Context,
+	stream *connect.BidiStreamForClientSimple[nokkuv1.ConnectRequest, nokkuv1.ConnectResponse],
+	recvCh chan receiveResult,
+) {
+	for {
+		msg, err := stream.Receive()
+		select {
+		case recvCh <- receiveResult{msg, err}:
+		case <-ctx.Done():
+			return
 		}
 	}
 }
@@ -90,71 +106,32 @@ type receiveResult struct {
 func (c *Client) handleServerMessage(
 	ctx context.Context,
 	msg *nokkuv1.ConnectResponse,
-	notifyCh chan *nokkuv1.Notification,
-) {
+) error {
 	switch m := msg.GetMsg().(type) {
 	case *nokkuv1.ConnectResponse_HeartbeatAck:
-
-	case *nokkuv1.ConnectResponse_Notification:
-		// Non-blocking send with replace: the worker never falls behind during
-		// a burst and the control stream is never blocked. When a notification
-		// is already pending, replace it with a full-sync request rather than
-		// the latest event.
-		select {
-		case notifyCh <- m.Notification:
-		default:
-			select {
-			case <-notifyCh:
-			default:
-			}
-			notifyCh <- &nokkuv1.Notification{
-				EventType: nokkuv1.Notification_EVENT_TYPE_SYNC_REQUEST.Enum(),
-			}
-		}
-
+		return c.reconcile(ctx, m.HeartbeatAck.GetStateVersion())
+	case *nokkuv1.ConnectResponse_StateUpdate:
+		return c.reconcile(ctx, m.StateUpdate.GetStateVersion())
 	case *nokkuv1.ConnectResponse_Session:
 		go c.startSession(ctx, m.Session)
-
 	default:
 		slog.Debug("unexpected server message", "type", fmt.Sprintf("%T", msg.GetMsg()))
 	}
+	return nil
 }
 
-func (c *Client) handleNotification(ctx context.Context, n *nokkuv1.Notification) {
-	switch n.GetEventType() {
-	case nokkuv1.Notification_EVENT_TYPE_UNSPECIFIED:
-		slog.Debug("unhandled server notification")
-	case nokkuv1.Notification_EVENT_TYPE_PRINCIPALS:
-		slog.Debug("access rules changed, re-syncing")
-		if err := c.syncDaemon(ctx); err != nil {
-			slog.Error("sync access rules", "error", err)
-		}
-
-	case nokkuv1.Notification_EVENT_TYPE_CERTIFICATES:
-		slog.Debug("ssh certificates updated, refreshing")
-		if err := c.syncCertificates(ctx); err != nil {
-			slog.Error("refresh certificates", "error", err)
-		}
-
-	case nokkuv1.Notification_EVENT_TYPE_STATUS:
-		if n.GetDaemonId() == c.config.DaemonID {
-			status := n.GetStatus()
-			if status == nokkuv1.DaemonStatus_DAEMON_STATUS_REJECTED {
-				c.config.Clear()
-				if err := c.config.Save(); err != nil {
-					slog.Error("persist cleared config on rejection", "error", err)
-				}
-				slog.Error("daemon rejected, exiting")
-				os.Exit(1)
-			}
-		}
-
-	case nokkuv1.Notification_EVENT_TYPE_SYNC_REQUEST:
-		slog.Debug("sync requested by server")
-		if err := c.syncAll(ctx); err != nil {
-			slog.Debug("sync after server request", "error", err)
-		}
+// reconcile re-syncs when the server's state version differs from ours.
+func (c *Client) reconcile(ctx context.Context, serverVersion int64) error {
+	if serverVersion == c.cache.GetStateVersion() {
+		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, syncTimeout)
+	defer cancel()
+	if err := c.syncDaemon(ctx); err != nil {
+		slog.Warn("sync after state update", "error", err)
+		return err
+	}
+	return nil
 }
 
 func (c *Client) startSession(ctx context.Context, req *nokkuv1.Session) {

@@ -16,11 +16,14 @@ import (
 )
 
 // Cache is the thread-safe, persisted username→UUID map used for SSH
-// access decisions when the backend is unreachable.
+// access decisions when the backend is unreachable. StateVersion is the
+// workspace state version this cache was synced to; the daemon re-syncs
+// whenever the backend reports a newer one.
 type Cache struct {
-	mu         sync.RWMutex
-	Principals map[string][]string `json:"principals"`
-	paths      paths.Paths
+	mu           sync.RWMutex
+	Principals   map[string][]string `json:"principals"`
+	StateVersion int64               `json:"state_version,omitempty"`
+	paths        paths.Paths
 }
 
 // NewCache returns an empty, ready-to-use cache backed by the given paths.
@@ -94,8 +97,23 @@ func (c *Cache) HasUUID(principal, uuid string) bool {
 	return slices.Contains(uuids, uuid)
 }
 
+// GetStateVersion returns the state version this cache was synced to.
+func (c *Cache) GetStateVersion() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.StateVersion
+}
+
+// SetStateVersion records the state version the cache was synced to.
+func (c *Cache) SetStateVersion(v int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.StateVersion = v
+}
+
 func (c *Cache) clearLocked() {
 	c.Principals = make(map[string][]string)
+	c.StateVersion = 0
 }
 
 // Clear drops all cached principals (persisted on the next Save).
