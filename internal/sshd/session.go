@@ -21,8 +21,8 @@ import (
 )
 
 // session handles a single "session" channel. It embeds the SSH channel so
-// handlers write to it directly, and exposes the request state (env, command,
-// subsystem) plus a single teardown path via Exit.
+// handlers write to it directly, and exposes the request state (env,
+// command, subsystem) plus a single teardown path via Exit.
 type session struct {
 	ssh.Channel
 
@@ -108,10 +108,9 @@ func (s *Server) serveSession(conn *ssh.ServerConn, ch ssh.Channel, reqs <-chan 
 }
 
 // handleRequests processes the session request stream. shell/exec/subsystem
-// start the actual work in a handler goroutine while this loop keeps
-// servicing window-change and signal requests for its duration; when the
-// stream ends (client disconnect) the running process is killed and the
-// handler is joined.
+// start the work in a handler goroutine while this loop keeps servicing
+// window-change and signal requests; when the stream ends (client
+// disconnect) the running process is killed and the handler is joined.
 func (sess *session) handleRequests() {
 	handlerDone := make(chan struct{})
 	var started bool
@@ -175,10 +174,9 @@ func (sess *session) handleRequests() {
 		}
 	}
 
-	// Client disconnected (or the session channel closed): reap any running
-	// process, then wait for the handler to wind down. If no handler ever
-	// started (session opened and closed without a command) there is nothing
-	// to join.
+	// Client disconnected (or the session channel closed): reap any
+	// running process, then wait for the handler to wind down. If no
+	// handler ever started there is nothing to join.
 	sess.killProc()
 	if started {
 		<-handlerDone
@@ -225,10 +223,10 @@ func (sess *session) forceCommand() string {
 	return sess.conn.Permissions.Extensions["force-command"]
 }
 
-// acceptEnv applies the client environment whitelist (the SSH equivalent of
-// OpenSSH's AcceptEnv). A certificate force-command refuses client-supplied
-// environment entirely: an injected BASH_ENV/LD_PRELOAD must not be able to
-// override a restricted command.
+// acceptEnv applies the client environment whitelist (the SSH equivalent
+// of OpenSSH's AcceptEnv). A certificate force-command refuses client-
+// supplied environment entirely, so an injected BASH_ENV or LD_PRELOAD
+// cannot override a restricted command.
 func (sess *session) acceptEnv(name string) bool {
 	if sess.forceCommand() != "" {
 		return false
@@ -427,9 +425,9 @@ func (sess *session) Exit(code int) {
 	})
 }
 
-// ExitProcess reports the outcome of a finished process the way OpenSSH does:
-// exit-status for a normal exit, exit-signal when the command died by signal,
-// so clients surface 128+signal (137 for SIGKILL, 143 for SIGTERM, ...).
+// ExitProcess reports a finished process the way OpenSSH does: exit-status
+// for a normal exit, exit-signal when the command died by signal, so
+// clients surface 128+signal (137 for SIGKILL, 143 for SIGTERM).
 func (sess *session) ExitProcess(st *os.ProcessState) {
 	name, code, signaled := processSignal(st)
 	if !signaled {
@@ -517,13 +515,13 @@ func (sess *session) runPTY() {
 		return
 	}
 	sess.setProc(cmd.Process)
-	// The child has its own dup'd slave fds; dropping the parent's copy makes
-	// the master report EOF as soon as the child exits, so the output relay
-	// below is not left blocked forever.
+	// The child has its own dup'd slave fds; dropping the parent's copy
+	// makes the master report EOF as soon as the child exits, so the
+	// output relay below is not left blocked forever.
 	closePTYSlave(ptmx)
 
-	// Stdin relay: record input while the pty echo is enabled, matching the
-	// password-handling behaviour of the existing proxy.
+	// Stdin relay: record input while the pty echo is enabled, matching
+	// the password-handling behaviour of the existing proxy.
 	var relay sync.WaitGroup
 	relay.Go(func() {
 		buf := make([]byte, 32*1024)
@@ -574,8 +572,8 @@ func (sess *session) runPlain() {
 	}
 	cmd.SysProcAttr = attr
 
-	// Stderr goes to the channel's extended data stream (like sshd), not the
-	// regular data stream: binary protocols (rsync, git, scp -s) are
+	// Stderr goes to the channel's extended data stream (like sshd), not
+	// the regular data stream: binary protocols (rsync, git, scp -s) are
 	// length-prefixed and break if stderr bytes are interleaved.
 	cmd.Stderr = sess.Stderr()
 
@@ -610,25 +608,25 @@ func (sess *session) runPlain() {
 		_, _ = io.Copy(stdin, sess)
 	})
 
-	// process -> client. A length-prefixed protocol (rsync) reads stderr as
-	// extended data, so stdout is the only thing on the data stream here.
+	// process -> client. A length-prefixed protocol (rsync) reads stderr
+	// as extended data, so stdout is the only thing on the data stream.
 	stdoutDone := make(chan struct{})
 	relay.Go(func() {
 		defer close(stdoutDone)
 		_, _ = io.Copy(sess, stdout)
 	})
 
-	// Drain stdout before reaping: cmd.Wait() closes the stdout pipe, which
-	// would truncate any output the relay has not yet copied.
+	// Drain stdout before reaping: cmd.Wait() closes the stdout pipe,
+	// which would truncate output the relay has not yet copied.
 	<-stdoutDone
 	waitErr := cmd.Wait()
 	if waitErr != nil {
 		sess.server.logger.Debug("sshd: command exited", "error", waitErr)
 	}
 
-	// cmd.Wait() reaped the process and closed the pipes, but the client-side
-	// relay is still blocked reading the session channel. Exit closes it so
-	// io.Copy above returns, then we join the relays.
+	// cmd.Wait() reaped the process and closed the pipes, but the
+	// client-side relay is still blocked reading the session channel.
+	// Exit closes it so io.Copy above returns, then we join the relays.
 	sess.ExitProcess(cmd.ProcessState)
 	relay.Wait()
 }
@@ -691,8 +689,8 @@ func exitCodeToU32(code int) uint32 {
 	return uint32(code)
 }
 
-// closePTYSlave drops the parent's reference to the pty slave so the master
-// reports EOF once the child exits. No-op on platforms without a slave end.
+// closePTYSlave drops the parent's reference to the pty slave so the
+// master reports EOF once the child exits. No-op without a slave end.
 func closePTYSlave(p pty.Pty) {
 	if u, ok := p.(pty.UnixPty); ok {
 		_ = u.Slave().Close()

@@ -13,8 +13,7 @@ import (
 	"github.com/nokku-sh/nokkud/internal/audit"
 )
 
-// directTCPIPData is the payload of a direct-tcpip channel open (RFC 4254
-// section 7.2): the client asks the server to connect to dest and relay.
+// directTCPIPData is the payload of a direct-tcpip channel open (RFC 4254 section 7.2).
 type directTCPIPData struct {
 	DestAddr   string
 	DestPort   uint32
@@ -22,8 +21,7 @@ type directTCPIPData struct {
 	OriginPort uint32
 }
 
-// connState tracks per-connection resources: the remote-forward listeners and
-// the number of open session channels.
+// connState tracks per-connection resources and the open session count.
 type connState struct {
 	conn *ssh.ServerConn
 
@@ -37,8 +35,8 @@ func newConnState(conn *ssh.ServerConn) *connState {
 	return &connState{conn: conn, forwards: make(map[string]net.Listener)}
 }
 
-// acquireSession counts a new session channel against the cap. A cap of zero
-// means unlimited. Returns false without consuming a slot when over the cap.
+// acquireSession counts a session channel against the cap. Zero means
+// unlimited. Returns false without consuming a slot when over the cap.
 func (st *connState) acquireSession(limit int) bool {
 	if limit <= 0 {
 		return true
@@ -68,8 +66,8 @@ func (st *connState) close() {
 	st.forwards = nil
 }
 
-// serveDirectTCPIP handles a direct-tcpip channel (-L/-D): connect to the
-// requested destination and relay bytes both ways.
+// serveDirectTCPIP handles a direct-tcpip channel (-L/-D) by relaying
+// bytes between the client and the requested destination.
 func (s *Server) serveDirectTCPIP(
 	_ *ssh.ServerConn,
 	st *connState,
@@ -111,8 +109,8 @@ func (s *Server) serveDirectTCPIP(
 	go proxyForward(s, c, dconn)
 }
 
-// handleGlobalRequests processes global requests for a connection:
-// tcpip-forward / cancel-tcpip-forward (remote -R forwarding) and keepalives.
+// handleGlobalRequests processes global requests, meaning remote -R
+// forwarding and keepalives.
 func (s *Server) handleGlobalRequests(_ *ssh.ServerConn, st *connState, reqs <-chan *ssh.Request) {
 	for req := range reqs {
 		switch req.Type {
@@ -137,9 +135,8 @@ type tcpipForwardSuccess struct {
 	BindPort uint32
 }
 
-// tcpipForward binds a listener on the server for the client's -R request and
-// starts accepting connections into forwarded-tcpip channels back to the
-// client.
+// tcpipForward binds a listener for the client's -R request and accepts
+// connections into forwarded-tcpip channels back to the client.
 func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
 	if !s.forwarding.Load() {
 		_ = req.Reply(false, []byte("port forwarding is disabled"))
@@ -150,12 +147,9 @@ func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
 		_ = req.Reply(false, nil)
 		return
 	}
-	// The address the server binds is policy-controlled (loopback unless
-	// gateway ports are enabled); the address reported back to the client in
-	// the forwarded-tcpip channel is the one the client requested verbatim.
-	// OpenSSH clients key their -R forward by the requested address, so
-	// rewriting it (e.g. localhost -> 127.0.0.1) would make them reject the
-	// channel.
+	// Bind policy-controlled: loopback unless gateway ports are enabled.
+	// The address reported back to the client is the one requested verbatim,
+	// since OpenSSH keys -R forwards by it.
 	bindAddr := remoteBindAddr(f.BindAddr, s.gatewayPorts.Load())
 	addr := net.JoinHostPort(bindAddr, strconv.FormatUint(uint64(f.BindPort), 10))
 
@@ -187,13 +181,10 @@ func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
 	_ = req.Reply(true, ssh.Marshal(tcpipForwardSuccess{BindPort: uint32(port)}))
 }
 
-// remoteBindAddr resolves the address a remote (-R) forward's listener binds,
-// mirroring OpenSSH's GatewayPorts: unless gateway forwarding is enabled, the
-// listener is forced onto the loopback address regardless of what the client
-// requested, so an authorized user cannot expose a service on the server's
-// external interfaces. With gateway forwarding enabled, an empty request binds
-// all interfaces like OpenSSH does. The address reported back to the client is
-// handled separately and is always the client's requested address.
+// remoteBindAddr mirrors OpenSSH's GatewayPorts. Unless enabled, force the
+// listener onto loopback so a user cannot expose a service on the server's
+// external interfaces. With it enabled, an empty request binds all interfaces.
+// The address reported to the client is always the requested one.
 func remoteBindAddr(requested string, gateway bool) string {
 	if !gateway {
 		return "127.0.0.1"
@@ -233,10 +224,9 @@ type forwardedTCPIPData struct {
 	OriginPort uint32
 }
 
-// acceptForwarded accepts connections on a remote-forward listener and sends
-// each to the client as a forwarded-tcpip channel. destAddr is the address the
-// client originally requested, reported back verbatim so the client can match
-// the channel to its registered -R forward.
+// acceptForwarded sends listener connections to the client as
+// forwarded-tcpip channels. destAddr is the requested address, reported
+// verbatim so the client can match its registered -R forward.
 func (s *Server) acceptForwarded(st *connState, ln net.Listener, destAddr string) {
 	for {
 		c, err := ln.Accept()
@@ -264,8 +254,8 @@ func (s *Server) acceptForwarded(st *connState, ln net.Listener, destAddr string
 	}
 }
 
-// proxyForward relays bytes between an SSH channel and a TCP connection in
-// both directions until either side closes, then closes both.
+// proxyForward relays bytes between an SSH channel and a TCP connection
+// until either side closes, then closes both.
 func proxyForward(s *Server, ch ssh.Channel, c net.Conn) {
 	var wg sync.WaitGroup
 	done := make(chan struct{})
