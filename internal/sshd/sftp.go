@@ -87,10 +87,15 @@ func (sess *session) runSFTP() uint32 {
 	})
 
 	// sftp-server -> client
+	stdoutDone := make(chan struct{})
 	wg.Go(func() {
+		defer close(stdoutDone)
 		_, _ = io.Copy(sess, stdout)
 	})
 
+	// Drain stdout before reaping: cmd.Wait() closes the stdout pipe, which
+	// would truncate any output the relay has not yet copied.
+	<-stdoutDone
 	_ = cmd.Wait()
 	code := exitCodeOf(cmd.ProcessState)
 

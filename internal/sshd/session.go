@@ -612,10 +612,15 @@ func (sess *session) runPlain() {
 
 	// process -> client. A length-prefixed protocol (rsync) reads stderr as
 	// extended data, so stdout is the only thing on the data stream here.
+	stdoutDone := make(chan struct{})
 	relay.Go(func() {
+		defer close(stdoutDone)
 		_, _ = io.Copy(sess, stdout)
 	})
 
+	// Drain stdout before reaping: cmd.Wait() closes the stdout pipe, which
+	// would truncate any output the relay has not yet copied.
+	<-stdoutDone
 	waitErr := cmd.Wait()
 	if waitErr != nil {
 		sess.server.logger.Debug("sshd: command exited", "error", waitErr)
