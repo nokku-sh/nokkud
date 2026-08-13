@@ -92,45 +92,6 @@ func TestWriteFile(t *testing.T) {
 	}
 }
 
-func TestFileExists(t *testing.T) {
-	t.Parallel()
-	tmpDir := t.TempDir()
-
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{
-			name: "existing file returns true",
-			path: func() string {
-				f, _ := os.CreateTemp(tmpDir, "exist")
-				_ = f.Close()
-				return f.Name()
-			}(),
-			want: true,
-		},
-		{
-			name: "non-existing file returns false",
-			path: filepath.Join(tmpDir, "nonexistent.txt"),
-			want: false,
-		},
-		{
-			name: "directory returns false",
-			path: tmpDir,
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := FileExists(tt.path); got != tt.want {
-				t.Errorf("FileExists(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestWriteIfChangedReportsWrites(t *testing.T) {
 	t.Parallel()
 	filename := filepath.Join(t.TempDir(), "wic.txt")

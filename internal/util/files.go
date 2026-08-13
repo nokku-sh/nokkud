@@ -78,9 +78,3 @@ func WriteIfChanged(filename string, data []byte, perm os.FileMode) error {
 	}
 	return WriteFile(filename, data, perm)
 }
-
-// FileExists checks if a file exists and is a regular file.
-func FileExists(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && fi.Mode().IsRegular()
-}
