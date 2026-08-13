@@ -1,6 +1,5 @@
-// Command nokkud is the Nokku daemon: it enrolls this host with the
-// backend and serves SSH through an embedded certificate-authenticated
-// server.
+// Command nokkud is the Nokku daemon. It enrolls this host with the backend
+// and serves SSH through an embedded certificate-authenticated server.
 package main
 
 import (
@@ -67,7 +66,8 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				return err
 			}
 
-			// Embedded SSH server, on by default (set --ssh-addr to empty to disable).
+			// Embedded SSH server, on by default. Set --ssh-addr to empty to
+			// disable.
 			var sshSrv *sshd.Server
 			if cfg.SSHAddr != "" {
 				srv, err := startSSHServer(ctx, p, cfg.SSHAddr, cache)
@@ -122,7 +122,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					// Root is required to drop sessions to the target user's
 					// privileges. --allow-nonroot is the test-harness escape
-					// hatch: without privilege dropping every session runs as
+					// hatch. Without privilege dropping every session runs as
 					// the daemon's own OS user, so the server is restricted
 					// to that user's account only.
 					nonRoot := cmd.Bool("allow-nonroot")

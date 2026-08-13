@@ -13,7 +13,8 @@ import (
 	"github.com/nokku-sh/nokkud/internal/audit"
 )
 
-// directTCPIPData is the payload of a direct-tcpip channel open (RFC 4254 section 7.2).
+// directTCPIPData is the payload of a direct-tcpip channel open
+// (RFC 4254 section 7.2).
 type directTCPIPData struct {
 	DestAddr   string
 	DestPort   uint32
@@ -147,7 +148,7 @@ func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
 		_ = req.Reply(false, nil)
 		return
 	}
-	// Bind policy-controlled: loopback unless gateway ports are enabled.
+	// Bind policy-controlled. Loopback unless gateway ports are enabled.
 	// The address reported back to the client is the one requested verbatim,
 	// since OpenSSH keys -R forwards by it.
 	bindAddr := remoteBindAddr(f.BindAddr, s.gatewayPorts.Load())
@@ -183,8 +184,8 @@ func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
 
 // remoteBindAddr mirrors OpenSSH's GatewayPorts. Unless enabled, force the
 // listener onto loopback so a user cannot expose a service on the server's
-// external interfaces. With it enabled, an empty request binds all interfaces.
-// The address reported to the client is always the requested one.
+// external interfaces. With it enabled, an empty request binds all
+// interfaces. The address reported to the client is always the requested one.
 func remoteBindAddr(requested string, gateway bool) string {
 	if !gateway {
 		return "127.0.0.1"

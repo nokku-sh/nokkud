@@ -19,7 +19,7 @@ import (
 )
 
 // TestSFTPHelperProcess re-enters the test binary as the sftp-server
-// subprocess. It is spawned by the server under the `--` convention; see
+// subprocess. It is spawned by the server under the `--` convention. See
 // sftpServerCommand.
 func TestSFTPHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_SFTP_HELPER_PROCESS") != "1" {
@@ -80,7 +80,7 @@ func homeScratch(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("current user: %v", err)
 	}
-	//nolint:usetesting // must live under the real home; t.TempDir() is /tmp
+	//nolint:usetesting // must live under the real home. t.TempDir() is /tmp
 	dir, err := os.MkdirTemp(cur.HomeDir, ".nokkud-sftp-test-*")
 	if err != nil {
 		t.Fatalf("scratch dir under %s: %v", cur.HomeDir, err)

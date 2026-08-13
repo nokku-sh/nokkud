@@ -26,9 +26,9 @@ type KeyPair struct {
 	PublicKeyData []byte
 }
 
-// hostKeyPair returns the active host key: the TPM-backed key when it
-// exists, otherwise the on-disk software key. ok is false when no host key
-// exists yet (e.g. the SSH server has never started).
+// hostKeyPair returns the active host key. The TPM-backed key when it exists,
+// otherwise the on-disk software key. ok is false when no host key exists yet
+// (e.g. the SSH server has never started).
 func (m *Manager) hostKeyPair() (KeyPair, bool) {
 	for _, c := range []struct{ pub, cert string }{
 		{m.paths.TPMHostKeyPub(), m.paths.TPMHostKeyCert()},
@@ -75,9 +75,9 @@ func matchesKey(cert *ssh.Certificate, kp KeyPair) bool {
 }
 
 // RenewHostCerts signs and stores a fresh certificate for the host key via
-// sign. When force is set, the key is re-signed regardless of validity —
-// used after a CA rollover to refetch the CA and re-sign the host identity
-// under the new authority. Returns the count; failures are logged and the
+// sign. When force is set, the key is re-signed regardless of validity. That
+// is used after a CA rollover to refetch the CA and re-sign the host identity
+// under the new authority. Returns the count. Failures are logged and the
 // first one returned.
 func (m *Manager) RenewHostCerts(
 	ctx context.Context,
@@ -122,8 +122,8 @@ func (m *Manager) RenewHostCerts(
 	return renewed, firstErr
 }
 
-// NextRenewal returns the renewal deadline for the host certificate (now,
-// if it is already out of date or none exists yet).
+// NextRenewal returns the renewal deadline for the host certificate. Now, if
+// it is already out of date or none exists yet.
 func (m *Manager) NextRenewal(targetID string) time.Time {
 	now := time.Now()
 
@@ -172,7 +172,7 @@ func (m *Manager) saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path 
 		return errors.New("invalid signature: certificate not signed by provided CA")
 	}
 
-	// A new signing CA: park the current one before switching so the SSH
+	// A new signing CA. Park the current one before switching so the SSH
 	// server can keep trusting certificates it signed during the rollover
 	// grace window (see sshd.loadTrustedCAs). The retired file's mtime is
 	// stamped with the retirement time so the grace window starts at the

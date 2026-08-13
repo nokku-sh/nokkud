@@ -31,7 +31,7 @@ var openHostKeyTPM = tpm.OpenKey
 // loadHostKeys returns the daemon's host identity signers and any resources
 // to release when they are swapped out or the server shuts down. On machines
 // with a TPM 2.0 the host key is TPM-resident (the private key never touches
-// disk); everywhere else an ed25519 key is generated in the state directory.
+// disk). Everywhere else an ed25519 key is generated in the state directory.
 func loadHostKeys(p paths.Paths) ([]ssh.Signer, []io.Closer, error) {
 	s, closer, tpmErr := loadTPMHostKey(p)
 	if tpmErr == nil {
@@ -90,13 +90,13 @@ func loadTPMHostKey(p paths.Paths) (ssh.Signer, io.Closer, error) {
 			_ = key.Close()
 			return nil, nil, fmt.Errorf("sshd: write tpm host public key: %w", err)
 		}
-		// The identity changed (first boot, TPM cleared or replaced): any
+		// The identity changed (first boot, TPM cleared or replaced). Any
 		// certificate for the previous key is stale and would be rejected
 		// by NewCertSigner anyway. Drop it so the sync renews it.
 		_ = os.Remove(p.TPMHostKeyCert())
 	}
 
-	// A software host key from before the TPM migration must not linger: it
+	// A software host key from before the TPM migration must not linger. It
 	// would be renewed and presented as a second identity.
 	_ = os.Remove(p.SoftwareHostKey())
 	_ = os.Remove(p.SoftwareHostKeyPub())

@@ -125,7 +125,7 @@ func TestKeySSHSigner(t *testing.T) {
 		t.Fatalf("ssh signer: %v", err)
 	}
 
-	// Sign a handshake blob; the signature must verify against the key.
+	// Sign a handshake blob. The signature must verify against the key.
 	blob := []byte("SSH handshake transcript")
 	sig, err := sshSigner.Sign(rand.Reader, blob)
 	if err != nil {

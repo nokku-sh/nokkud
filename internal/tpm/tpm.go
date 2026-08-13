@@ -22,7 +22,7 @@ import (
 //
 // Mixed into the primary key derivation so the daemon and the CLI on the
 // same machine do not derive the same key pair from the same template. This
-// value MUST stay different from nk's signerSalt: "nokku-daemon" here,
+// value MUST stay different from nk's signerSalt. "nokku-daemon" here,
 // "nokku-cli" there. Do not align them.
 var signerSalt = []byte("nokku-daemon")
 
@@ -113,8 +113,8 @@ func openTPM(p paths.Paths, st *state) (Signer, error) {
 	return s, nil
 }
 
-// createTPMSigner creates the signing primary key on r and returns
-// a signer for it. The returned signer does not own r.
+// createTPMSigner creates the signing primary key on r and returns a signer
+// for it. The returned signer does not own r.
 func createTPMSigner(r transport.TPM) (*tpmSigner, error) {
 	key, err := createPrimary(r, signerSalt)
 	if err != nil {

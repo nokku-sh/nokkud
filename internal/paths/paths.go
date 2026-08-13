@@ -19,8 +19,8 @@ const (
 	recordsDir          = "recordings"
 	auditDir            = "audit"
 
-	// The daemon embeds its own SSH server and owns exactly one host key:
-	// a TPM-backed ECDSA key when a TPM 2.0 is present, otherwise the
+	// The daemon embeds its own SSH server and owns exactly one host key.
+	// A TPM-backed ECDSA key when a TPM 2.0 is present, otherwise the
 	// on-disk ed25519 key below. The system sshd's keys are never read.
 	softwareHostKeyName = "ssh_host_ed25519_key"
 	tpmHostKeyName      = "ssh_host_ecdsa_key"
@@ -86,7 +86,7 @@ func (p Paths) SoftwareHostKeyCert() string {
 }
 
 // TPMHostKeyPub returns the TPM-backed host key's public half. Only this
-// file exists on disk; the private half never leaves the TPM.
+// file exists on disk. The private half never leaves the TPM.
 func (p Paths) TPMHostKeyPub() string {
 	return filepath.Join(p.ConfigDir, tpmHostKeyName+".pub")
 }
@@ -105,7 +105,7 @@ func (p Paths) Verify() error {
 		return fmt.Errorf("cannot create directory %s: %w", p.RecordsDir, err)
 	}
 	// Audit dir creation must not fail the daemon when the config dir is not
-	// writable (e.g. a read-only first boot); the audit sink is optional.
+	// writable (e.g. a read-only first boot). The audit sink is optional.
 	if err := os.MkdirAll(p.AuditDir, 0o700); err != nil {
 		slog.Debug("cannot create audit directory", "error", err)
 	}

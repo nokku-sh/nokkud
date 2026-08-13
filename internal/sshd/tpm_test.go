@@ -110,7 +110,7 @@ func TestTPMHostKeyRemovesSoftwareKey(t *testing.T) {
 		defer func() { _ = c.Close() }()
 	}
 
-	// The software key files must be gone; the TPM key is the only identity.
+	// The software key files must be gone. The TPM key is the only identity.
 	if _, err = os.Stat(privPath); !os.IsNotExist(err) {
 		t.Fatal("software host key must be removed after TPM migration")
 	}

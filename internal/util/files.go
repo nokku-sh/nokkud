@@ -55,23 +55,23 @@ func WriteFile(filename string, data []byte, perm os.FileMode) error {
 	return err
 }
 
-// WriteIfChanged atomically writes only when data differs from disk;
+// WriteIfChanged atomically writes only when data differs from disk. It
 // reports whether it wrote.
 func WriteIfChanged(filename string, data []byte, perm os.FileMode) error {
 	filename = filepath.Clean(filename)
 	fi, err := os.Stat(filename)
 
 	if err == nil {
-		// Fast path: if sizes differ, the content definitely differs
+		// Fast path. If sizes differ, the content definitely differs.
 		if fi.Size() != int64(len(data)) {
 			return WriteFile(filename, data, perm)
 		}
 
-		// Slow path: sizes match, so we must compare the actual bytes
+		// Slow path. Sizes match, so we must compare the actual bytes.
 		var existingData []byte
 		existingData, err = os.ReadFile(filename)
 		if err == nil && bytes.Equal(existingData, data) {
-			return nil // Data is identical, do nothing
+			return nil // Data is identical, do nothing.
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err

@@ -144,7 +144,7 @@ func TestCacheClear(t *testing.T) {
 	if c.HasUUID("alice", "uuid-1") {
 		t.Fatal("Clear left auth data behind")
 	}
-	// Clearing must not leave a nil map behind: subsequent writes must work.
+	// Clearing must not leave a nil map behind. Subsequent writes must work.
 	c.AddUUID("bob", "uuid-2")
 	if !c.HasUUID("bob", "uuid-2") {
 		t.Fatal("AddUUID after Clear failed")

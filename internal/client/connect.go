@@ -14,7 +14,7 @@ import (
 const heartbeatInterval = 5 * time.Minute
 
 // runControlStream keeps the control stream open until ctx is cancelled.
-// The stream is the daemon's only periodic contact: an immediate heartbeat
+// The stream is the daemon's only periodic contact. An immediate heartbeat
 // reports our state version, later heartbeats keep it alive, and the server
 // pushes state updates. A fatal error (daemon rejection) is returned so Run
 // can surface it instead of reconnecting.

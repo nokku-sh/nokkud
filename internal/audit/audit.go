@@ -136,7 +136,7 @@ func (s *Sink) rotate() error {
 		_ = s.file.Close()
 	}
 
-	// Zero-padded UTC timestamp with nanosecond precision
+	// Zero-padded UTC timestamp with nanosecond precision.
 	name := filepath.Join(
 		s.dir,
 		time.Now().UTC().Format("audit-20060102T150405.000000000Z.jsonl"),

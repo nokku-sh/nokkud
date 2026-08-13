@@ -18,8 +18,8 @@ func Metadata() map[string]string {
 	}
 }
 
-// noisePrefixes are virtual interfaces that never make useful SSH endpoints:
-// container, VM, bridge and Kubernetes CNI plumbing.
+// noisePrefixes are virtual interfaces that never make useful SSH endpoints.
+// Container, VM, bridge and Kubernetes CNI plumbing.
 var noisePrefixes = []string{
 	"docker", "veth", "br-", "virbr", "vmnet",
 	"vboxnet", "vnic", "vethernet",
@@ -32,7 +32,7 @@ var noisePrefixes = []string{
 }
 
 // tunnelPrefixes are mesh/point-to-point VPN interfaces. They are reported
-// deliberately: for a decentralized access daemon a WireGuard or Tailscale
+// deliberately. For a decentralized access daemon a WireGuard or Tailscale
 // address is often the most reliable way to reach the server.
 var tunnelPrefixes = []string{"wg", "tun", "tap", "utun", "ppp"}
 
@@ -50,8 +50,8 @@ func PrivateIPs() []string {
 			continue
 		}
 
-		// Point-to-point links are usually VPN tunnels; only the known
-		// mesh interfaces make useful endpoints, anything else
+		// Point-to-point links are usually VPN tunnels. Only the known
+		// mesh interfaces make useful endpoints. Anything else
 		// point-to-point is skipped.
 		if i.Flags&net.FlagPointToPoint != 0 && !hasAnyPrefix(i.Name, tunnelPrefixes) {
 			continue

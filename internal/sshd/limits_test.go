@@ -55,7 +55,7 @@ func TestServerClientAlive(t *testing.T) {
 	)
 	defer closeFn()
 
-	// A "responsive" client: send a global request (e.g. keepalive) from time
+	// A "responsive" client. Send a global request (e.g. keepalive) from time
 	// to time so the server sees inbound traffic.
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
 	if err != nil {
@@ -63,7 +63,7 @@ func TestServerClientAlive(t *testing.T) {
 	}
 	defer client.Close()
 
-	// Keep sending requests; connection must stay alive well past the probe
+	// Keep sending requests. Connection must stay alive well past the probe
 	// window.
 	stop := make(chan struct{})
 	go func() {
@@ -102,7 +102,7 @@ func TestServerClientAliveSilent(t *testing.T) {
 	)
 	defer closeFn()
 
-	// Complete the handshake but never service global requests, so the
+	// Complete the handshake but never service global requests. The
 	// server's keepalives go unanswered and the connection stays silent.
 	nc, err := net.Dial("tcp", addr)
 	if err != nil {

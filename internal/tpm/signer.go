@@ -1,4 +1,4 @@
-// Package tpm provides the machine's signing identity: ECDSA P-256
+// Package tpm provides the machine's signing identity. ECDSA P-256
 // signatures over request challenges, TPM-backed when available, else a
 // software key wrapped to the machine identity.
 package tpm
@@ -34,7 +34,7 @@ type Signer interface {
 }
 
 // state is the on-disk representation of a signer. Only public material is
-// stored for TPM keys; software keys additionally carry their wrapped
+// stored for TPM keys. Software keys additionally carry their wrapped
 // private key.
 type state struct {
 	Method string `json:"method"`

@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
-// TestServerAgentForwarding verifies ssh -A: a session sees SSH_AUTH_SOCK and
+// TestServerAgentForwarding verifies ssh -A. A session sees SSH_AUTH_SOCK and
 // can reach the client's agent through it.
 func TestServerAgentForwarding(t *testing.T) {
 	ca := newTestCA(t)
@@ -61,7 +61,7 @@ func TestServerAgentForwarding(t *testing.T) {
 	t.Logf("SSH_AUTH_SOCK=%s", out)
 }
 
-// TestServerAgentForwardingKeyList exercises the full agent protocol: the
+// TestServerAgentForwardingKeyList exercises the full agent protocol. The
 // session opens the socket and lists keys from the client's agent.
 func TestServerAgentForwardingKeyList(t *testing.T) {
 	ca := newTestCA(t)
@@ -128,7 +128,7 @@ func sshdTestBinary(t *testing.T) string {
 	return bin
 }
 
-// TestAgentHelperProcess re-enters the test binary as an agent client: it
+// TestAgentHelperProcess re-enters the test binary as an agent client. It
 // connects to $SSH_AUTH_SOCK, lists the agent keys, and prints their count.
 func TestAgentHelperProcess(_ *testing.T) {
 	if os.Getenv("GO_WANT_AGENT_HELPER_PROCESS") != "1" {
@@ -178,8 +178,8 @@ func TestServerAgentForwardingDisabled(t *testing.T) {
 	}
 }
 
-// TestServerAgentForwardingInterop drives ssh -A with the real OpenSSH client:
-// SSH_AUTH_SOCK is exposed and a real ssh-add sees the agent.
+// TestServerAgentForwardingInterop drives ssh -A with the real OpenSSH
+// client. SSH_AUTH_SOCK is exposed and a real ssh-add sees the agent.
 func TestServerAgentForwardingInterop(t *testing.T) {
 	if !isTestBinary() {
 		t.Skip("requires the test binary on PATH")

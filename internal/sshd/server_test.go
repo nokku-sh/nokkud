@@ -345,7 +345,7 @@ func TestHostKeysStable(t *testing.T) {
 }
 
 // TestNewWithoutTrustedCA verifies the server starts with no trusted CA on
-// first boot (the CA file lands after the first certificate sync); Reload
+// first boot (the CA file lands after the first certificate sync). Reload
 // picks it up. Without CAs, no login can succeed until then.
 func TestNewWithoutTrustedCA(t *testing.T) {
 	p := paths.Paths{ConfigDir: t.TempDir()}

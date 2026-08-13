@@ -90,7 +90,7 @@ func (a *authInterceptor) setHeader(ctx context.Context, header http.Header, pro
 //
 //	<daemonID>:<unixSeconds>:<nonce>:<procedure>:<base64url(signature)>
 //
-// The signature covers everything up to and including the procedure, so a
+// The signature covers everything up to and including the procedure. A
 // captured challenge cannot be replayed against a different RPC, and the
 // backend rejects challenges older than its freshness window.
 func (a *authInterceptor) challenge(

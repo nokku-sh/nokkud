@@ -42,7 +42,7 @@ type Header struct {
 	Env       map[string]string `json:"env,omitempty"`
 }
 
-// Options configures a recording; SessionID ties it to audit events.
+// Options configures a recording. SessionID ties it to audit events.
 type Options struct {
 	Width     int
 	Height    int
@@ -247,7 +247,8 @@ func shortSessionID(id string) string {
 	return id[:8]
 }
 
-// EnforceRetention removes old recordings based on time and total space constraints.
+// EnforceRetention removes old recordings based on time and total space
+// constraints.
 func EnforceRetention(p paths.Paths) error {
 	entries, err := os.ReadDir(p.RecordsDir)
 	if err != nil {
@@ -265,7 +266,7 @@ func EnforceRetention(p paths.Paths) error {
 
 	var files []recordFile
 	for _, e := range entries {
-		// check for .cast and .cast.gz files
+		// Check for .cast and .cast.gz files.
 		if e.IsDir() ||
 			(!strings.HasSuffix(e.Name(), ".cast") && !strings.HasSuffix(e.Name(), ".cast.gz")) {
 			continue

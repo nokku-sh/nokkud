@@ -51,7 +51,7 @@ func (c *aliveConn) refreshLocked() {
 }
 
 // clientAlive sends keepalive global requests every interval. A healthy
-// client answers, refreshing the read deadline; a client that stops
+// client answers and refreshes the read deadline. A client that stops
 // responding is dropped once the deadline passes (OpenSSH's
 // ClientAliveInterval + ClientAliveCountMax=3).
 func (s *Server) clientAlive(conn *ssh.ServerConn, interval time.Duration, done <-chan struct{}) {

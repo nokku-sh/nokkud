@@ -35,7 +35,7 @@ func FuzzToSnakeCase(f *testing.F) {
 		if !utf8.ValidString(res) {
 			t.Fatalf("ToSnakeCase(%q) = %q is not valid UTF-8", s, res)
 		}
-		// The result becomes part of a filename; 255 is NAME_MAX on Linux.
+		// The result becomes part of a filename. 255 is NAME_MAX on Linux.
 		if len(res) > 255 {
 			t.Fatalf("ToSnakeCase(%q) produced a %d-byte name, exceeds NAME_MAX", s, len(res))
 		}

@@ -21,16 +21,16 @@ var errNoCertificates = errors.New("sshd: only certificate authentication is sup
 // (the backend's default user TTLs are at most 7 days).
 const retiredCAGrace = 8 * 24 * time.Hour
 
-// loadTrustedCAs reads every CA public key from the daemon's cached CA files:
-// the active CA plus, within retiredCAGrace of the rollover, the retired one.
+// loadTrustedCAs reads every CA public key from the daemon's cached CA files.
+// The active CA plus, within retiredCAGrace of the rollover, the retired one.
 func loadTrustedCAs(p paths.Paths) ([]ssh.PublicKey, error) {
 	keys, err := parseCAFile(p.UserCAFile())
 	if err != nil {
 		return nil, err
 	}
 
-	// The retired CA is best-effort: a corrupt or missing retired file must
-	// never take down authentication, which the active CA still provides.
+	// Best-effort. A corrupt or missing retired file must never take down
+	// authentication, which the active CA still provides.
 	if st, statErr := os.Stat(p.RetiredCAFile()); statErr == nil {
 		if time.Since(st.ModTime()) < retiredCAGrace {
 			if retired, parseErr := parseCAFile(p.RetiredCAFile()); parseErr == nil {
@@ -77,7 +77,7 @@ func (s *Server) trustedCA(key ssh.PublicKey) bool {
 }
 
 // publicKeyCallback authenticates a user certificate. The certificate
-// principals are subject UUIDs; a principal is accepted when it is in the
+// principals are subject UUIDs. A principal is accepted when it is in the
 // cached allowed set for the requested local username.
 func (s *Server) publicKeyCallback(
 	conn ssh.ConnMetadata,
@@ -111,10 +111,10 @@ func (s *Server) publicKeyCallback(
 		)
 	}
 
-	// Reuses x/crypto/ssh's validation: critical options, validity window
-	// and the CA signature. The source-address critical option is enforced
-	// by the SSH stack itself. The checker is built per-auth so CA reloads
-	// apply to new connections immediately.
+	// Reuses x/crypto/ssh's validation for critical options, the validity
+	// window, and the CA signature. The source-address critical option is
+	// enforced by the SSH stack itself. The checker is built per-auth so CA
+	// reloads apply to new connections immediately.
 	checker := ssh.CertChecker{
 		IsUserAuthority:          s.trustedCA,
 		SupportedCriticalOptions: []string{"force-command"},
@@ -123,7 +123,7 @@ func (s *Server) publicKeyCallback(
 		return nil, s.deny(conn, err)
 	}
 
-	// Post-auth policy hook: device trust, MFA, workspace membership, or any
+	// Post-auth policy hook. Device trust, MFA, workspace membership, or any
 	// extension enforcement layered on top of the base checks.
 	if s.authorize != nil {
 		if err := s.authorize(conn, cert, matched); err != nil {
@@ -138,7 +138,7 @@ func (s *Server) publicKeyCallback(
 	}
 
 	// Carry the certificate's force-command critical option into the session
-	// so the exec path can enforce it (it is now listed as supported above).
+	// so the exec path can enforce it (listed as supported above).
 	if fc := cert.CriticalOptions["force-command"]; fc != "" {
 		perms.Extensions["force-command"] = fc
 	}

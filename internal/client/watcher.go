@@ -14,7 +14,8 @@ func (c *Client) startWatchers(ctx context.Context) {
 	go c.watchCertificates(ctx)
 }
 
-// watchCertificates renews host certificates from their local expiry deadlines.
+// watchCertificates renews host certificates from their local expiry
+// deadlines.
 func (c *Client) watchCertificates(ctx context.Context) {
 	delay := max(time.Until(c.ssh.NextRenewal(c.config.TargetID)), defaultDelay)
 	timer := time.NewTimer(delay)

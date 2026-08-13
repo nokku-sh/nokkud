@@ -18,7 +18,7 @@ import (
 )
 
 // TestBinaryInterop drives the real nokkud binary's embedded SSH server end
-// to end: build it, seed a CA + principal cache, launch `nokkud sshd-server`
+// to end. Build it, seed a CA + principal cache, launch `nokkud sshd-server`
 // headless, and run real clients (ssh, scp -O/-s, sftp, rsync, git, -L, -R,
 // -A) against it.
 func TestBinaryInterop(t *testing.T) {
@@ -28,7 +28,7 @@ func TestBinaryInterop(t *testing.T) {
 	configDir := t.TempDir()
 	seedTrustedCA(t, configDir, ca.pub)
 
-	// Seed the principal cache: the current user may log in as testPrincipal.
+	// Seed the principal cache. The current user may log in as testPrincipal.
 	// Written directly in the daemon's on-disk format (cache.json) rather
 	// than via Cache.Save, keeping this harness independent of state wiring.
 	if err := writeCacheFile(configDir, currentUser(t), []string{testPrincipal}); err != nil {

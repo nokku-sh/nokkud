@@ -93,14 +93,14 @@ func (sess *session) runSFTP() uint32 {
 		_, _ = io.Copy(sess, stdout)
 	})
 
-	// Drain stdout before reaping: cmd.Wait() closes the stdout pipe, which
+	// Drain stdout before reaping. cmd.Wait() closes the stdout pipe, which
 	// would truncate any output the relay has not yet copied.
 	<-stdoutDone
 	_ = cmd.Wait()
 	code := exitCodeOf(cmd.ProcessState)
 
-	// Exit closes the session channel, which unblocks both relays above;
-	// join them so no goroutine outlives the session.
+	// Exit closes the session channel, which unblocks both relays above.
+	// Join them so no goroutine outlives the session.
 	sess.ExitProcess(cmd.ProcessState)
 	wg.Wait()
 	return code
@@ -114,7 +114,7 @@ func sftpServerCommand(ctx context.Context, home string) *exec.Cmd {
 	args := []string{"sftp-server", home}
 	if strings.HasSuffix(filepath.Base(bin), ".test") {
 		args = []string{"-test.run=TestSFTPHelperProcess", "--", "sftp-server", home}
-		// #nosec G702 - bin is the running process's own argv[0]; home is the
+		// #nosec G702 - bin is the running process's own argv[0]. home is the
 		// authenticated user's home directory, not attacker input.
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Env = append(os.Environ(), "GO_WANT_SFTP_HELPER_PROCESS=1")

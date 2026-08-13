@@ -32,7 +32,7 @@ type session struct {
 	sysUser *user.User
 	shell   string
 
-	// ctx is canceled when the session ends; exec'd commands use it so a
+	// ctx is canceled when the session ends. Exec'd commands use it so a
 	// disconnect reaps them even if the request stream misbehaves.
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -58,8 +58,8 @@ type session struct {
 	proc     *os.Process
 	wantKill bool
 
-	// pendingSignals buffers signals that arrived before the command started;
-	// they are flushed to the process once it exists. Guarded by procMu.
+	// pendingSignals buffers signals that arrived before the command started.
+	// They are flushed to the process once it exists. Guarded by procMu.
 	pendingSignals []os.Signal
 }
 
@@ -109,7 +109,7 @@ func (s *Server) serveSession(conn *ssh.ServerConn, ch ssh.Channel, reqs <-chan 
 
 // handleRequests processes the session request stream. shell/exec/subsystem
 // start the work in a handler goroutine while this loop keeps servicing
-// window-change and signal requests; when the stream ends (client
+// window-change and signal requests. When the stream ends (client
 // disconnect) the running process is killed and the handler is joined.
 func (sess *session) handleRequests() {
 	handlerDone := make(chan struct{})
@@ -192,7 +192,7 @@ func (sess *session) handleCommand(req *ssh.Request) bool {
 	}
 
 	// A certificate force-command critical option replaces whatever the
-	// client asked for (matching sshd): the requested command is ignored.
+	// client asked for (matching sshd). The requested command is ignored.
 	if fc := sess.forceCommand(); fc != "" {
 		sess.rawCmd = fc
 	} else if req.Type == "exec" {
@@ -235,7 +235,7 @@ func (sess *session) acceptEnv(name string) bool {
 }
 
 // allowedEnv reports whether a client env request variable may reach the
-// session. Only locale/terminal hints are trusted; anything that could
+// session. Only locale/terminal hints are trusted. Anything that could
 // influence program loading or the shell (PATH, LD_*, BASH_ENV, ENV) or
 // override daemon-set session metadata (SSH_*) is refused.
 func allowedEnv(name string) bool {
@@ -416,8 +416,8 @@ func (sess *session) killProc() {
 	}
 }
 
-// Exit reports the exit status and closes the session channel. It is safe to
-// call multiple times; only the first call has an effect.
+// Exit reports the exit status and closes the session channel. Safe to call
+// multiple times. Only the first call has an effect.
 func (sess *session) Exit(code int) {
 	sess.finish(code, func() {
 		status := struct{ Status uint32 }{exitCodeToU32(code)}
@@ -425,9 +425,9 @@ func (sess *session) Exit(code int) {
 	})
 }
 
-// ExitProcess reports a finished process the way OpenSSH does: exit-status
-// for a normal exit, exit-signal when the command died by signal, so
-// clients surface 128+signal (137 for SIGKILL, 143 for SIGTERM).
+// ExitProcess reports a finished process the way OpenSSH does. exit-status
+// for a normal exit, exit-signal when the command died by signal, so clients
+// surface 128+signal (137 for SIGKILL, 143 for SIGTERM).
 func (sess *session) ExitProcess(st *os.ProcessState) {
 	name, code, signaled := processSignal(st)
 	if !signaled {
@@ -442,8 +442,8 @@ func (sess *session) ExitProcess(st *os.ProcessState) {
 	sess.exitSignal(name, code)
 }
 
-// exitSignal reports that the command was killed by a signal: an exit-signal
-// channel request (RFC 4254 section 6.10) instead of exit-status.
+// exitSignal reports that the command was killed by a signal. It sends an
+// exit-signal channel request (RFC 4254 section 6.10) instead of exit-status.
 func (sess *session) exitSignal(name string, code int) {
 	sess.finish(code, func() {
 		sig := struct {
@@ -456,9 +456,9 @@ func (sess *session) exitSignal(name string, code int) {
 	})
 }
 
-// finish is the single teardown path for a session: it emits the
-// session_end audit event, delivers the terminal channel request via send
-// and closes the channel.
+// finish is the single teardown path for a session. It emits the session_end
+// audit event, delivers the terminal channel request via send, and closes the
+// channel.
 func (sess *session) finish(code int, send func()) {
 	sess.exitMu.Lock()
 	defer sess.exitMu.Unlock()
@@ -515,7 +515,7 @@ func (sess *session) runPTY() {
 		return
 	}
 	sess.setProc(cmd.Process)
-	// The child has its own dup'd slave fds; dropping the parent's copy
+	// The child has its own dup'd slave fds. Dropping the parent's copy
 	// makes the master report EOF as soon as the child exits, so the
 	// output relay below is not left blocked forever.
 	closePTYSlave(ptmx)
@@ -557,7 +557,7 @@ func (sess *session) runPTY() {
 func (sess *session) runPlain() {
 	var cmd *exec.Cmd
 	// #nosec G204 - running the authenticated user's command is the SSH
-	// server's purpose; the process is spawned with that user's privileges.
+	// server's purpose. The process is spawned with that user's privileges.
 	if sess.rawCmd == "" {
 		cmd = exec.CommandContext(sess.ctx, sess.shell)
 	} else {
@@ -573,7 +573,7 @@ func (sess *session) runPlain() {
 	cmd.SysProcAttr = attr
 
 	// Stderr goes to the channel's extended data stream (like sshd), not
-	// the regular data stream: binary protocols (rsync, git, scp -s) are
+	// the regular data stream. Binary protocols (rsync, git, scp -s) are
 	// length-prefixed and break if stderr bytes are interleaved.
 	cmd.Stderr = sess.Stderr()
 
@@ -616,7 +616,7 @@ func (sess *session) runPlain() {
 		_, _ = io.Copy(sess, stdout)
 	})
 
-	// Drain stdout before reaping: cmd.Wait() closes the stdout pipe,
+	// Drain stdout before reaping. cmd.Wait() closes the stdout pipe,
 	// which would truncate output the relay has not yet copied.
 	<-stdoutDone
 	waitErr := cmd.Wait()
@@ -626,7 +626,7 @@ func (sess *session) runPlain() {
 
 	// cmd.Wait() reaped the process and closed the pipes, but the
 	// client-side relay is still blocked reading the session channel.
-	// Exit closes it so io.Copy above returns, then we join the relays.
+	// Exit closes it so the io.Copy above returns, then we join the relays.
 	sess.ExitProcess(cmd.ProcessState)
 	relay.Wait()
 }
@@ -681,7 +681,7 @@ func exitCodeOf(st *os.ProcessState) uint32 {
 }
 
 // exitCodeToU32 maps a process exit code to the SSH exit-status value.
-// POSIX exit codes are 0-255; anything out of range maps to 1.
+// POSIX exit codes are 0-255. Anything out of range maps to 1.
 func exitCodeToU32(code int) uint32 {
 	if code < 0 || code > 255 {
 		return 1

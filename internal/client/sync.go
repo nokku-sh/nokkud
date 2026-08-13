@@ -71,7 +71,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		c.cache.SetUUIDs(p.GetUsername(), p.GetIds())
 	}
 
-	// CA rollover: re-sign the host certificate under the new authority and
+	// CA rollover. Re-sign the host certificate under the new authority and
 	// reload the server before acknowledging the new state. A failure keeps
 	// our state version stale so the next heartbeat/update retries it.
 	if ca := res.GetCaPublicKey(); ca != "" && !c.caMatches(ca) {

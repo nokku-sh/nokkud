@@ -101,8 +101,8 @@ func TestRotation(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Emit events with a large valid-JSON payload until a rotation happens;
-	// each event is ~64KB, so MaxFileSize (10MB) needs ~160 events.
+	// Emit events with a large valid-JSON payload until a rotation happens.
+	// Each event is ~64KB, so MaxFileSize (10MB) needs ~160 events.
 	big, err := json.Marshal(map[string]string{"blob": strings.Repeat("x", 64<<10)})
 	if err != nil {
 		t.Fatal(err)

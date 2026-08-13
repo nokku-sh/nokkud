@@ -272,7 +272,7 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	_, echoPortStr, _ := net.SplitHostPort(echo.Addr().String())
 
 	// A TCP listener that represents the -R bound port on the server side.
-	// The remote forward is bound via a placeholder port; OpenSSH -R binds on
+	// The remote forward is bound via a placeholder port. OpenSSH -R binds on
 	// the server to the requested port. Use a free port.
 	bound, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -309,7 +309,7 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	// Give the forward a moment to be established.
 	time.Sleep(500 * time.Millisecond)
 
-	// Connect to the server-side bound port; traffic should be delivered to
+	// Connect to the server-side bound port. Traffic should be delivered to
 	// the client's -R end and echoed.
 	sconn, err := net.Dial("tcp", "127.0.0.1:"+boundPortStr)
 	if err != nil {
@@ -419,6 +419,6 @@ func TestServerForwardingLargeTransfer(t *testing.T) {
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.CloseWrite()
 	}
-	// The server side discards; give it a moment, then confirm no error.
+	// The server side discards. Give it a moment, then confirm no error.
 	time.Sleep(200 * time.Millisecond)
 }

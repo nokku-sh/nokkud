@@ -30,7 +30,7 @@ func NewConfig(p paths.Paths) *Config {
 	return &Config{paths: p}
 }
 
-// Load reads the config from disk; a missing file is not an error, a
+// Load reads the config from disk. A missing file is not an error. A
 // corrupted one is cleared so the daemon starts unenrolled, never
 // half-enrolled.
 func (c *Config) Load() error {
@@ -51,7 +51,8 @@ func (c *Config) Load() error {
 	return nil
 }
 
-// Save writes the config atomically with 0600 perms, skipping unchanged content.
+// Save writes the config atomically with 0600 perms, skipping unchanged
+// content.
 func (c *Config) Save() error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

@@ -17,7 +17,7 @@ import (
 
 // Cache is the thread-safe, persisted username→UUID map used for SSH
 // access decisions when the backend is unreachable. StateVersion is the
-// workspace state version this cache was synced to; the daemon re-syncs
+// workspace state version this cache was synced to. The daemon re-syncs
 // whenever the backend reports a newer one.
 type Cache struct {
 	mu           sync.RWMutex
@@ -48,7 +48,7 @@ func (c *Cache) AddUUID(principal string, uuid string) {
 		return
 	}
 
-	// Check for uniqueness before appending
+	// Check for uniqueness before appending.
 	if !slices.Contains(c.Principals[principal], uuid) {
 		c.Principals[principal] = append(c.Principals[principal], uuid)
 	}
@@ -85,7 +85,8 @@ func (c *Cache) GetUUIDs(principal string) []string {
 	return result
 }
 
-// HasUUID reports whether the principal is authorized for the given subject UUID.
+// HasUUID reports whether the principal is authorized for the given subject
+// UUID.
 func (c *Cache) HasUUID(principal, uuid string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -123,7 +124,7 @@ func (c *Cache) Clear() {
 	c.clearLocked()
 }
 
-// Load reads the cache from disk; a missing file is not an error, a
+// Load reads the cache from disk. A missing file is not an error. A
 // corrupted one is discarded so the next sync rebuilds it.
 func (c *Cache) Load() error {
 	data, err := os.ReadFile(c.paths.CacheFile())

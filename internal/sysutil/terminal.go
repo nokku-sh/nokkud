@@ -99,7 +99,7 @@ func CmdEnv(sysUser *user.User, shell string) []string {
 }
 
 // UserShell resolves the user's login shell (getent, then SHELL, then
-// /bin/sh; COMSPEC on Windows), only if it is executable.
+// /bin/sh, COMSPEC on Windows), only if it is executable.
 func UserShell(u *user.User) string {
 	if runtime.GOOS == "windows" {
 		if shell := os.Getenv("COMSPEC"); shell != "" {
@@ -108,7 +108,7 @@ func UserShell(u *user.User) string {
 		return "cmd.exe"
 	}
 
-	// resolve the target user's shell from the password database.
+	// Resolve the target user's shell from the password database.
 	if u != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -126,7 +126,7 @@ func UserShell(u *user.User) string {
 		}
 	}
 
-	// fall back to the caller's SHELL, then /bin/sh
+	// Fall back to the caller's SHELL, then /bin/sh.
 	if shell := os.Getenv("SHELL"); shell != "" {
 		return shell
 	}

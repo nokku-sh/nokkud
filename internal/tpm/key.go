@@ -17,7 +17,7 @@ import (
 // Key is a TPM-resident ECDSA P-256 key implementing [crypto.Signer], used
 // for the SSH host identity.
 //
-// The key is a deterministic primary key: reopening it with the same salt
+// The key is a deterministic primary key. Reopening it with the same salt
 // yields the same key pair until the TPM's owner seed changes (TPM clear or
 // replacement). The private key never leaves the TPM.
 type Key struct {
@@ -91,7 +91,7 @@ func (k *Key) Close() error {
 }
 
 // createPrimary derives the deterministic signing primary key for salt from
-// the owner hierarchy seed. Nothing is persisted: the same salt on the same
+// the owner hierarchy seed. Nothing is persisted. The same salt on the same
 // TPM reproduces the same key pair.
 func createPrimary(t transport.TPM, salt []byte) (*primaryKey, error) {
 	rsp, err := tpm2.CreatePrimary{
@@ -130,8 +130,8 @@ func signECDSA(t transport.TPM, key *primaryKey, digest []byte) ([]byte, error) 
 			Auth:   tpm2.PasswordAuth(nil),
 		},
 		Digest: tpm2.TPM2BDigest{Buffer: digest},
-		// InScheme is left NULL: the key template already pins the ECDSA
-		// scheme. The validation ticket must be explicit: a zero ticket
+		// InScheme is left NULL. The key template already pins the ECDSA
+		// scheme. The validation ticket must be explicit. A zero ticket
 		// has Tag=0, which the TPM rejects as an invalid structure tag.
 		Validation: tpm2.TPMTTKHashCheck{
 			Tag:       tpm2.TPMSTHashCheck,

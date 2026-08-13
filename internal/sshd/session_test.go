@@ -155,7 +155,7 @@ func TestServerWindowChange(t *testing.T) {
 }
 
 // TestServerEnvWhitelist verifies only whitelisted client environment
-// variables reach the session; shell/loader-affecting variables are dropped.
+// variables reach the session. Shell/loader-affecting variables are dropped.
 func TestServerEnvWhitelist(t *testing.T) {
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
@@ -189,7 +189,7 @@ func TestServerEnvWhitelist(t *testing.T) {
 	if len(fields) != 5 {
 		t.Fatalf("env output = %q", out)
 	}
-	// LANG and LC_MESSAGES pass through; BASH_ENV and LD_PRELOAD are refused.
+	// LANG and LC_MESSAGES pass through. BASH_ENV and LD_PRELOAD are refused.
 	if fields[0] != "de_DE.UTF-8" || fields[1] != "fr_FR.UTF-8" {
 		t.Fatalf("whitelisted env = %q, %q; want de_DE.UTF-8, fr_FR.UTF-8", fields[0], fields[1])
 	}
@@ -204,7 +204,7 @@ func TestServerEnvWhitelist(t *testing.T) {
 }
 
 // TestServerForceCommandBlocksEnv verifies a certificate force-command runs
-// with the server-provided environment only: client-supplied variables (even
+// with the server-provided environment only. Client-supplied variables (even
 // whitelisted ones) are refused so an injected BASH_ENV cannot override a
 // restricted command.
 func TestServerForceCommandBlocksEnv(t *testing.T) {
@@ -230,7 +230,7 @@ func TestServerForceCommandBlocksEnv(t *testing.T) {
 	_ = sess.Setenv("BASH_ENV", "boom")
 	_ = sess.Setenv("LC_MESSAGES", "fr_FR.UTF-8")
 
-	// The requested command is ignored: the certificate's force-command runs
+	// The requested command is ignored. The certificate's force-command runs
 	// instead, and sees neither variable.
 	out, err := sess.Output("echo this-should-be-ignored")
 	if err != nil {

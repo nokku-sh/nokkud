@@ -33,8 +33,8 @@ func signalByName(name string) (os.Signal, bool) {
 // processSignal extracts the terminating signal of a finished process and
 // its conventional shell exit code (128+n). ok is false when the process
 // exited on its own, so the caller reports the regular exit-status instead.
-// A signal outside the RFC 4254 name table is reported with an empty name:
-// the caller then sends exit-status with the 128+n code.
+// A signal outside the RFC 4254 name table is reported with an empty name.
+// The caller then sends exit-status with the 128+n code.
 func processSignal(st *os.ProcessState) (name string, code int, ok bool) {
 	if st == nil {
 		return "", 0, false

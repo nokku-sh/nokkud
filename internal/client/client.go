@@ -1,6 +1,6 @@
-// Package client implements the daemon's connection to the Nokku
-// backend: enrollment, sync, host certificates and the control stream,
-// all authenticated with signed challenges rather than bearer tokens.
+// Package client implements the daemon's connection to the Nokku backend.
+// Enrollment, sync, host certificates and the control stream, all
+// authenticated with signed challenges rather than bearer tokens.
 package client
 
 import (

@@ -70,7 +70,7 @@ func TestServerForceCommand(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// The requested command must be ignored; the forced command runs instead.
+	// The requested command must be ignored. The forced command runs instead.
 	out, err := sess.Output("echo original")
 	if err != nil {
 		t.Fatalf("exec: %v", err)

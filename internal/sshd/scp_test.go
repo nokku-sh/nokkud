@@ -71,8 +71,8 @@ func TestServerSCPLegacy(t *testing.T) {
 		t.Fatalf("scp down content: %q err=%v", b, err)
 	}
 
-	// recursive directory copy up; destination must exist for the source
-	// directory name to be preserved (scp quirk)
+	// Recursive directory copy up. Destination must exist for the source
+	// directory name to be preserved (scp quirk).
 	srcdir := filepath.Join(scratches, "srcdir")
 	inner := filepath.Join(srcdir, "sub")
 	if err := os.MkdirAll(inner, 0o755); err != nil {

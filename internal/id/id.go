@@ -1,5 +1,5 @@
 // Package id derives a stable, anonymous machine fingerprint from the
-// hardware machine ID (hostname as fallback), hashed so the raw value
+// hardware machine ID (hostname as fallback). Hashed so the raw value
 // never leaves the machine.
 package id
 
@@ -10,8 +10,8 @@ import (
 	"os"
 )
 
-// MachineID returns a hex HMAC-SHA256 fingerprint of the machine ID,
-// degrading to the hostname, then "unknown".
+// MachineID returns a hex HMAC-SHA256 fingerprint of the machine ID.
+// Degrades to the hostname, then "unknown".
 func MachineID() string {
 	hostname, err := os.Hostname() // fallback
 	if err != nil {

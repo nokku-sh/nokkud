@@ -33,7 +33,8 @@ func recoverLog(desc string) {
 }
 
 // runPTYSession opens a bidi stream for one PTY session. The session ends on
-// PTY exit, idle timeout, TTL expiry, a server-issued Close, or any stream error.
+// PTY exit, idle timeout, TTL expiry, a server-issued Close, or any stream
+// error.
 //
 //nolint:funlen,gocognit
 func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error {
@@ -158,7 +159,7 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 	}
 
 	// done is closed once by whichever goroutine first notices the session is
-	// over; cleanup then runs (idempotently) and we send an Exited notice.
+	// over. Cleanup then runs (idempotently) and we send an Exited notice.
 	done := make(chan struct{})
 	var doneOnce sync.Once
 	finish := func() { doneOnce.Do(func() { close(done) }) }

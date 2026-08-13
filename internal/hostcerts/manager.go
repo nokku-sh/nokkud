@@ -1,6 +1,6 @@
-// Package hostcerts manages the host SSH certificate lifecycle: signing
-// host keys against the backend and storing certs and the trusted CA
-// where the embedded SSH server reads them.
+// Package hostcerts manages the host SSH certificate lifecycle. It signs
+// host keys against the backend and stores certs and the trusted CA where
+// the embedded SSH server reads them.
 package hostcerts
 
 import "github.com/nokku-sh/nokkud/internal/paths"
