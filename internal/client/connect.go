@@ -28,9 +28,9 @@ func (c *Client) runControlStream(ctx context.Context) error {
 			case <-controlCtx.Done():
 				return
 			case <-ticker.C:
-				if err = stream.Send(&nokkuv1.ConnectRequest{
+				if sendErr := stream.Send(&nokkuv1.ConnectRequest{
 					Msg: &nokkuv1.ConnectRequest_Heartbeat{Heartbeat: &nokkuv1.Heartbeat{}},
-				}); err != nil {
+				}); sendErr != nil {
 					return
 				}
 			}
@@ -56,10 +56,9 @@ func (c *Client) runControlStream(ctx context.Context) error {
 	recvCh := make(chan receiveResult, 1)
 	go func() {
 		for {
-			var msg *nokkuv1.ConnectResponse
-			msg, err = stream.Receive()
+			msg, recvErr := stream.Receive()
 			select {
-			case recvCh <- receiveResult{msg, err}:
+			case recvCh <- receiveResult{msg, recvErr}:
 			case <-controlCtx.Done():
 				return
 			}

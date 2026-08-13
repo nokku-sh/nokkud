@@ -176,9 +176,8 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 	go func() {
 		defer recoverLog("session receive")
 		for {
-			var msg *nokkuv1.SessionResponse
-			msg, err = stream.Receive()
-			if err != nil {
+			msg, recvErr := stream.Receive()
+			if recvErr != nil {
 				finish()
 				return
 			}
@@ -189,13 +188,13 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 				if rec != nil && sysutil.EchoEnabled(ptmx.Fd()) {
 					rec.RecordInput(m.Stdin)
 				}
-				if _, err = ptmx.Write(m.Stdin); err != nil {
-					logger.Warn("PTY write failed", "error", err)
+				if _, writeErr := ptmx.Write(m.Stdin); writeErr != nil {
+					logger.Warn("PTY write failed", "error", writeErr)
 				}
 			case *nokkuv1.SessionResponse_Resize:
 				w, h := m.Resize.GetWidth(), m.Resize.GetHeight()
-				if err = ptmx.Resize(int(w), int(h)); err != nil {
-					logger.Warn("Terminal resize failed", "error", err)
+				if resizeErr := ptmx.Resize(int(w), int(h)); resizeErr != nil {
+					logger.Warn("Terminal resize failed", "error", resizeErr)
 				}
 				if rec != nil {
 					rec.RecordResize(int(w), int(h))
@@ -215,24 +214,23 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 		limiter := rate.NewLimiter(rate.Limit(stdoutRate), stdoutBurst)
 		buf := make([]byte, 32*1024)
 		for {
-			var n int
-			n, err = ptmx.Read(buf)
+			n, readErr := ptmx.Read(buf)
 			if n > 0 {
 				resetIdle()
 				chunk := buf[:n]
 				if rec != nil {
 					rec.RecordOutput(chunk)
 				}
-				if err = limiter.WaitN(ctx, n); err != nil {
+				if waitErr := limiter.WaitN(ctx, n); waitErr != nil {
 					return
 				}
-				if err = stream.Send(&nokkuv1.SessionRequest{
+				if sendErr := stream.Send(&nokkuv1.SessionRequest{
 					Msg: &nokkuv1.SessionRequest_Stdout{Stdout: chunk},
-				}); err != nil {
+				}); sendErr != nil {
 					return
 				}
 			}
-			if err != nil {
+			if readErr != nil {
 				return
 			}
 		}
