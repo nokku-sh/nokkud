@@ -54,14 +54,19 @@ func (c *aliveConn) refreshLocked() {
 // client answers, refreshing the read deadline; a client that stops
 // responding is dropped once the deadline passes (OpenSSH's
 // ClientAliveInterval + ClientAliveCountMax=3).
-func (s *Server) clientAlive(conn *ssh.ServerConn, interval time.Duration) {
+func (s *Server) clientAlive(conn *ssh.ServerConn, interval time.Duration, done <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		if _, _, err := conn.SendRequest("keepalive@openssh.com", true, nil); err != nil {
-			s.logger.Debug("sshd: client-alive failed", "remote", conn.RemoteAddr(), "error", err)
-			_ = conn.Close()
+	for {
+		select {
+		case <-done:
 			return
+		case <-ticker.C:
+			if _, _, err := conn.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+				s.logger.Debug("sshd: client-alive failed", "remote", conn.RemoteAddr(), "error", err)
+				_ = conn.Close()
+				return
+			}
 		}
 	}
 }
