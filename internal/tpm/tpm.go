@@ -6,7 +6,6 @@ import (
 	"crypto/elliptic"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/asn1"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -21,17 +20,16 @@ import (
 
 // signerSalt namespaces the TPM key derivation per application.
 //
-// The salt is mixed into the primary key derivation, so it keeps the daemon
-// and the CLI on the same machine from deriving the same key pair while both
-// use the same SHA-256 template. This value MUST stay different from nk's
-// signerSalt: this daemon uses "nokku-daemon", the CLI uses "nokku-cli". Do
-// not align them.
+// Mixed into the primary key derivation so the daemon and the CLI on the
+// same machine do not derive the same key pair from the same template. This
+// value MUST stay different from nk's signerSalt: "nokku-daemon" here,
+// "nokku-cli" there. Do not align them.
 var signerSalt = []byte("nokku-daemon")
 
-// eccSignTemplate returns the deterministic ECC P-256 signing template. The
-// key is derived from the owner hierarchy seed, the template and signerSalt,
-// so the same public key is returned on every boot without storing anything:
-// the private key exists only inside the TPM.
+// eccSignTemplate returns the deterministic ECC P-256 signing template.
+// The key derives from the owner seed, the template, and signerSalt, so the
+// same public key returns on every boot without storing anything. The private
+// key exists only inside the TPM.
 func eccSignTemplate() tpm2.TPMTPublic {
 	return tpm2.TPMTPublic{
 		Type:    tpm2.TPMAlgECC,
@@ -75,8 +73,7 @@ type ecdsaSignature struct {
 type tpmSigner struct {
 	tpm    transport.TPM
 	closer transport.TPMCloser
-	hnd    tpm2.TPMHandle
-	name   tpm2.TPM2BName
+	key    *primaryKey
 	pem    []byte
 	mu     sync.Mutex
 }
@@ -119,35 +116,20 @@ func openTPM(p paths.Paths, st *state) (Signer, error) {
 // createTPMSigner creates the signing primary key on r and returns
 // a signer for it. The returned signer does not own r.
 func createTPMSigner(r transport.TPM) (*tpmSigner, error) {
-	tmpl := eccSignTemplate()
-	rsp, err := tpm2.CreatePrimary{
-		PrimaryHandle: tpm2.TPMRHOwner,
-		InSensitive: tpm2.TPM2BSensitiveCreate{
-			Sensitive: &tpm2.TPMSSensitiveCreate{
-				Data: tpm2.NewTPMUSensitiveCreate(&tpm2.TPM2BSensitiveData{Buffer: signerSalt}),
-			},
-		},
-		InPublic: tpm2.New2B(tmpl),
-	}.Execute(r)
+	key, err := createPrimary(r, signerSalt)
 	if err != nil {
-		return nil, fmt.Errorf("create primary key: %w", err)
-	}
-
-	pub, err := publicToECDSA(rsp.OutPublic)
-	if err != nil {
-		_, _ = tpm2.FlushContext{FlushHandle: rsp.ObjectHandle}.Execute(r)
 		return nil, err
 	}
-	der, err := x509.MarshalPKIXPublicKey(pub)
+	der, err := x509.MarshalPKIXPublicKey(key.pub)
 	if err != nil {
-		return nil, fmt.Errorf("marshal public key: %w", err)
+		_, _ = tpm2.FlushContext{FlushHandle: key.hnd}.Execute(r)
+		return nil, err
 	}
 
 	return &tpmSigner{
-		tpm:  r,
-		hnd:  rsp.ObjectHandle,
-		name: rsp.Name,
-		pem:  pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}),
+		tpm: r,
+		key: key,
+		pem: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}),
 	}, nil
 }
 
@@ -164,38 +146,12 @@ func (s *tpmSigner) Sign(_ context.Context, data []byte) ([]byte, error) {
 	defer s.mu.Unlock()
 
 	digest := sha256.Sum256(data)
-	rsp, err := tpm2.Sign{
-		KeyHandle: tpm2.AuthHandle{
-			Handle: s.hnd,
-			Name:   s.name,
-			Auth:   tpm2.PasswordAuth(nil),
-		},
-		Digest: tpm2.TPM2BDigest{Buffer: digest[:]},
-		// InScheme is left NULL: the key template already pins the ECDSA
-		// scheme. The validation ticket must be explicit: a zero ticket
-		// has Tag=0, which the TPM rejects as an invalid structure tag.
-		Validation: tpm2.TPMTTKHashCheck{
-			Tag:       tpm2.TPMSTHashCheck,
-			Hierarchy: tpm2.TPMRHNull,
-		},
-	}.Execute(s.tpm)
-	if err != nil {
-		return nil, fmt.Errorf("tpm sign: %w", err)
-	}
-
-	ecc, err := rsp.Signature.Signature.ECDSA()
-	if err != nil {
-		return nil, fmt.Errorf("decode tpm signature: %w", err)
-	}
-	return asn1.Marshal(ecdsaSignature{
-		R: new(big.Int).SetBytes(ecc.SignatureR.Buffer),
-		S: new(big.Int).SetBytes(ecc.SignatureS.Buffer),
-	})
+	return signECDSA(s.tpm, s.key, digest[:])
 }
 
 func (s *tpmSigner) Close() error {
 	var err error
-	_, ferr := tpm2.FlushContext{FlushHandle: s.hnd}.Execute(s.tpm)
+	_, ferr := tpm2.FlushContext{FlushHandle: s.key.hnd}.Execute(s.tpm)
 	err = errors.Join(err, ferr)
 	if s.closer != nil {
 		err = errors.Join(err, s.closer.Close())
