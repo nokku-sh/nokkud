@@ -400,7 +400,12 @@ var channelHandlers = map[string]channelHandler{
 
 // handleSession accepts a "session" channel and serves its request stream,
 // enforcing the per-connection session cap.
-func (s *Server) handleSession(conn *ssh.ServerConn, st *connState, newCh ssh.NewChannel, ch *ssh.Channel) {
+func (s *Server) handleSession(
+	conn *ssh.ServerConn,
+	st *connState,
+	newCh ssh.NewChannel,
+	ch *ssh.Channel,
+) {
 	if !st.acquireSession(int(s.maxSessions.Load())) {
 		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions")
 		return
