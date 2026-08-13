@@ -36,7 +36,7 @@ func main() {
 		EnableShellCompletion: true,
 		Suggest:               true,
 		Name:                  "nokkud",
-		Usage:                 "zero-trust SSH access — certificate-authenticated and fully recorded",
+		Usage:                 "zero-trust SSH access - certificate-authenticated and fully recorded",
 		Description: `nokkud enrolls this server with Nokku and replaces the host sshd with an
 embedded SSH server that authenticates users via short-lived SSH certificates.`,
 		Version: buildinfo.String(),
@@ -84,7 +84,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			}
 
 			// Initialize daemon
-			cli, err := client.New(ctx, cmd, p, cache)
+			cli, err := client.New(ctx, cmd, p, cache, cfg)
 			if err != nil {
 				return fmt.Errorf("failed to initialize configuration: %w", err)
 			}
@@ -213,7 +213,11 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					if err := cache.Load(); err != nil {
 						return err
 					}
-					cli, err := client.New(ctx, cmd, p, cache)
+					cfg := state.NewConfig(p)
+					if err := cfg.Load(); err != nil {
+						return err
+					}
+					cli, err := client.New(ctx, cmd, p, cache, cfg)
 					if err != nil {
 						return fmt.Errorf("failed to initialize configuration: %w", err)
 					}

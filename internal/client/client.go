@@ -45,18 +45,15 @@ type Client struct {
 }
 
 // New builds a Client sharing the caller's principal cache, so backend
-// updates reach the embedded SSH server immediately.
+// updates reach the embedded SSH server immediately. config is the
+// caller-loaded enrollment state, already merged with flag values.
 func New(
 	ctx context.Context,
 	cmd *cli.Command,
 	p paths.Paths,
 	cache *state.Cache,
+	config *state.Config,
 ) (*Client, error) {
-	config := state.NewConfig(p)
-	if err := config.Load(); err != nil {
-		return nil, err
-	}
-
 	// The signing identity is created before enrollment so the enrollment
 	// request can register its public key. It is also required by the
 	// request interceptor for post-enrollment authentication.
