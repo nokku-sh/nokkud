@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-
-	"github.com/nokku-sh/nokkud/internal/state"
 )
 
 // TestBinaryInterop drives the real nokkud binary's embedded SSH server end
@@ -286,8 +284,8 @@ func TestBinaryInterop(t *testing.T) {
 
 // writeCacheFile seeds the principal cache file in the daemon's JSON format.
 func writeCacheFile(configDir, username string, uuids []string) error {
-	data, err := json.MarshalIndent(state.Cache{
-		Principals: map[string][]string{username: uuids},
+	data, err := json.MarshalIndent(map[string]any{
+		"principals": map[string][]string{username: uuids},
 	}, "", "  ")
 	if err != nil {
 		return err

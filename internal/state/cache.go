@@ -21,15 +21,23 @@ import (
 // whenever the backend reports a newer one.
 type Cache struct {
 	mu           sync.RWMutex
+	principals   map[string][]string
+	stateVersion int64
+	paths        paths.Paths
+}
+
+// cacheJSON is the on-disk representation of a Cache. Fields are
+// unexported on Cache itself so every access goes through the mutex; the
+// JSON shape lives here instead.
+type cacheJSON struct {
 	Principals   map[string][]string `json:"principals"`
 	StateVersion int64               `json:"state_version,omitempty"`
-	paths        paths.Paths
 }
 
 // NewCache returns an empty, ready-to-use cache backed by the given paths.
 func NewCache(p paths.Paths) *Cache {
 	return &Cache{
-		Principals: make(map[string][]string),
+		principals: make(map[string][]string),
 		paths:      p,
 	}
 }
@@ -39,8 +47,8 @@ func (c *Cache) AddUUID(principal string, uuid string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.Principals == nil {
-		c.Principals = make(map[string][]string)
+	if c.principals == nil {
+		c.principals = make(map[string][]string)
 	}
 
 	if err := util.ValidatePrincipal(principal); err != nil {
@@ -49,8 +57,8 @@ func (c *Cache) AddUUID(principal string, uuid string) {
 	}
 
 	// Check for uniqueness before appending.
-	if !slices.Contains(c.Principals[principal], uuid) {
-		c.Principals[principal] = append(c.Principals[principal], uuid)
+	if !slices.Contains(c.principals[principal], uuid) {
+		c.principals[principal] = append(c.principals[principal], uuid)
 	}
 }
 
@@ -59,8 +67,8 @@ func (c *Cache) SetUUIDs(principal string, uuids []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.Principals == nil {
-		c.Principals = make(map[string][]string)
+	if c.principals == nil {
+		c.principals = make(map[string][]string)
 	}
 
 	if err := util.ValidatePrincipal(principal); err != nil {
@@ -71,7 +79,7 @@ func (c *Cache) SetUUIDs(principal string, uuids []string) {
 	cacheCopy := make([]string, len(uuids))
 	copy(cacheCopy, uuids)
 
-	c.Principals[principal] = cacheCopy
+	c.principals[principal] = cacheCopy
 }
 
 // GetUUIDs safely retrieves a copy of the UUIDs for a principal.
@@ -79,7 +87,7 @@ func (c *Cache) GetUUIDs(principal string) []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	uuids := c.Principals[principal]
+	uuids := c.principals[principal]
 	result := make([]string, len(uuids))
 	copy(result, uuids)
 	return result
@@ -91,7 +99,7 @@ func (c *Cache) HasUUID(principal, uuid string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	uuids, exists := c.Principals[principal]
+	uuids, exists := c.principals[principal]
 	if !exists {
 		return false
 	}
@@ -102,19 +110,19 @@ func (c *Cache) HasUUID(principal, uuid string) bool {
 func (c *Cache) GetStateVersion() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.StateVersion
+	return c.stateVersion
 }
 
 // SetStateVersion records the state version the cache was synced to.
 func (c *Cache) SetStateVersion(v int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.StateVersion = v
+	c.stateVersion = v
 }
 
 func (c *Cache) clearLocked() {
-	c.Principals = make(map[string][]string)
-	c.StateVersion = 0
+	c.principals = make(map[string][]string)
+	c.stateVersion = 0
 }
 
 // Clear drops all cached principals (persisted on the next Save).
@@ -135,29 +143,19 @@ func (c *Cache) Load() error {
 		return fmt.Errorf("reading cache: %w", err)
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if err = json.Unmarshal(data, c); err != nil {
-		c.clearLocked()
+		c.Clear()
 		if rmErr := os.Remove(c.paths.CacheFile()); rmErr != nil {
 			slog.Warn("remove corrupted cache", "error", rmErr)
 		}
 		return nil
-	}
-
-	if c.Principals == nil {
-		c.Principals = make(map[string][]string)
 	}
 	return nil
 }
 
 // Save writes the cache atomically, skipping unchanged content.
 func (c *Cache) Save() error {
-	c.mu.RLock()
 	data, err := json.MarshalIndent(c, "", "  ")
-	c.mu.RUnlock()
-
 	if err != nil {
 		return fmt.Errorf("serializing cache: %w", err)
 	}
@@ -165,5 +163,33 @@ func (c *Cache) Save() error {
 	if err = util.WriteIfChanged(c.paths.CacheFile(), data, 0o640); err != nil {
 		return fmt.Errorf("writing cache: %w", err)
 	}
+	return nil
+}
+
+// MarshalJSON serializes the cache under its read lock.
+func (c *Cache) MarshalJSON() ([]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return json.Marshal(cacheJSON{
+		Principals:   c.principals,
+		StateVersion: c.stateVersion,
+	})
+}
+
+// UnmarshalJSON loads the cache under its write lock and always leaves a
+// usable, non-nil map behind.
+func (c *Cache) UnmarshalJSON(data []byte) error {
+	var dto cacheJSON
+	if err := json.Unmarshal(data, &dto); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if dto.Principals == nil {
+		c.principals = make(map[string][]string)
+	} else {
+		c.principals = dto.Principals
+	}
+	c.stateVersion = dto.StateVersion
 	return nil
 }
