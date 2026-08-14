@@ -95,12 +95,18 @@ func (c *Client) Run(ctx context.Context) error {
 
 	b := backoff.NewExponentialBackOff()
 	b.InitialInterval = time.Second
-	b.MaxInterval = 30 * time.Second
+	b.MaxInterval = time.Minute
+
+	var connected, offlineReported bool
 
 	for {
-		start := time.Now()
-		err := c.runControlStream(ctx)
-		dwell := time.Since(start)
+		err := c.runControlStream(ctx, func() {
+			b.Reset()
+			if !connected {
+				slog.Info("control stream connected")
+			}
+			connected = true
+		})
 
 		if errors.Is(err, errDaemonRejected) {
 			return err
@@ -109,15 +115,31 @@ func (c *Client) Run(ctx context.Context) error {
 			return nil
 		}
 
-		// Reconnect on every disconnect, including a clean close
-		if dwell >= 5*time.Second {
-			b.Reset()
-		}
 		next := b.NextBackOff()
-		if err != nil {
-			slog.Warn("control stream disconnected, reconnecting", "error", err, "retry_in", next)
-		} else {
-			slog.Info("control stream closed, reconnecting", "retry_in", next)
+
+		switch {
+		case connected:
+			// Going offline: report the outage once, then stay quiet
+			// until the stream reconnects.
+			connected = false
+			if err != nil {
+				slog.Warn("control stream disconnected, reconnecting in background", "error", err)
+			} else {
+				slog.Info("control stream closed, reconnecting in background")
+			}
+		case !offlineReported:
+			// First failure before ever connecting: report once.
+			offlineReported = true
+			slog.Warn("cannot connect to backend, will keep retrying in background", "error", err)
+		case err != nil:
+			// Still offline: stay quiet.
+			slog.Debug(
+				"control stream reconnect attempt failed",
+				"error",
+				err,
+				"retry_in",
+				next.Round(time.Millisecond),
+			)
 		}
 
 		timer := time.NewTimer(next)

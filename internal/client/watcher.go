@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/cenkalti/backoff/v7"
 )
 
 const (
@@ -14,25 +16,49 @@ func (c *Client) startWatchers(ctx context.Context) {
 	go c.watchCertificates(ctx)
 }
 
-// watchCertificates renews host certificates from their local expiry
-// deadlines.
+// watchCertificates keeps the host certificate renewed.
 func (c *Client) watchCertificates(ctx context.Context) {
-	delay := max(time.Until(c.ssh.NextRenewal(c.config.TargetID)), defaultDelay)
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
+	b := backoff.NewExponentialBackOff()
+	b.InitialInterval = defaultDelay
+	b.MaxInterval = 30 * time.Minute
+
+	var retrying bool
 
 	for {
+		var delay time.Duration
+
+		err := c.renewHostCerts(ctx, false)
+		if err != nil {
+			delay = b.NextBackOff()
+			if !retrying {
+				slog.Warn("certificate renewal failed, will retry in background", "error", err)
+				retrying = true
+			} else {
+				slog.Debug(
+					"certificate renewal retry failed",
+					"error",
+					err,
+					"retry_in",
+					delay.Round(time.Second),
+				)
+			}
+		} else {
+			if retrying {
+				slog.Info("host certificate renewed successfully")
+				retrying = false
+			}
+			b.Reset()
+			// Sleep until the renewal deadline. Poll at a minimum
+			// interval when no certificate exists yet.
+			delay = max(time.Until(c.ssh.NextRenewal(c.config.TargetID)), defaultDelay)
+		}
+
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
 		case <-timer.C:
-			if err := c.renewHostCerts(ctx, false); err != nil {
-				slog.Warn("certificate renewal", "error", err)
-			}
-
-			// Reschedule from the post-renewal certificate state.
-			delay = max(time.Until(c.ssh.NextRenewal(c.config.TargetID)), defaultDelay)
-			timer.Reset(delay)
 		}
 	}
 }

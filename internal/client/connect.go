@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -18,13 +19,17 @@ const heartbeatInterval = 5 * time.Minute
 // reports our state version, later heartbeats keep it alive, and the server
 // pushes state updates. A fatal error (daemon rejection) is returned so Run
 // can surface it instead of reconnecting.
-func (c *Client) runControlStream(ctx context.Context) error {
+func (c *Client) runControlStream(ctx context.Context, onConnect func()) error {
 	controlCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	stream, err := c.dcs.Connect(controlCtx)
 	if err != nil {
 		return err
+	}
+
+	if onConnect != nil {
+		onConnect()
 	}
 
 	go c.sendHeartbeats(controlCtx, stream)
@@ -44,8 +49,11 @@ func (c *Client) runControlStream(ctx context.Context) error {
 				return r.err
 			}
 			if handleErr := c.handleServerMessage(ctx, r.msg); handleErr != nil {
-				cancel()
-				return handleErr
+				if errors.Is(handleErr, errDaemonRejected) {
+					cancel()
+					return handleErr
+				}
+				slog.Warn("failed to handle server message", "error", handleErr)
 			}
 		}
 	}
