@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +29,9 @@ const (
 	MaxAge = 30 * 24 * time.Hour
 	// MaxIdleTime is the maximum gap between events during playback.
 	MaxIdleTime = 2 * time.Second
+	// maxFlushInterval bounds how long compressed data sits in the gzip
+	// buffer. A crash loses at most this much of the tail of a recording.
+	maxFlushInterval = 100 * time.Millisecond
 )
 
 // Header is the asciicast v2 metadata block written first in a recording.
@@ -52,7 +55,6 @@ type Options struct {
 }
 
 // Recorder writes session events to a single gzipped asciicast v2 file.
-// Record* methods are safe for concurrent use and no-op after Close.
 type Recorder struct {
 	mu        sync.Mutex
 	cw        *countingWriter
@@ -60,6 +62,8 @@ type Recorder struct {
 	enc       *json.Encoder
 	started   time.Time
 	lastEvent time.Time
+	dirty     bool
+	done      chan struct{}
 	closed    bool
 }
 
@@ -136,13 +140,41 @@ func New(p paths.Paths, opts Options) (*Recorder, error) {
 		return nil, fmt.Errorf("flush header: %w", err)
 	}
 
-	return &Recorder{
+	rec := &Recorder{
 		cw:        cw,
 		gw:        gw,
 		enc:       enc,
 		started:   time.Now(),
 		lastEvent: time.Now(),
-	}, nil
+		done:      make(chan struct{}),
+	}
+	go rec.flushLoop()
+	return rec, nil
+}
+
+// flushLoop flushes pending compressed data on a bounded interval while
+// the recording is active, so a crash loses at most one interval of the
+// tail no matter how the session interleaves bursts and idle time.
+func (r *Recorder) flushLoop() {
+	ticker := time.NewTicker(maxFlushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			r.mu.Lock()
+			if r.closed {
+				r.mu.Unlock()
+				return
+			}
+			if r.dirty {
+				_ = r.gw.Flush()
+				r.dirty = false
+			}
+			r.mu.Unlock()
+		case <-r.done:
+			return
+		}
+	}
 }
 
 func (r *Recorder) event(eventType string, data []byte) {
@@ -181,8 +213,7 @@ func (r *Recorder) event(eventType string, data []byte) {
 	if _, err = r.gw.Write([]byte(line)); err != nil {
 		slog.Error("write recording event", "error", err)
 	}
-
-	_ = r.gw.Flush() // flush after every write survives crash
+	r.dirty = true
 }
 
 // RecordOutput appends an output ("o") event.
@@ -205,7 +236,10 @@ func (r *Recorder) closeLocked() {
 		return
 	}
 	r.closed = true
+	close(r.done)
 
+	// gw.Close flushes pending data and writes the gzip footer, so the
+	// file is complete and self-contained after Close.
 	if err := r.gw.Close(); err != nil {
 		slog.Error("close gzip writer", "error", err)
 	}
@@ -282,8 +316,8 @@ func EnforceRetention(p paths.Paths) error {
 		})
 	}
 
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].info.ModTime().Before(files[j].info.ModTime())
+	slices.SortFunc(files, func(a, b recordFile) int {
+		return a.info.ModTime().Compare(b.info.ModTime())
 	})
 
 	cutoffTime := time.Now().Add(-MaxAge)

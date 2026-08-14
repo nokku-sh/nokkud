@@ -3,10 +3,13 @@ package recorder
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
@@ -56,6 +59,61 @@ func TestRecorderCorrelatesSessionID(t *testing.T) {
 	}
 	if got := hdr["session_id"]; got != sessionID {
 		t.Fatalf("header session_id = %v, want %q", got, sessionID)
+	}
+}
+
+// TestRecorderFlushesWithoutClose verifies events reach disk while the
+// session is still running: the recorder flushes on a bounded interval, so
+// a crash loses only the tail, never everything since the last explicit
+// flush.
+func TestRecorderFlushesWithoutClose(t *testing.T) {
+	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
+	if err := os.MkdirAll(p.RecordsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := New(p, Options{Width: 80, Height: 24, Title: "t"})
+	if err != nil {
+		t.Fatalf("new recorder: %v", err)
+	}
+	defer rec.Close()
+
+	rec.RecordOutput([]byte("first"))
+	rec.RecordOutput([]byte("second"))
+
+	// The flush interval is 100ms; give the recorder generous slack. The
+	// file must already contain the events even though Close never ran.
+	time.Sleep(3 * maxFlushInterval)
+
+	entries, err := os.ReadDir(p.RecordsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 recording, got %d", len(entries))
+	}
+
+	f, err := os.Open(filepath.Join(p.RecordsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+
+	data, err := io.ReadAll(gz)
+	// An unclosed recording has no gzip footer yet, so the reader reports
+	// the data it got plus io.ErrUnexpectedEOF. That is the intended crash
+	// behavior: everything up to the last flush stays readable.
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("read recording before close: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "first") || !strings.Contains(body, "second") {
+		t.Fatalf("events not flushed to disk before close: %q", body)
 	}
 }
 
