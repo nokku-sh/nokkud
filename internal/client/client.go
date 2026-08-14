@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v7"
@@ -25,7 +26,10 @@ var errDaemonRejected = errors.New("daemon rejected by backend")
 
 type Client struct {
 	sessionSlots chan struct{}
-	paths        paths.Paths
+	// sessionWG tracks the PTY session goroutines spawned from the control
+	// stream so shutdown can drain them.
+	sessionWG sync.WaitGroup
+	paths     paths.Paths
 
 	ssh    *hostcerts.Manager
 	sshSrv *sshd.Server
@@ -82,6 +86,16 @@ func New(
 // Run keeps the control stream to the backend open until ctx is cancelled.
 // No-op before enrollment.
 func (c *Client) Run(ctx context.Context) error {
+	// Graceful shutdown drains in-flight PTY sessions: they end as soon as
+	// ctx is cancelled, and waiting lets their exit notice reach the backend
+	// before the daemon stops. Fatal exits (daemon rejection) skip the wait
+	// so the daemon halts promptly.
+	defer func() {
+		if ctx.Err() != nil {
+			c.sessionWG.Wait()
+		}
+	}()
+
 	if c.config.DaemonID == "" {
 		slog.Info("daemon not enrolled")
 		return nil

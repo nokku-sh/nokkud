@@ -121,7 +121,7 @@ func (c *Client) handleServerMessage(
 	case *nokkuv1.ConnectResponse_StateUpdate:
 		return c.reconcile(ctx, m.StateUpdate.GetStateVersion())
 	case *nokkuv1.ConnectResponse_Session:
-		go c.startSession(ctx, m.Session)
+		c.sessionWG.Go(func() { c.startSession(ctx, m.Session) })
 	default:
 		slog.Debug("unexpected server message", "type", fmt.Sprintf("%T", msg.GetMsg()))
 	}
@@ -135,9 +135,10 @@ func (c *Client) reconcile(ctx context.Context, serverVersion int64) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, syncTimeout)
 	defer cancel()
+	// Do not log failures here; runControlStream logs the returned error
+	// once, so logging would duplicate the line.
 	if err := c.syncDaemon(ctx); err != nil {
-		slog.Warn("sync after state update", "error", err)
-		return err
+		return fmt.Errorf("sync after state update: %w", err)
 	}
 	return nil
 }

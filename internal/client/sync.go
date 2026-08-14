@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -71,13 +72,11 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		c.cache.SetUUIDs(p.GetUsername(), p.GetIds())
 	}
 
-	// CA rollover. Re-sign the host certificate under the new authority and
-	// reload the server before acknowledging the new state. A failure keeps
-	// our state version stale so the next heartbeat/update retries it.
+	// CA rollover, re-sign the host certificate under the new authority and
+	// reload the server before acknowledging the new state.
 	if ca := res.GetCaPublicKey(); ca != "" && !c.caMatches(ca) {
 		if renewErr := c.renewHostCerts(ctx, true); renewErr != nil {
-			slog.Warn("renew host certificates after CA rollover", "error", renewErr)
-			return renewErr
+			return fmt.Errorf("renew host certificates after CA rollover: %w", renewErr)
 		}
 	}
 
