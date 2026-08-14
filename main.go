@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"time"
 
 	"github.com/mizuchilabs/kata/buildinfo"
 	"github.com/mizuchilabs/kata/logx"
@@ -78,7 +79,9 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			}
 			defer func() {
 				if sshSrv != nil {
-					_ = sshSrv.Close()
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					_ = sshSrv.Shutdown(shutdownCtx)
 				}
 			}()
 

@@ -61,11 +61,11 @@ type Server struct {
 	hostKeyClosers  []io.Closer
 
 	// connection limits
-	maxConns      int
 	connSlots     chan struct{}
 	aliveInterval time.Duration
 
 	closeOnce sync.Once
+	connsWg   sync.WaitGroup
 
 	// mu guards the listener installed by ListenAndServe so Close can stop it.
 	mu       sync.Mutex
@@ -167,7 +167,6 @@ func New(opts Options) (*Server, error) {
 		audit:           opts.Audit,
 		trustedCAs:      trusted,
 		hostKeyProvider: opts.HostKeys,
-		maxConns:        opts.MaxConnections,
 		aliveInterval:   opts.ClientAliveInterval,
 		subsystemHandlers: map[string]SubsystemHandler{
 			sftpSubsystem: func(sess *session) uint32 { return sess.runSFTP() },
@@ -188,15 +187,7 @@ func New(opts Options) (*Server, error) {
 	}
 	s.hostKeys = hostKeys
 	s.hostKeyClosers = hostClosers
-
-	cfg := &ssh.ServerConfig{
-		PublicKeyCallback: s.publicKeyCallback,
-		ServerVersion:     "SSH-2.0-nokkud",
-	}
-	for _, k := range hostKeys {
-		cfg.AddHostKey(k)
-	}
-	s.cfg = cfg
+	s.cfg = s.serverConfig(hostKeys)
 
 	logger.Debug("sshd: server configured", "host_keys", len(hostKeys), "trusted_cas", len(trusted))
 	return s, nil
@@ -234,14 +225,7 @@ func (s *Server) Reload() error {
 	s.trustedCAs = trusted
 	s.hostKeys = hostKeys
 	s.hostKeyClosers = hostClosers
-	cfg := &ssh.ServerConfig{
-		PublicKeyCallback: s.publicKeyCallback,
-		ServerVersion:     "SSH-2.0-nokkud",
-	}
-	for _, k := range hostKeys {
-		cfg.AddHostKey(k)
-	}
-	s.cfg = cfg
+	s.cfg = s.serverConfig(hostKeys)
 	s.certsMu.Unlock()
 
 	// Release the swapped-out identity's resources (TPM handles) now that no
@@ -264,6 +248,12 @@ func (s *Server) Reload() error {
 
 // Serve accepts connections on l until l is closed.
 func (s *Server) Serve(l net.Listener) error {
+	s.mu.Lock()
+	if s.listener == nil {
+		s.listener = l
+	}
+	s.mu.Unlock()
+
 	for {
 		nc, err := l.Accept()
 		if err != nil {
@@ -278,10 +268,10 @@ func (s *Server) Serve(l net.Listener) error {
 			_ = nc.Close()
 			continue
 		}
-		go func() {
+		s.connsWg.Go(func() {
 			defer s.releaseConn()
 			s.HandleConn(nc)
-		}()
+		})
 	}
 }
 
@@ -302,6 +292,35 @@ func (s *Server) releaseConn() {
 	if s.connSlots != nil {
 		<-s.connSlots
 	}
+}
+
+// Shutdown gracefully drains active connections. It closes the listener to
+// stop accepting new connections and blocks until all active connections have
+// completed or until ctx is cancelled. It always closes the server resources
+// (host keys, audit logs) before returning.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	l := s.listener
+	s.mu.Unlock()
+	if l != nil {
+		_ = l.Close()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.connsWg.Wait()
+		close(done)
+	}()
+
+	var err error
+	select {
+	case <-done:
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
+
+	_ = s.Close()
+	return err
 }
 
 // Close stops the listener (if ListenAndServe started one) and closes the
@@ -382,11 +401,25 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) (net.Addr, err
 	}()
 	go func() {
 		<-ctx.Done()
-		_ = s.Close()
+		shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		_ = s.Shutdown(shutdownCtx)
 	}()
 
 	s.logger.Info("sshd: server listening", "addr", l.Addr().String())
 	return l.Addr(), nil
+}
+
+// serverConfig builds the SSH server config for the given host keys.
+func (s *Server) serverConfig(hostKeys []ssh.Signer) *ssh.ServerConfig {
+	cfg := &ssh.ServerConfig{
+		PublicKeyCallback: s.publicKeyCallback,
+		ServerVersion:     "SSH-2.0-nokkud",
+	}
+	for _, k := range hostKeys {
+		cfg.AddHostKey(k)
+	}
+	return cfg
 }
 
 // currentConfig returns the current server config under the certs lock so a
