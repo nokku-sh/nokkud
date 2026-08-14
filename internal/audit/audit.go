@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 )
@@ -33,6 +33,10 @@ const (
 	MaxAge = 30 * 24 * time.Hour
 	// MaxTotalSize caps the total on-disk size of audit files.
 	MaxTotalSize = 1 << 30
+	// maxQueuedEvents bounds the events waiting for the writer goroutine.
+	// When the queue is full, Emit blocks: security events must never be
+	// dropped, so backpressure reaches the caller instead.
+	maxQueuedEvents = 1024
 )
 
 // Event is a single audit record.
@@ -51,10 +55,23 @@ type Event struct {
 	Extra     json.RawMessage `json:"extra,omitempty"`
 }
 
-// Sink appends events to a rotation-managed JSONL log.
+// item is one queued event, or a flush barrier when done is non-nil.
+type item struct {
+	ev   Event
+	done chan struct{}
+}
+
+// Sink appends events to a rotation-managed JSONL log. Emit hands events
+// to a single writer goroutine, so disk I/O never runs on the caller's
+// (auth or session) goroutine. The queue is drained on Close.
 type Sink struct {
-	mu   sync.Mutex
 	dir  string
+	ch   chan item
+	done chan struct{}
+	wg   sync.WaitGroup
+	once sync.Once
+
+	// Written only by the writer goroutine.
 	file *os.File
 	size int64
 }
@@ -69,25 +86,102 @@ func New(dir string) (*Sink, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("audit: create dir: %w", err)
 	}
-	s := &Sink{dir: dir}
-
-	// The log file is opened lazily on the first event.
-	s.enforceRetention()
+	s := &Sink{
+		dir:  dir,
+		ch:   make(chan item, maxQueuedEvents),
+		done: make(chan struct{}),
+	}
+	s.wg.Add(1)
+	go s.run()
 	return s, nil
 }
 
-// Emit writes one event.
+// Emit queues one event for the writer goroutine. It blocks while the
+// queue is full so no event is ever dropped; after Close it returns
+// without queueing.
 func (s *Sink) Emit(ev Event) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
+	select {
+	case s.ch <- item{ev: ev}:
+	case <-s.done:
+	}
+}
 
+// Flush blocks until every event emitted before the call has been written
+// to disk. It is a no-op after Close.
+func (s *Sink) Flush() {
+	if s == nil {
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case s.ch <- item{done: done}:
+		<-done
+	case <-s.done:
+	}
+}
+
+// Close stops accepting events, drains the queue and closes the current
+// audit file. Safe to call more than once and concurrently with Emit.
+func (s *Sink) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.once.Do(func() {
+		close(s.done)
+		s.wg.Wait()
+	})
+	return nil
+}
+
+// run is the single writer goroutine. It owns the audit file, rotation and
+// retention until done is closed, then drains the queue and exits.
+func (s *Sink) run() {
+	defer s.wg.Done()
+
+	// The log file is opened lazily on the first event.
+	s.enforceRetention()
+	for {
+		select {
+		case it := <-s.ch:
+			if it.done != nil {
+				close(it.done)
+				continue
+			}
+			s.write(it.ev)
+		case <-s.done:
+			s.drain()
+			if s.file != nil {
+				_ = s.file.Close()
+			}
+			return
+		}
+	}
+}
+
+// drain writes every event queued before done was closed.
+func (s *Sink) drain() {
+	for {
+		select {
+		case it := <-s.ch:
+			if it.done != nil {
+				close(it.done)
+				continue
+			}
+			s.write(it.ev)
+		default:
+			return
+		}
+	}
+}
+
+// write appends one event, rotating and enforcing retention as needed.
+func (s *Sink) write(ev Event) {
 	data, err := json.Marshal(ev)
 	if err != nil {
 		slog.Debug("audit: marshal event", "error", err)
@@ -115,19 +209,6 @@ func (s *Sink) Emit(ev Event) {
 		return
 	}
 	s.size += int64(n)
-}
-
-// Close closes the current audit file.
-func (s *Sink) Close() error {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.file == nil {
-		return nil
-	}
-	return s.file.Close()
 }
 
 // rotate closes the current file, opens a fresh one and re-enforces retention.
@@ -183,8 +264,8 @@ func (s *Sink) enforceRetention() {
 		files = append(files, fi)
 		total += fi.Size()
 	}
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].ModTime().Before(files[j].ModTime())
+	slices.SortFunc(files, func(a, b os.FileInfo) int {
+		return a.ModTime().Compare(b.ModTime())
 	})
 	for total > MaxTotalSize && len(files) > 0 {
 		total -= files[0].Size()
