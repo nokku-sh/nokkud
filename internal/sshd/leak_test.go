@@ -4,11 +4,19 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/nokku-sh/nokkud/internal/leaktest"
 )
 
 // Open and close session channels without sending shell/exec/subsystem,
 // repeatedly, and verify the server still accepts fresh connections.
 func TestSessionChannelNoCommandDoesNotLeak(t *testing.T) {
+	// Registered first so it runs after closeFn: the profile must be read
+	// with the server fully torn down. It is a no-op until the stdlib
+	// goroutineleak profile is available (Go 1.27, or Go 1.26 with
+	// GOEXPERIMENT=goroutineleakprofile).
+	defer leaktest.VerifyNone(t)
+
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
