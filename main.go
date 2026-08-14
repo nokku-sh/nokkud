@@ -224,7 +224,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				Value: ":4022",
 				Sources: cli.NewValueSourceChain(
 					cli.EnvVar("NOKKUD_SSH_ADDR"),
-					json.JSON("ssh_addr", altsrc.NewStringPtrSourcer(new(p.ConfigFile()))),
+					json.JSON("ssh_addr", altsrc.NewStringPtrSourcer(new(string))),
 				),
 			},
 			&cli.StringFlag{
