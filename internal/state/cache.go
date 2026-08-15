@@ -11,18 +11,21 @@ import (
 	"slices"
 	"sync"
 
+	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/util"
 )
 
-// Cache is the thread-safe, persisted username→UUID map used for SSH
-// access decisions when the backend is unreachable. StateVersion is the
-// workspace state version this cache was synced to. The daemon re-syncs
-// whenever the backend reports a newer one.
+// Cache is the thread-safe, persisted state synced from the backend:
+// the username→UUID map used for SSH access decisions when the backend is
+// unreachable and the backend-controlled daemon config. StateVersion is
+// the workspace state version this cache was synced to. The daemon
+// re-syncs whenever the backend reports a newer one.
 type Cache struct {
 	mu           sync.RWMutex
 	principals   map[string][]string
 	stateVersion int64
+	daemonConfig *nokkuv1.DaemonConfig
 	paths        paths.Paths
 }
 
@@ -30,8 +33,9 @@ type Cache struct {
 // unexported on Cache itself so every access goes through the mutex; the
 // JSON shape lives here instead.
 type cacheJSON struct {
-	Principals   map[string][]string `json:"principals"`
-	StateVersion int64               `json:"state_version,omitempty"`
+	Principals   map[string][]string   `json:"principals"`
+	StateVersion int64                 `json:"state_version,omitempty"`
+	DaemonConfig *nokkuv1.DaemonConfig `json:"daemon_config,omitempty"`
 }
 
 // NewCache returns an empty, ready-to-use cache backed by the given paths.
@@ -120,12 +124,48 @@ func (c *Cache) SetStateVersion(v int64) {
 	c.stateVersion = v
 }
 
+// SetDaemonConfig replaces the backend-synced daemon config. The recording
+// key and session record toggle are read by session goroutines, so every
+// write goes through the lock.
+func (c *Cache) SetDaemonConfig(dc *nokkuv1.DaemonConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.daemonConfig = dc
+}
+
+// DaemonConfig returns the synced daemon config. Callers must treat the
+// returned message as read-only.
+func (c *Cache) DaemonConfig() *nokkuv1.DaemonConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.daemonConfig
+}
+
+// RecordingKey returns the workspace recording public key from the synced
+// daemon config, or "" when recording encryption is disabled.
+func (c *Cache) RecordingKey() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.daemonConfig.GetRecordingPublicKey()
+}
+
+// RecordSessions reports whether the synced daemon config enables session
+// recording.
+func (c *Cache) RecordSessions() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.daemonConfig.GetRecordSessions()
+}
+
 func (c *Cache) clearLocked() {
 	c.principals = make(map[string][]string)
 	c.stateVersion = 0
+	c.daemonConfig = nil
 }
 
-// Clear drops all cached principals (persisted on the next Save).
+// Clear drops all cached synced state (persisted on the next Save). It must
+// run before repopulating a sync so stale data from a previous sync never
+// survives.
 func (c *Cache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -173,6 +213,7 @@ func (c *Cache) MarshalJSON() ([]byte, error) {
 	return json.Marshal(cacheJSON{
 		Principals:   c.principals,
 		StateVersion: c.stateVersion,
+		DaemonConfig: c.daemonConfig,
 	})
 }
 
@@ -191,5 +232,6 @@ func (c *Cache) UnmarshalJSON(data []byte) error {
 		c.principals = dto.Principals
 	}
 	c.stateVersion = dto.StateVersion
+	c.daemonConfig = dto.DaemonConfig
 	return nil
 }

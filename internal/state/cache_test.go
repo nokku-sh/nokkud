@@ -4,6 +4,8 @@ import (
 	"os"
 	"sync"
 	"testing"
+
+	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 )
 
 func TestCacheAddUUIDDedups(t *testing.T) {
@@ -108,6 +110,50 @@ func TestCacheLoadMissingFileIsNotAnError(t *testing.T) {
 	c := NewCache(newTestPaths(t))
 	if err := c.Load(); err != nil {
 		t.Fatalf("Load on missing file: %v, want nil", err)
+	}
+}
+
+func TestCacheDaemonConfigRoundTrip(t *testing.T) {
+	t.Parallel()
+	key := "dGVzdGtleTAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMA=="
+	p := newTestPaths(t)
+	c := NewCache(p)
+	record := true
+	c.SetDaemonConfig(&nokkuv1.DaemonConfig{
+		RecordSessions:     &record,
+		RecordingPublicKey: &key,
+	})
+	c.SetUUIDs("alice", []string{"uuid-1"})
+	if err := c.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded := NewCache(p)
+	if err := loaded.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !loaded.RecordSessions() {
+		t.Fatal("RecordSessions lost in round trip")
+	}
+	if got := loaded.RecordingKey(); got != key {
+		t.Fatalf("RecordingKey = %q, want %q", got, key)
+	}
+	if !loaded.HasUUID("alice", "uuid-1") {
+		t.Fatal("principals lost in round trip")
+	}
+}
+
+func TestCacheClearDropsSyncedConfig(t *testing.T) {
+	t.Parallel()
+	key := "dGVzdGtleTAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMA=="
+	c := NewCache(newTestPaths(t))
+	c.SetDaemonConfig(&nokkuv1.DaemonConfig{RecordingPublicKey: &key})
+	if c.RecordingKey() != key {
+		t.Fatalf("recording key not set, got %q", c.RecordingKey())
+	}
+	c.Clear()
+	if got := c.RecordingKey(); got != "" {
+		t.Fatalf("Clear left recording key behind: %q", got)
 	}
 }
 
