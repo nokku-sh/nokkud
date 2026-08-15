@@ -51,5 +51,6 @@ func (c *Client) setupClients(apiURL string, insecure bool) error {
 	c.dc = nokkuv1connect.NewDaemonServiceClient(httpc, apiURL, opts)
 	c.dcs = nokkuv1connect.NewDaemonControlServiceClient(httpc, apiURL, opts)
 	c.dss = nokkuv1connect.NewDaemonSessionServiceClient(httpc, apiURL, opts)
+	c.rc = nokkuv1connect.NewRecordingServiceClient(httpc, apiURL, opts)
 	return nil
 }

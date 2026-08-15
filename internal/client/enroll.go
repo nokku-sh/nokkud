@@ -47,7 +47,7 @@ func (c *Client) enroll(ctx context.Context, token, caid string) error {
 	c.config.WorkspaceID = res.GetWorkspaceId()
 	c.config.TargetID = res.GetTargetId()
 	c.config.DaemonID = res.GetId()
-	c.config.DaemonConfig = res.GetConfig()
+	c.config.SetDaemonConfig(res.GetConfig())
 
 	if c.config.WorkspaceID == "" {
 		return fmt.Errorf("failed to enroll: empty workspace ID")

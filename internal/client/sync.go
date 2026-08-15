@@ -61,7 +61,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		return nil // Nothing to apply
 	}
 
-	c.config.DaemonConfig = res.GetConfig()
+	c.config.SetDaemonConfig(res.GetConfig())
 
 	if c.sshSrv != nil {
 		c.sshSrv.SetRecord(res.GetConfig().GetRecordSessions())

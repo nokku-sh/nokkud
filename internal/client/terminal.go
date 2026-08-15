@@ -13,7 +13,7 @@ import (
 	"golang.org/x/time/rate"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
-	"github.com/nokku-sh/nokkud/internal/recorder"
+	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
@@ -98,18 +98,19 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 
 	logger.Info("session started")
 
-	var rec *recorder.Recorder
-	if c.config.DaemonConfig.GetRecordSessions() {
+	var rec *recording.Recorder
+	if c.config.RecordSessions() {
 		shortID := sessionID
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
 		}
-		rec, err = recorder.New(c.paths, recorder.Options{
+		rec, err = recording.NewSessionRecorder(c.paths, c.rc, c.RecordingKey, recording.Options{
 			Width:     80,
 			Height:    24,
 			Title:     fmt.Sprintf("%s@%s", sysUser.Username, sessionID),
 			Label:     fmt.Sprintf("%s-%s", sysUser.Username, shortID),
 			SessionID: sessionID,
+			Username:  sysUser.Username,
 		})
 		if err != nil {
 			logger.Debug("session recording unavailable", "reason", err)

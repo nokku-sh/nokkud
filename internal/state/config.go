@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/paths"
@@ -22,6 +23,7 @@ type Config struct {
 	SSHAddr      string                `json:"ssh_addr,omitempty"`
 	DaemonConfig *nokkuv1.DaemonConfig `json:"daemon_config,omitempty"`
 
+	mu    sync.RWMutex
 	paths paths.Paths
 }
 
@@ -65,8 +67,37 @@ func (c *Config) Save() error {
 	return nil
 }
 
+// SetDaemonConfig replaces the synced backend config. The field is also
+// read by session goroutines, so every write goes through this lock.
+func (c *Config) SetDaemonConfig(dc *nokkuv1.DaemonConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.DaemonConfig = dc
+}
+
+// RecordingKey returns the workspace recording public key from the synced
+// config, or "" when recording encryption is disabled.
+func (c *Config) RecordingKey() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.DaemonConfig.GetRecordingPublicKey()
+}
+
+// RecordSessions reports whether the synced config enables session recording.
+func (c *Config) RecordSessions() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.DaemonConfig.GetRecordSessions()
+}
+
 // Clear resets the config to its zero state, keeping the paths binding.
 func (c *Config) Clear() {
-	p := c.paths
-	*c = Config{paths: p}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.WorkspaceID = ""
+	c.TargetID = ""
+	c.DaemonID = ""
+	c.APIURL = ""
+	c.SSHAddr = ""
+	c.DaemonConfig = nil
 }

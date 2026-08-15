@@ -6,6 +6,7 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 	"github.com/nokku-sh/nokkud/internal/hostcerts"
 	"github.com/nokku-sh/nokkud/internal/paths"
+	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/state"
 	"github.com/nokku-sh/nokkud/internal/tpm"
@@ -41,6 +43,7 @@ type Client struct {
 	dc  nokkuv1connect.DaemonServiceClient
 	dcs nokkuv1connect.DaemonControlServiceClient
 	dss nokkuv1connect.DaemonSessionServiceClient
+	rc  nokkuv1connect.RecordingServiceClient
 }
 
 // New builds a Client sharing the caller's principal cache, so backend
@@ -72,6 +75,21 @@ func New(
 		return nil, err
 	}
 
+	// The embedded SSH server records sessions through the same upload
+	// path as web sessions.
+	if sshSrv != nil {
+		sshSrv.SetRecordingSinkFactory(func(sessionID, username string) io.WriteCloser {
+			if c.config.DaemonID == "" {
+				return nopWriteCloser{}
+			}
+			return recording.NewUploader(context.Background(), c.rc, recording.UploaderOptions{
+				SessionID:   sessionID,
+				Username:    username,
+				KeyProvider: c.RecordingKey,
+			})
+		})
+	}
+
 	if err = c.enroll(
 		ctx,
 		cmd.String("enroll"),
@@ -84,12 +102,8 @@ func New(
 }
 
 // Run keeps the control stream to the backend open until ctx is cancelled.
-// No-op before enrollment.
 func (c *Client) Run(ctx context.Context) error {
-	// Graceful shutdown drains in-flight PTY sessions: they end as soon as
-	// ctx is cancelled, and waiting lets their exit notice reach the backend
-	// before the daemon stops. Fatal exits (daemon rejection) skip the wait
-	// so the daemon halts promptly.
+	// Graceful shutdown drains in-flight PTY sessions
 	defer func() {
 		if ctx.Err() != nil {
 			c.sessionWG.Wait()
@@ -133,8 +147,6 @@ func (c *Client) Run(ctx context.Context) error {
 
 		switch {
 		case connected:
-			// Going offline: report the outage once, then stay quiet
-			// until the stream reconnects.
 			connected = false
 			if err != nil {
 				slog.Warn("control stream disconnected, reconnecting in background", "error", err)
@@ -142,11 +154,9 @@ func (c *Client) Run(ctx context.Context) error {
 				slog.Info("control stream closed, reconnecting in background")
 			}
 		case !offlineReported:
-			// First failure before ever connecting: report once.
 			offlineReported = true
 			slog.Warn("cannot connect to backend, will keep retrying in background", "error", err)
 		case err != nil:
-			// Still offline: stay quiet.
 			slog.Debug(
 				"control stream reconnect attempt failed",
 				"error",
@@ -174,3 +184,19 @@ func (c *Client) DeleteDaemon(ctx context.Context) error {
 	_, err := c.dc.DeleteDaemon(ctx, &nokkuv1.DeleteDaemonRequest{})
 	return err
 }
+
+// RecordingKey returns the workspace recording public key and fingerprint
+// from the synced config, or ("", "") when unset or invalid so sessions
+// stay local.
+func (c *Client) RecordingKey() (string, string) {
+	pubkey, fp, ok := recording.Key(c.config.RecordingKey())
+	if !ok {
+		return "", ""
+	}
+	return pubkey, fp
+}
+
+type nopWriteCloser struct{}
+
+func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (nopWriteCloser) Close() error                { return nil }
