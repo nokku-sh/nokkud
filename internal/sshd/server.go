@@ -61,11 +61,11 @@ type Server struct {
 	hostKeyClosers  []io.Closer
 
 	// connection limits
-	connSlots     chan struct{}
-	aliveInterval time.Duration
-
-	closeOnce sync.Once
-	connsWg   sync.WaitGroup
+	maxConns      atomic.Int32
+	activeConns   atomic.Int32
+	aliveInterval atomic.Int64
+	closeOnce     sync.Once
+	connsWg       sync.WaitGroup
 
 	// mu guards the listener installed by ListenAndServe so Close can stop it.
 	mu       sync.Mutex
@@ -130,7 +130,8 @@ type Options struct {
 
 // OptionsFrom returns the daemon's standard SSH server policy. It wires the
 // shared cache, forwarding, a session cap, and the local audit sink. record
-// enables session recording.
+// enables session recording. These are the compiled-in defaults; the backend
+// may override any of them live through the synced daemon config.
 func OptionsFrom(p paths.Paths, cache *state.Cache, record bool) Options {
 	return Options{
 		Paths: p,
@@ -178,7 +179,6 @@ func New(opts Options) (*Server, error) {
 		audit:           opts.Audit,
 		trustedCAs:      trusted,
 		hostKeyProvider: opts.HostKeys,
-		aliveInterval:   opts.ClientAliveInterval,
 		subsystemHandlers: map[string]SubsystemHandler{
 			sftpSubsystem: func(sess *session) uint32 { return sess.runSFTP() },
 		},
@@ -188,9 +188,8 @@ func New(opts Options) (*Server, error) {
 	s.agentForwarding.Store(opts.AllowAgentForwarding)
 	s.gatewayPorts.Store(opts.GatewayPorts)
 	s.maxSessions.Store(sessionCapToInt32(opts.MaxSessions))
-	if opts.MaxConnections > 0 {
-		s.connSlots = make(chan struct{}, opts.MaxConnections)
-	}
+	s.maxConns.Store(connCapToInt32(opts.MaxConnections))
+	s.aliveInterval.Store(int64(opts.ClientAliveInterval))
 
 	hostKeys, hostClosers, err := s.loadHostIdentity()
 	if err != nil {
@@ -287,22 +286,29 @@ func (s *Server) Serve(l net.Listener) error {
 }
 
 // acquireConn reserves a slot for a new connection when a cap is configured.
+// activeConns is kept in lockstep with the connection lifecycle regardless of
+// the cap, so re-enabling the cap later starts from an accurate count. The
+// counter approach keeps the cap live-adjustable: a concurrent SetOptions
+// swaps maxConns without tearing down established connections.
 func (s *Server) acquireConn() bool {
-	if s.connSlots == nil {
-		return true
+	limit := s.maxConns.Load()
+	if limit > 0 {
+		for {
+			cur := s.activeConns.Load()
+			if cur >= limit {
+				return false
+			}
+			if s.activeConns.CompareAndSwap(cur, cur+1) {
+				return true
+			}
+		}
 	}
-	select {
-	case s.connSlots <- struct{}{}:
-		return true
-	default:
-		return false
-	}
+	s.activeConns.Add(1)
+	return true
 }
 
 func (s *Server) releaseConn() {
-	if s.connSlots != nil {
-		<-s.connSlots
-	}
+	s.activeConns.Add(-1)
 }
 
 // Shutdown gracefully drains active connections. It closes the listener to
@@ -373,21 +379,39 @@ func sessionCapToInt32(n int) int32 {
 	return int32(n)
 }
 
-// SetOptions applies runtime-tunable options (record, forwarding, session
-// cap) live, without restarting. It replaces every tunable, so pass the full
-// set. An unspecified field disables that feature.
+// connCapToInt32 bounds a configured connection cap to a positive int32.
+func connCapToInt32(n int) int32 {
+	return sessionCapToInt32(n)
+}
+
+// SetOptions applies runtime-tunable options (record, forwarding, session and
+// connection caps, client-alive interval) live, without restarting. It
+// replaces every tunable, so pass the full set. An unspecified field disables
+// that feature.
 func (s *Server) SetOptions(opts Options) {
 	s.record.Store(opts.Record)
 	s.forwarding.Store(opts.AllowForwarding)
 	s.agentForwarding.Store(opts.AllowAgentForwarding)
 	s.gatewayPorts.Store(opts.GatewayPorts)
 	s.maxSessions.Store(sessionCapToInt32(opts.MaxSessions))
+	s.maxConns.Store(connCapToInt32(opts.MaxConnections))
+	s.aliveInterval.Store(int64(opts.ClientAliveInterval))
 }
 
-// SetRecord toggles session recording live, without touching the other
-// tunables. It is driven by the backend's daemon config after each sync.
-func (s *Server) SetRecord(record bool) {
-	s.record.Store(record)
+// Defaults returns the tunable options the server was constructed with. The
+// client merges the backend's synced daemon config over these so an unset
+// field falls back to the compiled-in policy instead of silently disabling
+// the feature.
+func (s *Server) Defaults() Options {
+	return Options{
+		Record:               s.record.Load(),
+		AllowForwarding:      s.forwarding.Load(),
+		AllowAgentForwarding: s.agentForwarding.Load(),
+		GatewayPorts:         s.gatewayPorts.Load(),
+		MaxSessions:          int(s.maxSessions.Load()),
+		MaxConnections:       int(s.maxConns.Load()),
+		ClientAliveInterval:  time.Duration(s.aliveInterval.Load()),
+	}
 }
 
 // ListenAndServe binds addr, starts serving on it, and returns the bound
@@ -456,8 +480,8 @@ func (s *Server) handleConn(nc net.Conn) {
 	// read deadline. The probing goroutine disconnects a client that never
 	// responds.
 	var alive *aliveConn
-	if s.aliveInterval > 0 {
-		alive = &aliveConn{Conn: nc, timeout: 3 * s.aliveInterval}
+	if interval := time.Duration(s.aliveInterval.Load()); interval > 0 {
+		alive = &aliveConn{Conn: nc, timeout: 3 * interval}
 		nc = alive
 	}
 
@@ -480,7 +504,7 @@ func (s *Server) handleConn(nc net.Conn) {
 	if alive != nil {
 		alive.activate()
 		aliveDone = make(chan struct{})
-		go s.clientAlive(conn, s.aliveInterval, aliveDone)
+		go s.clientAlive(conn, time.Duration(s.aliveInterval.Load()), aliveDone)
 	}
 
 	s.logger.Info(
