@@ -73,6 +73,17 @@ type Server struct {
 
 	// subsystemHandlers dispatches SSH subsystems ("sftp", ...) to handlers.
 	subsystemHandlers map[string]SubsystemHandler
+
+	// recordingSinkFactory builds the upload sink for a session's recorder.
+	// The client wires it so the SSH server can stream recordings without
+	// knowing the API client. Nil disables uploading (local recording only).
+	recordingSinkFactory func(sessionID, username string) io.WriteCloser
+}
+
+// SetRecordingSinkFactory installs the factory used to create per-session
+// recording upload sinks. Set once by the client at startup.
+func (s *Server) SetRecordingSinkFactory(fn func(sessionID, username string) io.WriteCloser) {
+	s.recordingSinkFactory = fn
 }
 
 // Options configures a Server.

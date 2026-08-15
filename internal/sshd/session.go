@@ -16,7 +16,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/audit"
-	"github.com/nokku-sh/nokkud/internal/recorder"
+	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
@@ -49,7 +49,7 @@ type session struct {
 	agentSock string
 
 	ptmx pty.Pty
-	rec  *recorder.Recorder
+	rec  *recording.Recorder
 
 	exitMu sync.Mutex
 	exited bool
@@ -344,13 +344,18 @@ func (sess *session) ptyReq(req *ssh.Request) {
 	sess.setEnv("TERM", r.Term)
 
 	if sess.server.record.Load() && sess.server.paths.RecordsDir != "" {
-		var rec *recorder.Recorder
-		rec, err = recorder.New(sess.server.paths, recorder.Options{
+		var sink io.WriteCloser
+		if sess.server.recordingSinkFactory != nil {
+			sink = sess.server.recordingSinkFactory(sess.sessionID, sess.sysUser.Username)
+		}
+		var rec *recording.Recorder
+		rec, err = recording.New(sess.server.paths, recording.Options{
 			Width:     int(r.Width),
 			Height:    int(r.Height),
 			Title:     fmt.Sprintf("ssh-%s", sess.sysUser.Username),
 			Label:     sess.sysUser.Username,
 			SessionID: sess.sessionID,
+			Sink:      sink,
 		})
 		if err == nil && rec != nil {
 			sess.rec = rec
@@ -662,7 +667,7 @@ func (sess *session) outputWriter() io.Writer {
 
 type recordingWriter struct {
 	dst io.Writer
-	rec *recorder.Recorder
+	rec *recording.Recorder
 }
 
 func (w *recordingWriter) Write(p []byte) (int, error) {
