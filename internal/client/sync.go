@@ -52,6 +52,10 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		if saveErr := c.config.Save(); saveErr != nil {
 			slog.Error("persist cleared config on rejection", "error", saveErr)
 		}
+		c.cache.Clear()
+		if saveErr := c.cache.Save(); saveErr != nil {
+			slog.Error("persist cleared synced state on rejection", "error", saveErr)
+		}
 		slog.Error("daemon rejected, exiting")
 		return errDaemonRejected
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED:
@@ -61,13 +65,11 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		return nil // Nothing to apply
 	}
 
-	c.config.SetDaemonConfig(res.GetConfig())
-
-	if c.sshSrv != nil {
-		c.sshSrv.SetRecord(res.GetConfig().GetRecordSessions())
-	}
-
 	c.cache.Clear()
+	c.cache.SetDaemonConfig(res.GetConfig())
+
+	c.applyConfig()
+
 	for _, p := range res.GetPrincipals() {
 		c.cache.SetUUIDs(p.GetUsername(), p.GetIds())
 	}
@@ -95,6 +97,47 @@ func (c *Client) caMatches(key string) bool {
 		return false
 	}
 	return bytes.Equal(bytes.TrimSpace(data), []byte(strings.TrimSpace(key)))
+}
+
+// applyConfig pushes the synced daemon config into the embedded SSH server.
+// Unset fields fall back to the server's compiled-in defaults so a partial
+// config can never silently disable forwarding or leave the server uncapped.
+func (c *Client) applyConfig() {
+	if c.sshSrv == nil {
+		return
+	}
+	cfg := c.cache.DaemonConfig()
+	opts := c.sshSrv.Defaults()
+	if cfg == nil {
+		c.sshSrv.SetOptions(opts)
+		return
+	}
+	opts.Record = cfg.GetRecordSessions()
+	opts.AllowForwarding = boolField(cfg.AllowForwarding, opts.AllowForwarding)
+	opts.AllowAgentForwarding = boolField(cfg.AllowAgentForwarding, opts.AllowAgentForwarding)
+	opts.GatewayPorts = boolField(cfg.GatewayPorts, opts.GatewayPorts)
+	opts.MaxSessions = intField(cfg.MaxSessions, opts.MaxSessions)
+	opts.MaxConnections = intField(cfg.MaxConnections, opts.MaxConnections)
+	if d := cfg.GetClientAliveInterval(); d != nil {
+		opts.ClientAliveInterval = d.AsDuration()
+	}
+	c.sshSrv.SetOptions(opts)
+}
+
+// boolField returns v when set, otherwise the daemon's default.
+func boolField(v *bool, def bool) bool {
+	if v != nil {
+		return *v
+	}
+	return def
+}
+
+// intField returns v when set, otherwise the daemon's default.
+func intField(v *int32, def int) int {
+	if v != nil {
+		return int(*v)
+	}
+	return def
 }
 
 func (c *Client) renewHostCerts(ctx context.Context, force bool) error {

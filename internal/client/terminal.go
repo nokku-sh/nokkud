@@ -99,7 +99,7 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 	logger.Info("session started")
 
 	var rec *recording.Recorder
-	if c.config.RecordSessions() {
+	if c.cache.RecordSessions() {
 		shortID := sessionID
 		if len(shortID) > 8 {
 			shortID = shortID[:8]

@@ -1,12 +1,16 @@
 package client
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
+	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 	"github.com/nokku-sh/nokkud/internal/paths"
+	"github.com/nokku-sh/nokkud/internal/state"
 )
 
 func TestSSHPort(t *testing.T) {
@@ -58,6 +62,63 @@ func TestValidPort(t *testing.T) {
 				t.Errorf("validPort(%q) = %q, want %q", tt.port, got, tt.want)
 			}
 		})
+	}
+}
+
+// fakeDaemonService is a DaemonServiceClient stub that returns a canned
+// SyncDaemon response. Only SyncDaemon is overridden; the embedded nil
+// interface provides the rest without ever being called.
+type fakeDaemonService struct {
+	nokkuv1connect.DaemonServiceClient
+
+	resp *nokkuv1.SyncDaemonResponse
+}
+
+func (f *fakeDaemonService) SyncDaemon(
+	_ context.Context,
+	_ *nokkuv1.SyncDaemonRequest,
+) (*nokkuv1.SyncDaemonResponse, error) {
+	return f.resp, nil
+}
+
+// TestSyncDaemonPersistsRecordingKey guards the invariant that a synced
+// daemon config reaches the on-disk cache, so a restart keeps the recording
+// key even before the first re-sync.
+func TestSyncDaemonPersistsRecordingKey(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := paths.Paths{ConfigDir: dir}
+
+	cfg := state.NewConfig(p)
+	cfg.WorkspaceID = "ws-1"
+	cfg.TargetID = "tgt-1"
+	cfg.DaemonID = "daemon-1"
+
+	key := "dGVzdGtleTAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMA=="
+	version := int64(42)
+	c := &Client{
+		config: cfg,
+		cache:  state.NewCache(p),
+		paths:  p,
+		dc: &fakeDaemonService{resp: &nokkuv1.SyncDaemonResponse{
+			Status:       nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED.Enum(),
+			StateVersion: &version,
+			Config: &nokkuv1.DaemonConfig{
+				RecordingPublicKey: &key,
+			},
+		}},
+	}
+
+	if err := c.syncDaemon(context.Background()); err != nil {
+		t.Fatalf("syncDaemon: %v", err)
+	}
+
+	loaded := state.NewCache(p)
+	if err := loaded.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.RecordingKey(); got != key {
+		t.Fatalf("recording key not persisted: got %q, want %q", got, key)
 	}
 }
 

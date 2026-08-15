@@ -186,10 +186,10 @@ func (c *Client) DeleteDaemon(ctx context.Context) error {
 }
 
 // RecordingKey returns the workspace recording public key and fingerprint
-// from the synced config, or ("", "") when unset or invalid so sessions
+// from the synced cache, or ("", "") when unset or invalid so sessions
 // stay local.
 func (c *Client) RecordingKey() (string, string) {
-	pubkey, fp, ok := recording.Key(c.config.RecordingKey())
+	pubkey, fp, ok := recording.Key(c.cache.RecordingKey())
 	if !ok {
 		return "", ""
 	}
