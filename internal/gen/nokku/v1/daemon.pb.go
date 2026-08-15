@@ -185,10 +185,11 @@ func (x *Daemon) GetCreatedAt() *timestamppb.Timestamp {
 }
 
 type DaemonConfig struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	RecordSessions *bool                  `protobuf:"varint,1,opt,name=record_sessions,json=recordSessions" json:"record_sessions,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	RecordSessions     *bool                  `protobuf:"varint,1,opt,name=record_sessions,json=recordSessions" json:"record_sessions,omitempty"`
+	RecordingPublicKey *string                `protobuf:"bytes,2,opt,name=recording_public_key,json=recordingPublicKey" json:"recording_public_key,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *DaemonConfig) Reset() {
@@ -226,6 +227,13 @@ func (x *DaemonConfig) GetRecordSessions() bool {
 		return *x.RecordSessions
 	}
 	return false
+}
+
+func (x *DaemonConfig) GetRecordingPublicKey() string {
+	if x != nil && x.RecordingPublicKey != nil {
+		return *x.RecordingPublicKey
+	}
+	return ""
 }
 
 type GetDaemonRequest struct {
@@ -1397,16 +1405,12 @@ func (x *SyncDaemonRequest) GetMetadata() map[string]string {
 }
 
 type SyncDaemonResponse struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	Status       *DaemonStatus          `protobuf:"varint,1,opt,name=status,enum=nokku.v1.DaemonStatus" json:"status,omitempty"`
-	Config       *DaemonConfig          `protobuf:"bytes,2,opt,name=config" json:"config,omitempty"`
-	Principals   []*PrincipalUsers      `protobuf:"bytes,3,rep,name=principals" json:"principals,omitempty"`
-	StateVersion *int64                 `protobuf:"varint,4,opt,name=state_version,json=stateVersion" json:"state_version,omitempty"`
-	// The CA public key the backend currently signs with. The daemon compares
-	// it against its cached copy and force-renews its host certificate (and
-	// re-trusts the CA) when it changes: a CA rollover must propagate without
-	// waiting for certificate expiry. Empty when the daemon has no CA.
-	CaPublicKey   *string `protobuf:"bytes,5,opt,name=ca_public_key,json=caPublicKey" json:"ca_public_key,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        *DaemonStatus          `protobuf:"varint,1,opt,name=status,enum=nokku.v1.DaemonStatus" json:"status,omitempty"`
+	Config        *DaemonConfig          `protobuf:"bytes,2,opt,name=config" json:"config,omitempty"`
+	Principals    []*PrincipalUsers      `protobuf:"bytes,3,rep,name=principals" json:"principals,omitempty"`
+	StateVersion  *int64                 `protobuf:"varint,4,opt,name=state_version,json=stateVersion" json:"state_version,omitempty"`
+	CaPublicKey   *string                `protobuf:"bytes,5,opt,name=ca_public_key,json=caPublicKey" json:"ca_public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2263,9 +2267,10 @@ const file_nokku_v1_daemon_proto_rawDesc = "" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"7\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"i\n" +
 	"\fDaemonConfig\x12'\n" +
-	"\x0frecord_sessions\x18\x01 \x01(\bR\x0erecordSessions\"Y\n" +
+	"\x0frecord_sessions\x18\x01 \x01(\bR\x0erecordSessions\x120\n" +
+	"\x14recording_public_key\x18\x02 \x01(\tR\x12recordingPublicKey\"Y\n" +
 	"\x10GetDaemonRequest\x12+\n" +
 	"\fworkspace_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\vworkspaceId\x12\x18\n" +
 	"\x02id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\"=\n" +
