@@ -19,12 +19,17 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
+require github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+
 require (
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/google/go-tpm-tools v0.3.13-0.20230620182252-4639ecce2aba // indirect
 	github.com/kr/fs v0.1.0 // indirect
+	github.com/mizuchilabs/kagi v0.0.0
 	github.com/u-root/u-root v0.16.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/mizuchilabs/kagi => /home/roxas/Projects/kagi
