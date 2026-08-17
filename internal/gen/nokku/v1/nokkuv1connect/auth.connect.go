@@ -42,9 +42,6 @@ const (
 	AuthServiceLogoutProcedure = "/nokku.v1.AuthService/Logout"
 	// AuthServiceRegisterProcedure is the fully-qualified name of the AuthService's Register RPC.
 	AuthServiceRegisterProcedure = "/nokku.v1.AuthService/Register"
-	// AuthServiceRefreshTokenProcedure is the fully-qualified name of the AuthService's RefreshToken
-	// RPC.
-	AuthServiceRefreshTokenProcedure = "/nokku.v1.AuthService/RefreshToken"
 	// AuthServiceForgotPasswordProcedure is the fully-qualified name of the AuthService's
 	// ForgotPassword RPC.
 	AuthServiceForgotPasswordProcedure = "/nokku.v1.AuthService/ForgotPassword"
@@ -56,12 +53,6 @@ const (
 	AuthServiceResendVerificationProcedure = "/nokku.v1.AuthService/ResendVerification"
 	// AuthServiceVerifyEmailProcedure is the fully-qualified name of the AuthService's VerifyEmail RPC.
 	AuthServiceVerifyEmailProcedure = "/nokku.v1.AuthService/VerifyEmail"
-	// AuthServiceStreamCLILoginProcedure is the fully-qualified name of the AuthService's
-	// StreamCLILogin RPC.
-	AuthServiceStreamCLILoginProcedure = "/nokku.v1.AuthService/StreamCLILogin"
-	// AuthServiceVerifyCLILoginProcedure is the fully-qualified name of the AuthService's
-	// VerifyCLILogin RPC.
-	AuthServiceVerifyCLILoginProcedure = "/nokku.v1.AuthService/VerifyCLILogin"
 )
 
 // AuthServiceClient is a client for the nokku.v1.AuthService service.
@@ -70,13 +61,10 @@ type AuthServiceClient interface {
 	LoginWithBackupCode(context.Context, *v1.LoginWithBackupCodeRequest) (*v1.LoginWithBackupCodeResponse, error)
 	Logout(context.Context, *v1.LogoutRequest) (*v1.LogoutResponse, error)
 	Register(context.Context, *v1.RegisterRequest) (*v1.RegisterResponse, error)
-	RefreshToken(context.Context, *v1.RefreshTokenRequest) (*v1.RefreshTokenResponse, error)
 	ForgotPassword(context.Context, *v1.ForgotPasswordRequest) (*v1.ForgotPasswordResponse, error)
 	ResetPassword(context.Context, *v1.ResetPasswordRequest) (*v1.ResetPasswordResponse, error)
 	ResendVerification(context.Context, *v1.ResendVerificationRequest) (*v1.ResendVerificationResponse, error)
 	VerifyEmail(context.Context, *v1.VerifyEmailRequest) (*v1.VerifyEmailResponse, error)
-	StreamCLILogin(context.Context, *v1.StreamCLILoginRequest) (*connect.ServerStreamForClient[v1.StreamCLILoginResponse], error)
-	VerifyCLILogin(context.Context, *v1.VerifyCLILoginRequest) (*v1.VerifyCLILoginResponse, error)
 }
 
 // NewAuthServiceClient constructs a client for the nokku.v1.AuthService service. By default, it
@@ -114,12 +102,6 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("Register")),
 			connect.WithClientOptions(opts...),
 		),
-		refreshToken: connect.NewClient[v1.RefreshTokenRequest, v1.RefreshTokenResponse](
-			httpClient,
-			baseURL+AuthServiceRefreshTokenProcedure,
-			connect.WithSchema(authServiceMethods.ByName("RefreshToken")),
-			connect.WithClientOptions(opts...),
-		),
 		forgotPassword: connect.NewClient[v1.ForgotPasswordRequest, v1.ForgotPasswordResponse](
 			httpClient,
 			baseURL+AuthServiceForgotPasswordProcedure,
@@ -144,18 +126,6 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("VerifyEmail")),
 			connect.WithClientOptions(opts...),
 		),
-		streamCLILogin: connect.NewClient[v1.StreamCLILoginRequest, v1.StreamCLILoginResponse](
-			httpClient,
-			baseURL+AuthServiceStreamCLILoginProcedure,
-			connect.WithSchema(authServiceMethods.ByName("StreamCLILogin")),
-			connect.WithClientOptions(opts...),
-		),
-		verifyCLILogin: connect.NewClient[v1.VerifyCLILoginRequest, v1.VerifyCLILoginResponse](
-			httpClient,
-			baseURL+AuthServiceVerifyCLILoginProcedure,
-			connect.WithSchema(authServiceMethods.ByName("VerifyCLILogin")),
-			connect.WithClientOptions(opts...),
-		),
 	}
 }
 
@@ -165,13 +135,10 @@ type authServiceClient struct {
 	loginWithBackupCode *connect.Client[v1.LoginWithBackupCodeRequest, v1.LoginWithBackupCodeResponse]
 	logout              *connect.Client[v1.LogoutRequest, v1.LogoutResponse]
 	register            *connect.Client[v1.RegisterRequest, v1.RegisterResponse]
-	refreshToken        *connect.Client[v1.RefreshTokenRequest, v1.RefreshTokenResponse]
 	forgotPassword      *connect.Client[v1.ForgotPasswordRequest, v1.ForgotPasswordResponse]
 	resetPassword       *connect.Client[v1.ResetPasswordRequest, v1.ResetPasswordResponse]
 	resendVerification  *connect.Client[v1.ResendVerificationRequest, v1.ResendVerificationResponse]
 	verifyEmail         *connect.Client[v1.VerifyEmailRequest, v1.VerifyEmailResponse]
-	streamCLILogin      *connect.Client[v1.StreamCLILoginRequest, v1.StreamCLILoginResponse]
-	verifyCLILogin      *connect.Client[v1.VerifyCLILoginRequest, v1.VerifyCLILoginResponse]
 }
 
 // Login calls nokku.v1.AuthService.Login.
@@ -204,15 +171,6 @@ func (c *authServiceClient) Logout(ctx context.Context, req *v1.LogoutRequest) (
 // Register calls nokku.v1.AuthService.Register.
 func (c *authServiceClient) Register(ctx context.Context, req *v1.RegisterRequest) (*v1.RegisterResponse, error) {
 	response, err := c.register.CallUnary(ctx, connect.NewRequest(req))
-	if response != nil {
-		return response.Msg, err
-	}
-	return nil, err
-}
-
-// RefreshToken calls nokku.v1.AuthService.RefreshToken.
-func (c *authServiceClient) RefreshToken(ctx context.Context, req *v1.RefreshTokenRequest) (*v1.RefreshTokenResponse, error) {
-	response, err := c.refreshToken.CallUnary(ctx, connect.NewRequest(req))
 	if response != nil {
 		return response.Msg, err
 	}
@@ -255,33 +213,16 @@ func (c *authServiceClient) VerifyEmail(ctx context.Context, req *v1.VerifyEmail
 	return nil, err
 }
 
-// StreamCLILogin calls nokku.v1.AuthService.StreamCLILogin.
-func (c *authServiceClient) StreamCLILogin(ctx context.Context, req *v1.StreamCLILoginRequest) (*connect.ServerStreamForClient[v1.StreamCLILoginResponse], error) {
-	return c.streamCLILogin.CallServerStream(ctx, connect.NewRequest(req))
-}
-
-// VerifyCLILogin calls nokku.v1.AuthService.VerifyCLILogin.
-func (c *authServiceClient) VerifyCLILogin(ctx context.Context, req *v1.VerifyCLILoginRequest) (*v1.VerifyCLILoginResponse, error) {
-	response, err := c.verifyCLILogin.CallUnary(ctx, connect.NewRequest(req))
-	if response != nil {
-		return response.Msg, err
-	}
-	return nil, err
-}
-
 // AuthServiceHandler is an implementation of the nokku.v1.AuthService service.
 type AuthServiceHandler interface {
 	Login(context.Context, *v1.LoginRequest) (*v1.LoginResponse, error)
 	LoginWithBackupCode(context.Context, *v1.LoginWithBackupCodeRequest) (*v1.LoginWithBackupCodeResponse, error)
 	Logout(context.Context, *v1.LogoutRequest) (*v1.LogoutResponse, error)
 	Register(context.Context, *v1.RegisterRequest) (*v1.RegisterResponse, error)
-	RefreshToken(context.Context, *v1.RefreshTokenRequest) (*v1.RefreshTokenResponse, error)
 	ForgotPassword(context.Context, *v1.ForgotPasswordRequest) (*v1.ForgotPasswordResponse, error)
 	ResetPassword(context.Context, *v1.ResetPasswordRequest) (*v1.ResetPasswordResponse, error)
 	ResendVerification(context.Context, *v1.ResendVerificationRequest) (*v1.ResendVerificationResponse, error)
 	VerifyEmail(context.Context, *v1.VerifyEmailRequest) (*v1.VerifyEmailResponse, error)
-	StreamCLILogin(context.Context, *v1.StreamCLILoginRequest, *connect.ServerStream[v1.StreamCLILoginResponse]) error
-	VerifyCLILogin(context.Context, *v1.VerifyCLILoginRequest) (*v1.VerifyCLILoginResponse, error)
 }
 
 // NewAuthServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -315,12 +256,6 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("Register")),
 		connect.WithHandlerOptions(opts...),
 	)
-	authServiceRefreshTokenHandler := connect.NewUnaryHandlerSimple(
-		AuthServiceRefreshTokenProcedure,
-		svc.RefreshToken,
-		connect.WithSchema(authServiceMethods.ByName("RefreshToken")),
-		connect.WithHandlerOptions(opts...),
-	)
 	authServiceForgotPasswordHandler := connect.NewUnaryHandlerSimple(
 		AuthServiceForgotPasswordProcedure,
 		svc.ForgotPassword,
@@ -345,18 +280,6 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("VerifyEmail")),
 		connect.WithHandlerOptions(opts...),
 	)
-	authServiceStreamCLILoginHandler := connect.NewServerStreamHandlerSimple(
-		AuthServiceStreamCLILoginProcedure,
-		svc.StreamCLILogin,
-		connect.WithSchema(authServiceMethods.ByName("StreamCLILogin")),
-		connect.WithHandlerOptions(opts...),
-	)
-	authServiceVerifyCLILoginHandler := connect.NewUnaryHandlerSimple(
-		AuthServiceVerifyCLILoginProcedure,
-		svc.VerifyCLILogin,
-		connect.WithSchema(authServiceMethods.ByName("VerifyCLILogin")),
-		connect.WithHandlerOptions(opts...),
-	)
 	return "/nokku.v1.AuthService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AuthServiceLoginProcedure:
@@ -367,8 +290,6 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceLogoutHandler.ServeHTTP(w, r)
 		case AuthServiceRegisterProcedure:
 			authServiceRegisterHandler.ServeHTTP(w, r)
-		case AuthServiceRefreshTokenProcedure:
-			authServiceRefreshTokenHandler.ServeHTTP(w, r)
 		case AuthServiceForgotPasswordProcedure:
 			authServiceForgotPasswordHandler.ServeHTTP(w, r)
 		case AuthServiceResetPasswordProcedure:
@@ -377,10 +298,6 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceResendVerificationHandler.ServeHTTP(w, r)
 		case AuthServiceVerifyEmailProcedure:
 			authServiceVerifyEmailHandler.ServeHTTP(w, r)
-		case AuthServiceStreamCLILoginProcedure:
-			authServiceStreamCLILoginHandler.ServeHTTP(w, r)
-		case AuthServiceVerifyCLILoginProcedure:
-			authServiceVerifyCLILoginHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -406,10 +323,6 @@ func (UnimplementedAuthServiceHandler) Register(context.Context, *v1.RegisterReq
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.AuthService.Register is not implemented"))
 }
 
-func (UnimplementedAuthServiceHandler) RefreshToken(context.Context, *v1.RefreshTokenRequest) (*v1.RefreshTokenResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.AuthService.RefreshToken is not implemented"))
-}
-
 func (UnimplementedAuthServiceHandler) ForgotPassword(context.Context, *v1.ForgotPasswordRequest) (*v1.ForgotPasswordResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.AuthService.ForgotPassword is not implemented"))
 }
@@ -424,12 +337,4 @@ func (UnimplementedAuthServiceHandler) ResendVerification(context.Context, *v1.R
 
 func (UnimplementedAuthServiceHandler) VerifyEmail(context.Context, *v1.VerifyEmailRequest) (*v1.VerifyEmailResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.AuthService.VerifyEmail is not implemented"))
-}
-
-func (UnimplementedAuthServiceHandler) StreamCLILogin(context.Context, *v1.StreamCLILoginRequest, *connect.ServerStream[v1.StreamCLILoginResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.AuthService.StreamCLILogin is not implemented"))
-}
-
-func (UnimplementedAuthServiceHandler) VerifyCLILogin(context.Context, *v1.VerifyCLILoginRequest) (*v1.VerifyCLILoginResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.AuthService.VerifyCLILogin is not implemented"))
 }

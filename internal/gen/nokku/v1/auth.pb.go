@@ -180,10 +180,9 @@ func (x *LoginRequest) GetPassword() string {
 	return ""
 }
 
+// The session is delivered as an HttpOnly cookie, so the response is empty.
 type LoginResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	AccessToken   *string                `protobuf:"bytes,1,opt,name=access_token,json=accessToken" json:"access_token,omitempty"`
-	RefreshToken  *string                `protobuf:"bytes,2,opt,name=refresh_token,json=refreshToken" json:"refresh_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -216,20 +215,6 @@ func (x *LoginResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use LoginResponse.ProtoReflect.Descriptor instead.
 func (*LoginResponse) Descriptor() ([]byte, []int) {
 	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *LoginResponse) GetAccessToken() string {
-	if x != nil && x.AccessToken != nil {
-		return *x.AccessToken
-	}
-	return ""
-}
-
-func (x *LoginResponse) GetRefreshToken() string {
-	if x != nil && x.RefreshToken != nil {
-		return *x.RefreshToken
-	}
-	return ""
 }
 
 type LoginWithBackupCodeRequest struct {
@@ -286,8 +271,6 @@ func (x *LoginWithBackupCodeRequest) GetCode() string {
 
 type LoginWithBackupCodeResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	AccessToken   *string                `protobuf:"bytes,1,opt,name=access_token,json=accessToken" json:"access_token,omitempty"`
-	RefreshToken  *string                `protobuf:"bytes,2,opt,name=refresh_token,json=refreshToken" json:"refresh_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -322,108 +305,6 @@ func (*LoginWithBackupCodeResponse) Descriptor() ([]byte, []int) {
 	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *LoginWithBackupCodeResponse) GetAccessToken() string {
-	if x != nil && x.AccessToken != nil {
-		return *x.AccessToken
-	}
-	return ""
-}
-
-func (x *LoginWithBackupCodeResponse) GetRefreshToken() string {
-	if x != nil && x.RefreshToken != nil {
-		return *x.RefreshToken
-	}
-	return ""
-}
-
-type RefreshTokenRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RefreshToken  *string                `protobuf:"bytes,1,opt,name=refresh_token,json=refreshToken" json:"refresh_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RefreshTokenRequest) Reset() {
-	*x = RefreshTokenRequest{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[6]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RefreshTokenRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RefreshTokenRequest) ProtoMessage() {}
-
-func (x *RefreshTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[6]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RefreshTokenRequest.ProtoReflect.Descriptor instead.
-func (*RefreshTokenRequest) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{6}
-}
-
-func (x *RefreshTokenRequest) GetRefreshToken() string {
-	if x != nil && x.RefreshToken != nil {
-		return *x.RefreshToken
-	}
-	return ""
-}
-
-type RefreshTokenResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AccessToken   *string                `protobuf:"bytes,1,opt,name=access_token,json=accessToken" json:"access_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RefreshTokenResponse) Reset() {
-	*x = RefreshTokenResponse{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RefreshTokenResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RefreshTokenResponse) ProtoMessage() {}
-
-func (x *RefreshTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RefreshTokenResponse.ProtoReflect.Descriptor instead.
-func (*RefreshTokenResponse) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *RefreshTokenResponse) GetAccessToken() string {
-	if x != nil && x.AccessToken != nil {
-		return *x.AccessToken
-	}
-	return ""
-}
-
 type LogoutRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -432,7 +313,7 @@ type LogoutRequest struct {
 
 func (x *LogoutRequest) Reset() {
 	*x = LogoutRequest{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[8]
+	mi := &file_nokku_v1_auth_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -444,7 +325,7 @@ func (x *LogoutRequest) String() string {
 func (*LogoutRequest) ProtoMessage() {}
 
 func (x *LogoutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[8]
+	mi := &file_nokku_v1_auth_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -457,7 +338,7 @@ func (x *LogoutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogoutRequest.ProtoReflect.Descriptor instead.
 func (*LogoutRequest) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{8}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{6}
 }
 
 type LogoutResponse struct {
@@ -468,7 +349,7 @@ type LogoutResponse struct {
 
 func (x *LogoutResponse) Reset() {
 	*x = LogoutResponse{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[9]
+	mi := &file_nokku_v1_auth_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -480,7 +361,7 @@ func (x *LogoutResponse) String() string {
 func (*LogoutResponse) ProtoMessage() {}
 
 func (x *LogoutResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[9]
+	mi := &file_nokku_v1_auth_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -493,7 +374,7 @@ func (x *LogoutResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogoutResponse.ProtoReflect.Descriptor instead.
 func (*LogoutResponse) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{9}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{7}
 }
 
 type ForgotPasswordRequest struct {
@@ -505,7 +386,7 @@ type ForgotPasswordRequest struct {
 
 func (x *ForgotPasswordRequest) Reset() {
 	*x = ForgotPasswordRequest{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[10]
+	mi := &file_nokku_v1_auth_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -517,7 +398,7 @@ func (x *ForgotPasswordRequest) String() string {
 func (*ForgotPasswordRequest) ProtoMessage() {}
 
 func (x *ForgotPasswordRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[10]
+	mi := &file_nokku_v1_auth_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -530,7 +411,7 @@ func (x *ForgotPasswordRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgotPasswordRequest.ProtoReflect.Descriptor instead.
 func (*ForgotPasswordRequest) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{10}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ForgotPasswordRequest) GetEmail() string {
@@ -548,7 +429,7 @@ type ForgotPasswordResponse struct {
 
 func (x *ForgotPasswordResponse) Reset() {
 	*x = ForgotPasswordResponse{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[11]
+	mi := &file_nokku_v1_auth_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -560,7 +441,7 @@ func (x *ForgotPasswordResponse) String() string {
 func (*ForgotPasswordResponse) ProtoMessage() {}
 
 func (x *ForgotPasswordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[11]
+	mi := &file_nokku_v1_auth_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -573,7 +454,7 @@ func (x *ForgotPasswordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgotPasswordResponse.ProtoReflect.Descriptor instead.
 func (*ForgotPasswordResponse) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{11}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{9}
 }
 
 type ResetPasswordRequest struct {
@@ -586,7 +467,7 @@ type ResetPasswordRequest struct {
 
 func (x *ResetPasswordRequest) Reset() {
 	*x = ResetPasswordRequest{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[12]
+	mi := &file_nokku_v1_auth_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -598,7 +479,7 @@ func (x *ResetPasswordRequest) String() string {
 func (*ResetPasswordRequest) ProtoMessage() {}
 
 func (x *ResetPasswordRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[12]
+	mi := &file_nokku_v1_auth_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -611,7 +492,7 @@ func (x *ResetPasswordRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResetPasswordRequest.ProtoReflect.Descriptor instead.
 func (*ResetPasswordRequest) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{12}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ResetPasswordRequest) GetToken() string {
@@ -636,7 +517,7 @@ type ResetPasswordResponse struct {
 
 func (x *ResetPasswordResponse) Reset() {
 	*x = ResetPasswordResponse{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[13]
+	mi := &file_nokku_v1_auth_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -648,7 +529,7 @@ func (x *ResetPasswordResponse) String() string {
 func (*ResetPasswordResponse) ProtoMessage() {}
 
 func (x *ResetPasswordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[13]
+	mi := &file_nokku_v1_auth_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -661,7 +542,7 @@ func (x *ResetPasswordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResetPasswordResponse.ProtoReflect.Descriptor instead.
 func (*ResetPasswordResponse) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{13}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{11}
 }
 
 type VerifyEmailRequest struct {
@@ -673,7 +554,7 @@ type VerifyEmailRequest struct {
 
 func (x *VerifyEmailRequest) Reset() {
 	*x = VerifyEmailRequest{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[14]
+	mi := &file_nokku_v1_auth_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -685,7 +566,7 @@ func (x *VerifyEmailRequest) String() string {
 func (*VerifyEmailRequest) ProtoMessage() {}
 
 func (x *VerifyEmailRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[14]
+	mi := &file_nokku_v1_auth_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -698,7 +579,7 @@ func (x *VerifyEmailRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyEmailRequest.ProtoReflect.Descriptor instead.
 func (*VerifyEmailRequest) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{14}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *VerifyEmailRequest) GetToken() string {
@@ -716,7 +597,7 @@ type VerifyEmailResponse struct {
 
 func (x *VerifyEmailResponse) Reset() {
 	*x = VerifyEmailResponse{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[15]
+	mi := &file_nokku_v1_auth_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -728,7 +609,7 @@ func (x *VerifyEmailResponse) String() string {
 func (*VerifyEmailResponse) ProtoMessage() {}
 
 func (x *VerifyEmailResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[15]
+	mi := &file_nokku_v1_auth_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -741,7 +622,7 @@ func (x *VerifyEmailResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyEmailResponse.ProtoReflect.Descriptor instead.
 func (*VerifyEmailResponse) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{15}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{13}
 }
 
 type ResendVerificationRequest struct {
@@ -753,7 +634,7 @@ type ResendVerificationRequest struct {
 
 func (x *ResendVerificationRequest) Reset() {
 	*x = ResendVerificationRequest{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[16]
+	mi := &file_nokku_v1_auth_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -765,7 +646,7 @@ func (x *ResendVerificationRequest) String() string {
 func (*ResendVerificationRequest) ProtoMessage() {}
 
 func (x *ResendVerificationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[16]
+	mi := &file_nokku_v1_auth_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -778,7 +659,7 @@ func (x *ResendVerificationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResendVerificationRequest.ProtoReflect.Descriptor instead.
 func (*ResendVerificationRequest) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{16}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ResendVerificationRequest) GetEmail() string {
@@ -796,7 +677,7 @@ type ResendVerificationResponse struct {
 
 func (x *ResendVerificationResponse) Reset() {
 	*x = ResendVerificationResponse{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[17]
+	mi := &file_nokku_v1_auth_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -808,7 +689,7 @@ func (x *ResendVerificationResponse) String() string {
 func (*ResendVerificationResponse) ProtoMessage() {}
 
 func (x *ResendVerificationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[17]
+	mi := &file_nokku_v1_auth_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -821,209 +702,14 @@ func (x *ResendVerificationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResendVerificationResponse.ProtoReflect.Descriptor instead.
 func (*ResendVerificationResponse) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{17}
-}
-
-// CLI login flow -------------------------------------------------------------
-type StreamCLILoginRequest struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	LoginCode *string                `protobuf:"bytes,1,opt,name=login_code,json=loginCode" json:"login_code,omitempty"`
-	// Signing method used by the CLI device after login: "tpm" or "soft".
-	AuthMethod *string `protobuf:"bytes,2,opt,name=auth_method,json=authMethod" json:"auth_method,omitempty"`
-	// PEM-encoded PKIX public key the device uses to authenticate requests.
-	AuthPubkey    *string `protobuf:"bytes,3,opt,name=auth_pubkey,json=authPubkey" json:"auth_pubkey,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *StreamCLILoginRequest) Reset() {
-	*x = StreamCLILoginRequest{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[18]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *StreamCLILoginRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*StreamCLILoginRequest) ProtoMessage() {}
-
-func (x *StreamCLILoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[18]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use StreamCLILoginRequest.ProtoReflect.Descriptor instead.
-func (*StreamCLILoginRequest) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{18}
-}
-
-func (x *StreamCLILoginRequest) GetLoginCode() string {
-	if x != nil && x.LoginCode != nil {
-		return *x.LoginCode
-	}
-	return ""
-}
-
-func (x *StreamCLILoginRequest) GetAuthMethod() string {
-	if x != nil && x.AuthMethod != nil {
-		return *x.AuthMethod
-	}
-	return ""
-}
-
-func (x *StreamCLILoginRequest) GetAuthPubkey() string {
-	if x != nil && x.AuthPubkey != nil {
-		return *x.AuthPubkey
-	}
-	return ""
-}
-
-type StreamCLILoginResponse struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	User            *User                  `protobuf:"bytes,1,opt,name=user" json:"user,omitempty"`                                              // sent after success
-	VerificationUrl *string                `protobuf:"bytes,2,opt,name=verification_url,json=verificationUrl" json:"verification_url,omitempty"` // sent first
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *StreamCLILoginResponse) Reset() {
-	*x = StreamCLILoginResponse{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[19]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *StreamCLILoginResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*StreamCLILoginResponse) ProtoMessage() {}
-
-func (x *StreamCLILoginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[19]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use StreamCLILoginResponse.ProtoReflect.Descriptor instead.
-func (*StreamCLILoginResponse) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{19}
-}
-
-func (x *StreamCLILoginResponse) GetUser() *User {
-	if x != nil {
-		return x.User
-	}
-	return nil
-}
-
-func (x *StreamCLILoginResponse) GetVerificationUrl() string {
-	if x != nil && x.VerificationUrl != nil {
-		return *x.VerificationUrl
-	}
-	return ""
-}
-
-type VerifyCLILoginRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	LoginCode     *string                `protobuf:"bytes,1,opt,name=login_code,json=loginCode" json:"login_code,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *VerifyCLILoginRequest) Reset() {
-	*x = VerifyCLILoginRequest{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[20]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *VerifyCLILoginRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*VerifyCLILoginRequest) ProtoMessage() {}
-
-func (x *VerifyCLILoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[20]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use VerifyCLILoginRequest.ProtoReflect.Descriptor instead.
-func (*VerifyCLILoginRequest) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{20}
-}
-
-func (x *VerifyCLILoginRequest) GetLoginCode() string {
-	if x != nil && x.LoginCode != nil {
-		return *x.LoginCode
-	}
-	return ""
-}
-
-type VerifyCLILoginResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *VerifyCLILoginResponse) Reset() {
-	*x = VerifyCLILoginResponse{}
-	mi := &file_nokku_v1_auth_proto_msgTypes[21]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *VerifyCLILoginResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*VerifyCLILoginResponse) ProtoMessage() {}
-
-func (x *VerifyCLILoginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nokku_v1_auth_proto_msgTypes[21]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use VerifyCLILoginResponse.ProtoReflect.Descriptor instead.
-func (*VerifyCLILoginResponse) Descriptor() ([]byte, []int) {
-	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{21}
+	return file_nokku_v1_auth_proto_rawDescGZIP(), []int{15}
 }
 
 var File_nokku_v1_auth_proto protoreflect.FileDescriptor
 
 const file_nokku_v1_auth_proto_rawDesc = "" +
 	"\n" +
-	"\x13nokku/v1/auth.proto\x12\bnokku.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x13nokku/v1/user.proto\"\xcc\x01\n" +
+	"\x13nokku/v1/auth.proto\x12\bnokku.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/api/annotations.proto\"\xcc\x01\n" +
 	"\x0fRegisterRequest\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x03\x18\x80\x02R\x04name\x12 \n" +
@@ -1035,20 +721,12 @@ const file_nokku_v1_auth_proto_rawDesc = "" +
 	"\x10RegisterResponse\"R\n" +
 	"\fLoginRequest\x12\x1d\n" +
 	"\x05email\x18\x01 \x01(\tB\a\xbaH\x04r\x02`\x01R\x05email\x12#\n" +
-	"\bpassword\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\bpassword\"W\n" +
-	"\rLoginResponse\x12!\n" +
-	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x12#\n" +
-	"\rrefresh_token\x18\x02 \x01(\tR\frefreshToken\"X\n" +
+	"\bpassword\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\bpassword\"\x0f\n" +
+	"\rLoginResponse\"X\n" +
 	"\x1aLoginWithBackupCodeRequest\x12\x1d\n" +
 	"\x05email\x18\x01 \x01(\tB\a\xbaH\x04r\x02`\x01R\x05email\x12\x1b\n" +
-	"\x04code\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x04code\"e\n" +
-	"\x1bLoginWithBackupCodeResponse\x12!\n" +
-	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x12#\n" +
-	"\rrefresh_token\x18\x02 \x01(\tR\frefreshToken\":\n" +
-	"\x13RefreshTokenRequest\x12#\n" +
-	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"9\n" +
-	"\x14RefreshTokenResponse\x12!\n" +
-	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\"\x0f\n" +
+	"\x04code\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x04code\"\x1d\n" +
+	"\x1bLoginWithBackupCodeResponse\"\x0f\n" +
 	"\rLogoutRequest\"\x10\n" +
 	"\x0eLogoutResponse\"9\n" +
 	"\x15ForgotPasswordRequest\x12 \n" +
@@ -1065,34 +743,17 @@ const file_nokku_v1_auth_proto_rawDesc = "" +
 	"\x19ResendVerificationRequest\x12 \n" +
 	"\x05email\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x18\x80\x02`\x01R\x05email\"\x1c\n" +
-	"\x1aResendVerificationResponse\"x\n" +
-	"\x15StreamCLILoginRequest\x12\x1d\n" +
-	"\n" +
-	"login_code\x18\x01 \x01(\tR\tloginCode\x12\x1f\n" +
-	"\vauth_method\x18\x02 \x01(\tR\n" +
-	"authMethod\x12\x1f\n" +
-	"\vauth_pubkey\x18\x03 \x01(\tR\n" +
-	"authPubkey\"g\n" +
-	"\x16StreamCLILoginResponse\x12\"\n" +
-	"\x04user\x18\x01 \x01(\v2\x0e.nokku.v1.UserR\x04user\x12)\n" +
-	"\x10verification_url\x18\x02 \x01(\tR\x0fverificationUrl\"?\n" +
-	"\x15VerifyCLILoginRequest\x12&\n" +
-	"\n" +
-	"login_code\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\tloginCode\"\x18\n" +
-	"\x16VerifyCLILoginResponse2\xfa\b\n" +
+	"\x1aResendVerificationResponse2\xe0\x06\n" +
 	"\vAuthService\x12N\n" +
 	"\x05Login\x12\x16.nokku.v1.LoginRequest\x1a\x17.nokku.v1.LoginResponse\"\x14\x82\xd3\xe4\x93\x02\x0e:\x01*\"\t/v1/login\x12\x84\x01\n" +
 	"\x13LoginWithBackupCode\x12$.nokku.v1.LoginWithBackupCodeRequest\x1a%.nokku.v1.LoginWithBackupCodeResponse\" \x82\xd3\xe4\x93\x02\x1a:\x01*\"\x15/v1/login/backup-code\x12O\n" +
 	"\x06Logout\x12\x17.nokku.v1.LogoutRequest\x1a\x18.nokku.v1.LogoutResponse\"\x12\x82\xd3\xe4\x93\x02\f\"\n" +
 	"/v1/logout\x12Z\n" +
-	"\bRegister\x12\x19.nokku.v1.RegisterRequest\x1a\x1a.nokku.v1.RegisterResponse\"\x17\x82\xd3\xe4\x93\x02\x11:\x01*\"\f/v1/register\x12h\n" +
-	"\fRefreshToken\x12\x1d.nokku.v1.RefreshTokenRequest\x1a\x1e.nokku.v1.RefreshTokenResponse\"\x19\x82\xd3\xe4\x93\x02\x13\"\x11/v1/refresh-token\x12s\n" +
+	"\bRegister\x12\x19.nokku.v1.RegisterRequest\x1a\x1a.nokku.v1.RegisterResponse\"\x17\x82\xd3\xe4\x93\x02\x11:\x01*\"\f/v1/register\x12s\n" +
 	"\x0eForgotPassword\x12\x1f.nokku.v1.ForgotPasswordRequest\x1a .nokku.v1.ForgotPasswordResponse\"\x1e\x82\xd3\xe4\x93\x02\x18:\x01*\"\x13/v1/forgot-password\x12o\n" +
 	"\rResetPassword\x12\x1e.nokku.v1.ResetPasswordRequest\x1a\x1f.nokku.v1.ResetPasswordResponse\"\x1d\x82\xd3\xe4\x93\x02\x17:\x01*\"\x12/v1/reset-password\x12\x80\x01\n" +
 	"\x12ResendVerification\x12#.nokku.v1.ResendVerificationRequest\x1a$.nokku.v1.ResendVerificationResponse\"\x1f\x82\xd3\xe4\x93\x02\x19\"\x17/v1/resend-verification\x12d\n" +
-	"\vVerifyEmail\x12\x1c.nokku.v1.VerifyEmailRequest\x1a\x1d.nokku.v1.VerifyEmailResponse\"\x18\x82\xd3\xe4\x93\x02\x12\"\x10/v1/verify-email\x12W\n" +
-	"\x0eStreamCLILogin\x12\x1f.nokku.v1.StreamCLILoginRequest\x1a .nokku.v1.StreamCLILoginResponse\"\x000\x01\x12U\n" +
-	"\x0eVerifyCLILogin\x12\x1f.nokku.v1.VerifyCLILoginRequest\x1a .nokku.v1.VerifyCLILoginResponse\"\x00B\x94\x01\n" +
+	"\vVerifyEmail\x12\x1c.nokku.v1.VerifyEmailRequest\x1a\x1d.nokku.v1.VerifyEmailResponse\"\x18\x82\xd3\xe4\x93\x02\x12\"\x10/v1/verify-emailB\x94\x01\n" +
 	"\fcom.nokku.v1B\tAuthProtoP\x01Z8github.com/nokku-sh/nokkud/internal/gen/nokku/v1;nokkuv1\xa2\x02\x03NXX\xaa\x02\bNokku.V1\xca\x02\bNokku\\V1\xe2\x02\x14Nokku\\V1\\GPBMetadata\xea\x02\tNokku::V1b\beditionsp\xe8\a"
 
 var (
@@ -1107,7 +768,7 @@ func file_nokku_v1_auth_proto_rawDescGZIP() []byte {
 	return file_nokku_v1_auth_proto_rawDescData
 }
 
-var file_nokku_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_nokku_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_nokku_v1_auth_proto_goTypes = []any{
 	(*RegisterRequest)(nil),             // 0: nokku.v1.RegisterRequest
 	(*RegisterResponse)(nil),            // 1: nokku.v1.RegisterResponse
@@ -1115,53 +776,39 @@ var file_nokku_v1_auth_proto_goTypes = []any{
 	(*LoginResponse)(nil),               // 3: nokku.v1.LoginResponse
 	(*LoginWithBackupCodeRequest)(nil),  // 4: nokku.v1.LoginWithBackupCodeRequest
 	(*LoginWithBackupCodeResponse)(nil), // 5: nokku.v1.LoginWithBackupCodeResponse
-	(*RefreshTokenRequest)(nil),         // 6: nokku.v1.RefreshTokenRequest
-	(*RefreshTokenResponse)(nil),        // 7: nokku.v1.RefreshTokenResponse
-	(*LogoutRequest)(nil),               // 8: nokku.v1.LogoutRequest
-	(*LogoutResponse)(nil),              // 9: nokku.v1.LogoutResponse
-	(*ForgotPasswordRequest)(nil),       // 10: nokku.v1.ForgotPasswordRequest
-	(*ForgotPasswordResponse)(nil),      // 11: nokku.v1.ForgotPasswordResponse
-	(*ResetPasswordRequest)(nil),        // 12: nokku.v1.ResetPasswordRequest
-	(*ResetPasswordResponse)(nil),       // 13: nokku.v1.ResetPasswordResponse
-	(*VerifyEmailRequest)(nil),          // 14: nokku.v1.VerifyEmailRequest
-	(*VerifyEmailResponse)(nil),         // 15: nokku.v1.VerifyEmailResponse
-	(*ResendVerificationRequest)(nil),   // 16: nokku.v1.ResendVerificationRequest
-	(*ResendVerificationResponse)(nil),  // 17: nokku.v1.ResendVerificationResponse
-	(*StreamCLILoginRequest)(nil),       // 18: nokku.v1.StreamCLILoginRequest
-	(*StreamCLILoginResponse)(nil),      // 19: nokku.v1.StreamCLILoginResponse
-	(*VerifyCLILoginRequest)(nil),       // 20: nokku.v1.VerifyCLILoginRequest
-	(*VerifyCLILoginResponse)(nil),      // 21: nokku.v1.VerifyCLILoginResponse
-	(*User)(nil),                        // 22: nokku.v1.User
+	(*LogoutRequest)(nil),               // 6: nokku.v1.LogoutRequest
+	(*LogoutResponse)(nil),              // 7: nokku.v1.LogoutResponse
+	(*ForgotPasswordRequest)(nil),       // 8: nokku.v1.ForgotPasswordRequest
+	(*ForgotPasswordResponse)(nil),      // 9: nokku.v1.ForgotPasswordResponse
+	(*ResetPasswordRequest)(nil),        // 10: nokku.v1.ResetPasswordRequest
+	(*ResetPasswordResponse)(nil),       // 11: nokku.v1.ResetPasswordResponse
+	(*VerifyEmailRequest)(nil),          // 12: nokku.v1.VerifyEmailRequest
+	(*VerifyEmailResponse)(nil),         // 13: nokku.v1.VerifyEmailResponse
+	(*ResendVerificationRequest)(nil),   // 14: nokku.v1.ResendVerificationRequest
+	(*ResendVerificationResponse)(nil),  // 15: nokku.v1.ResendVerificationResponse
 }
 var file_nokku_v1_auth_proto_depIdxs = []int32{
-	22, // 0: nokku.v1.StreamCLILoginResponse.user:type_name -> nokku.v1.User
-	2,  // 1: nokku.v1.AuthService.Login:input_type -> nokku.v1.LoginRequest
-	4,  // 2: nokku.v1.AuthService.LoginWithBackupCode:input_type -> nokku.v1.LoginWithBackupCodeRequest
-	8,  // 3: nokku.v1.AuthService.Logout:input_type -> nokku.v1.LogoutRequest
-	0,  // 4: nokku.v1.AuthService.Register:input_type -> nokku.v1.RegisterRequest
-	6,  // 5: nokku.v1.AuthService.RefreshToken:input_type -> nokku.v1.RefreshTokenRequest
-	10, // 6: nokku.v1.AuthService.ForgotPassword:input_type -> nokku.v1.ForgotPasswordRequest
-	12, // 7: nokku.v1.AuthService.ResetPassword:input_type -> nokku.v1.ResetPasswordRequest
-	16, // 8: nokku.v1.AuthService.ResendVerification:input_type -> nokku.v1.ResendVerificationRequest
-	14, // 9: nokku.v1.AuthService.VerifyEmail:input_type -> nokku.v1.VerifyEmailRequest
-	18, // 10: nokku.v1.AuthService.StreamCLILogin:input_type -> nokku.v1.StreamCLILoginRequest
-	20, // 11: nokku.v1.AuthService.VerifyCLILogin:input_type -> nokku.v1.VerifyCLILoginRequest
-	3,  // 12: nokku.v1.AuthService.Login:output_type -> nokku.v1.LoginResponse
-	5,  // 13: nokku.v1.AuthService.LoginWithBackupCode:output_type -> nokku.v1.LoginWithBackupCodeResponse
-	9,  // 14: nokku.v1.AuthService.Logout:output_type -> nokku.v1.LogoutResponse
-	1,  // 15: nokku.v1.AuthService.Register:output_type -> nokku.v1.RegisterResponse
-	7,  // 16: nokku.v1.AuthService.RefreshToken:output_type -> nokku.v1.RefreshTokenResponse
-	11, // 17: nokku.v1.AuthService.ForgotPassword:output_type -> nokku.v1.ForgotPasswordResponse
-	13, // 18: nokku.v1.AuthService.ResetPassword:output_type -> nokku.v1.ResetPasswordResponse
-	17, // 19: nokku.v1.AuthService.ResendVerification:output_type -> nokku.v1.ResendVerificationResponse
-	15, // 20: nokku.v1.AuthService.VerifyEmail:output_type -> nokku.v1.VerifyEmailResponse
-	19, // 21: nokku.v1.AuthService.StreamCLILogin:output_type -> nokku.v1.StreamCLILoginResponse
-	21, // 22: nokku.v1.AuthService.VerifyCLILogin:output_type -> nokku.v1.VerifyCLILoginResponse
-	12, // [12:23] is the sub-list for method output_type
-	1,  // [1:12] is the sub-list for method input_type
-	1,  // [1:1] is the sub-list for extension type_name
-	1,  // [1:1] is the sub-list for extension extendee
-	0,  // [0:1] is the sub-list for field type_name
+	2,  // 0: nokku.v1.AuthService.Login:input_type -> nokku.v1.LoginRequest
+	4,  // 1: nokku.v1.AuthService.LoginWithBackupCode:input_type -> nokku.v1.LoginWithBackupCodeRequest
+	6,  // 2: nokku.v1.AuthService.Logout:input_type -> nokku.v1.LogoutRequest
+	0,  // 3: nokku.v1.AuthService.Register:input_type -> nokku.v1.RegisterRequest
+	8,  // 4: nokku.v1.AuthService.ForgotPassword:input_type -> nokku.v1.ForgotPasswordRequest
+	10, // 5: nokku.v1.AuthService.ResetPassword:input_type -> nokku.v1.ResetPasswordRequest
+	14, // 6: nokku.v1.AuthService.ResendVerification:input_type -> nokku.v1.ResendVerificationRequest
+	12, // 7: nokku.v1.AuthService.VerifyEmail:input_type -> nokku.v1.VerifyEmailRequest
+	3,  // 8: nokku.v1.AuthService.Login:output_type -> nokku.v1.LoginResponse
+	5,  // 9: nokku.v1.AuthService.LoginWithBackupCode:output_type -> nokku.v1.LoginWithBackupCodeResponse
+	7,  // 10: nokku.v1.AuthService.Logout:output_type -> nokku.v1.LogoutResponse
+	1,  // 11: nokku.v1.AuthService.Register:output_type -> nokku.v1.RegisterResponse
+	9,  // 12: nokku.v1.AuthService.ForgotPassword:output_type -> nokku.v1.ForgotPasswordResponse
+	11, // 13: nokku.v1.AuthService.ResetPassword:output_type -> nokku.v1.ResetPasswordResponse
+	15, // 14: nokku.v1.AuthService.ResendVerification:output_type -> nokku.v1.ResendVerificationResponse
+	13, // 15: nokku.v1.AuthService.VerifyEmail:output_type -> nokku.v1.VerifyEmailResponse
+	8,  // [8:16] is the sub-list for method output_type
+	0,  // [0:8] is the sub-list for method input_type
+	0,  // [0:0] is the sub-list for extension type_name
+	0,  // [0:0] is the sub-list for extension extendee
+	0,  // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_nokku_v1_auth_proto_init() }
@@ -1169,14 +816,13 @@ func file_nokku_v1_auth_proto_init() {
 	if File_nokku_v1_auth_proto != nil {
 		return
 	}
-	file_nokku_v1_user_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_nokku_v1_auth_proto_rawDesc), len(file_nokku_v1_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   22,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
