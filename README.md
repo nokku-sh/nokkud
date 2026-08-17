@@ -56,7 +56,7 @@ sudo nokkud --enroll <TOKEN>
 sudo systemctl start nokkud
 ```
 
-Everything `nokkud` owns lives securely under `/var/lib/nokkud/`. No long-lived secrets live on the machine; it signs requests with a challenge using its TPM or encrypted software key.
+Everything `nokkud` owns lives securely under `/var/lib/nokkud/`. No long-lived secrets live on the machine; it proves possession of its TPM or encrypted software key with DPoP.
 
 ### Manual install
 
