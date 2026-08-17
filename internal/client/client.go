@@ -1,6 +1,6 @@
 // Package client implements the daemon's connection to the Nokku backend.
 // Enrollment, sync, host certificates and the control stream, all
-// authenticated with signed challenges rather than bearer tokens.
+// authenticated with a DPoP-bound session token.
 package client
 
 import (
@@ -8,10 +8,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v7"
+	"github.com/mizuchilabs/kagi/dpop"
 	"github.com/urfave/cli/v3"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
@@ -33,11 +35,14 @@ type Client struct {
 	sessionWG sync.WaitGroup
 	paths     paths.Paths
 
-	ssh    *hostcerts.Manager
-	sshSrv *sshd.Server
-	cache  *state.Cache
-	config *state.Config
-	signer tpm.Signer
+	ssh     *hostcerts.Manager
+	sshSrv  *sshd.Server
+	cache   *state.Cache
+	config  *state.Config
+	signer  tpm.Signer
+	proofer *dpop.Proofer
+	httpc   *http.Client
+	auth    *authInterceptor
 
 	cc  nokkuv1connect.CertificateServiceClient
 	dc  nokkuv1connect.DaemonServiceClient
@@ -60,11 +65,16 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+	proofer, err := dpop.NewProofer(signer.CryptoSigner(), dpop.ProoferOptions{})
+	if err != nil {
+		return nil, err
+	}
 
 	c := &Client{
 		cache:        cache,
 		config:       config,
 		signer:       signer,
+		proofer:      proofer,
 		ssh:          hostcerts.New(p),
 		sshSrv:       sshSrv,
 		paths:        p,
@@ -73,6 +83,14 @@ func New(
 
 	if err = c.setupClients(config.APIURL, cmd.Bool("insecure")); err != nil {
 		return nil, err
+	}
+
+	// Bootstrap the DPoP nonce so the enrollment proof does not need a
+	// stale-nonce 401 round-trip. A failed fetch is non-fatal: the enrollment
+	// interceptor learns the nonce from the server's error response and
+	// retries once.
+	if nonce, ferr := FetchNonce(ctx, c.httpc, config.APIURL); ferr == nil && nonce != "" {
+		c.auth.setNonce(nonce)
 	}
 
 	// The embedded SSH server records sessions through the same upload

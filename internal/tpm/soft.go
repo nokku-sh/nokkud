@@ -2,6 +2,7 @@ package tpm
 
 import (
 	"context"
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdsa"
@@ -94,6 +95,9 @@ func (s *softSigner) Sign(_ context.Context, data []byte) ([]byte, error) {
 	digest := sha256.Sum256(data)
 	return ecdsa.SignASN1(rand.Reader, s.key, digest[:])
 }
+
+// CryptoSigner exposes the software key as a [crypto.Signer] for DPoP proofs.
+func (s *softSigner) CryptoSigner() crypto.Signer { return s.key }
 
 func (s *softSigner) Close() error {
 	return nil

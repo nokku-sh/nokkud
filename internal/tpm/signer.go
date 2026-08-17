@@ -1,10 +1,12 @@
 // Package tpm provides the machine's signing identity. ECDSA P-256
-// signatures over request challenges, TPM-backed when available, else a
-// software key wrapped to the machine identity.
+// signatures, TPM-backed when available, else a software key wrapped to the
+// machine identity. The key signs DPoP proofs and binds the daemon's
+// enrollment to its identity.
 package tpm
 
 import (
 	"context"
+	"crypto"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +23,8 @@ const (
 	MethodSoft = "soft"
 )
 
-// Signer signs request challenges with a machine-bound key.
+// Signer signs with a machine-bound key, used to bind DPoP proofs and the
+// daemon's control-plane session to its identity.
 type Signer interface {
 	// Method returns the signing method: MethodTPM or MethodSoft.
 	Method() string
@@ -29,6 +32,9 @@ type Signer interface {
 	Public() ([]byte, error)
 	// Sign signs data with SHA-256 and returns a DER-encoded ECDSA signature.
 	Sign(ctx context.Context, data []byte) ([]byte, error)
+	// CryptoSigner exposes the underlying key as a [crypto.Signer] for DPoP
+	// proofs.
+	CryptoSigner() crypto.Signer
 	// Close releases the underlying key material.
 	Close() error
 }

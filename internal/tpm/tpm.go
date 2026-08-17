@@ -2,6 +2,7 @@ package tpm
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"sync"
 
@@ -147,6 +149,29 @@ func (s *tpmSigner) Sign(_ context.Context, data []byte) ([]byte, error) {
 
 	digest := sha256.Sum256(data)
 	return signECDSA(s.tpm, s.key, digest[:])
+}
+
+// CryptoSigner exposes the TPM key as a [crypto.Signer] for DPoP proofs.
+func (s *tpmSigner) CryptoSigner() crypto.Signer {
+	return &tpmCryptoSigner{signer: s}
+}
+
+// tpmCryptoSigner adapts a tpmSigner to [crypto.Signer]: go-jose hashes the
+// signing input and calls Sign with the digest, and the TPM template pins
+// SHA-256, so the digest is signed directly without double-hashing.
+type tpmCryptoSigner struct {
+	signer *tpmSigner
+}
+
+func (s *tpmCryptoSigner) Public() crypto.PublicKey { return s.signer.key.pub }
+
+func (s *tpmCryptoSigner) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	if opts.HashFunc() != crypto.SHA256 {
+		return nil, fmt.Errorf("tpm: unsupported hash %v (key pins SHA-256)", opts.HashFunc())
+	}
+	s.signer.mu.Lock()
+	defer s.signer.mu.Unlock()
+	return signECDSA(s.signer.tpm, s.signer.key, digest)
 }
 
 func (s *tpmSigner) Close() error {

@@ -21,6 +21,10 @@ type Config struct {
 	DaemonID    string `json:"daemon_id,omitempty"`
 	APIURL      string `json:"api_url,omitempty"`
 	SSHAddr     string `json:"ssh_addr,omitempty"`
+	// SessionToken is the DPoP-bound, non-expiring session token issued at
+	// enrollment. It is persisted (0600) and useless without the daemon's
+	// signing key.
+	SessionToken string `json:"session_token,omitempty"`
 
 	paths paths.Paths
 }
@@ -54,6 +58,8 @@ func (c *Config) Load() error {
 // Save writes the config atomically with 0600 perms, skipping unchanged
 // content.
 func (c *Config) Save() error {
+	// #nosec G117 -- the session token is a bearer credential persisted to a
+	// 0600 file, never logged; it is useless without the daemon's signing key.
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return fmt.Errorf("serializing config: %w", err)
@@ -72,4 +78,5 @@ func (c *Config) Clear() {
 	c.DaemonID = ""
 	c.APIURL = ""
 	c.SSHAddr = ""
+	c.SessionToken = ""
 }

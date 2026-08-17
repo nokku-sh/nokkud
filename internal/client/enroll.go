@@ -22,20 +22,13 @@ func (c *Client) enroll(ctx context.Context, token, caid string) error {
 	ctx, cancel := context.WithTimeout(ctx, enrollTimeout)
 	defer cancel()
 
-	// Register the signing identity with the backend so it can verify the
-	// daemon's request challenges after enrollment.
-	pub, err := c.signer.Public()
-	if err != nil {
-		return fmt.Errorf("failed to read signing key: %w", err)
-	}
-	method := c.signer.Method()
-	pubkey := string(pub)
-
+	// The auth interceptor signs the enrollment request with an unbound DPoP
+	// proof (no access token yet), proving the daemon's key to the server so
+	// the issued session is bound to it. The server issues a non-expiring
+	// DPoP-bound session and returns its token.
 	res, err := c.dc.EnrollDaemon(ctx, &nokkuv1.EnrollDaemonRequest{
-		Token:      &token,
-		CaId:       &caid,
-		AuthMethod: &method,
-		AuthPubkey: &pubkey,
+		Token: &token,
+		CaId:  &caid,
 	})
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeAlreadyExists {
@@ -47,6 +40,7 @@ func (c *Client) enroll(ctx context.Context, token, caid string) error {
 	c.config.WorkspaceID = res.GetWorkspaceId()
 	c.config.TargetID = res.GetTargetId()
 	c.config.DaemonID = res.GetId()
+	c.config.SessionToken = res.GetAccessToken()
 	c.cache.SetDaemonConfig(res.GetConfig())
 
 	if c.config.WorkspaceID == "" {
@@ -57,6 +51,9 @@ func (c *Client) enroll(ctx context.Context, token, caid string) error {
 	}
 	if c.config.DaemonID == "" {
 		return fmt.Errorf("failed to enroll: empty daemon ID")
+	}
+	if c.config.SessionToken == "" {
+		return fmt.Errorf("failed to enroll: empty session token")
 	}
 	if err = c.config.Save(); err != nil {
 		return err
