@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 
@@ -13,36 +12,30 @@ import (
 	"github.com/mizuchilabs/kata/buildinfo"
 
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
-	"github.com/nokku-sh/nokkud/internal/id"
 )
 
 // authInterceptor signs outgoing RPCs with the daemon's DPoP proof and adds
 // identity headers. Pre-enrollment calls (no session token) go out unsigned.
 type authInterceptor struct {
-	proofer     *dpop.Proofer
-	token       *string
-	baseURL     string
-	hostname    string
-	fingerprint string
+	proofer   *dpop.Proofer
+	token     *string
+	baseURL   string
+	userAgent string
 
 	mu    sync.Mutex
 	nonce string
 }
 
-// WithAuth authenticates control-plane RPCs with the daemon's DPoP-bound
+// withAuth authenticates control-plane RPCs with the daemon's DPoP-bound
 // session. token points at the persisted session token (empty before
 // enrollment); baseURL is the API origin used to reconstruct the htu.
-func WithAuth(proofer *dpop.Proofer, token *string, baseURL string) connect.Interceptor {
-	a := &authInterceptor{
-		proofer: proofer,
-		token:   token,
-		baseURL: strings.TrimRight(baseURL, "/"),
+func withAuth(proofer *dpop.Proofer, token *string, baseURL string) *authInterceptor {
+	return &authInterceptor{
+		proofer:   proofer,
+		token:     token,
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		userAgent: buildinfo.UserAgent("nk"),
 	}
-	if name, err := os.Hostname(); err == nil {
-		a.hostname = name
-	}
-	a.fingerprint = id.MachineID()
-	return a
 }
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -101,31 +94,13 @@ func (a *authInterceptor) sign(header http.Header, procedure, method string) {
 			}
 		}
 	}
-	a.identity(header)
+	header.Set("User-Agent", a.userAgent)
 }
 
 func (a *authInterceptor) htu(procedure string) string {
 	// procedure is a fully-qualified RPC path ("/pkg.Service/Method"), so no
 	// separator is needed after the base URL.
 	return a.baseURL + procedure
-}
-
-func (a *authInterceptor) identity(header http.Header) {
-	if buildinfo.Version != "" {
-		header.Set("Nokku-Daemon-Version", buildinfo.Version)
-	}
-	if buildinfo.Commit != "" {
-		header.Set("Nokku-Daemon-Commit", buildinfo.Commit)
-	}
-	if buildinfo.Date != "" {
-		header.Set("Nokku-Daemon-Builddate", buildinfo.Date)
-	}
-	if a.hostname != "" {
-		header.Set("Nokku-Daemon-Hostname", a.hostname)
-	}
-	if a.fingerprint != "" {
-		header.Set("Nokku-Daemon-Fingerprint", a.fingerprint)
-	}
 }
 
 // learnNonce records a fresh nonce from a stale-nonce error response.

@@ -39,11 +39,11 @@ func TestAuthInterceptorHTUHasNoDoubleSlash(t *testing.T) {
 func TestAuthInterceptorHTUTrimsTrailingSlash(t *testing.T) {
 	t.Parallel()
 
-	// WithAuth trims the trailing slash from baseURL, so htu must not
+	// withAuth trims the trailing slash from baseURL, so htu must not
 	// reintroduce a double slash.
 	proofer := newTestProofer(t)
 	tok := ""
-	a := WithAuth(proofer, &tok, "http://localhost:3000/").(*authInterceptor)
+	a := withAuth(proofer, &tok, "http://localhost:3000/")
 
 	got := a.htu(nokkuv1connect.DaemonServiceEnrollDaemonProcedure)
 	want := "http://localhost:3000/nokku.v1.DaemonService/EnrollDaemon"

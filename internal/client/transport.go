@@ -47,7 +47,7 @@ func (c *Client) setupClients(apiURL string, insecure bool) error {
 	}
 	c.httpc = httpc
 
-	c.auth = WithAuth(c.proofer, &c.config.SessionToken, apiURL).(*authInterceptor)
+	c.auth = withAuth(c.proofer, &c.config.SessionToken, apiURL)
 	opts := connect.WithInterceptors(c.auth)
 	c.cc = nokkuv1connect.NewCertificateServiceClient(httpc, apiURL, opts)
 	c.dc = nokkuv1connect.NewDaemonServiceClient(httpc, apiURL, opts)
