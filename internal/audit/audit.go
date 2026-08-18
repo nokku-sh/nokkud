@@ -9,9 +9,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"time"
+
+	"github.com/nokku-sh/nokkud/internal/util"
 )
 
 // EventType enumerates the kinds of security events emitted.
@@ -248,28 +249,14 @@ func (s *Sink) enforceRetention() {
 	if err != nil {
 		return
 	}
-	var files []os.FileInfo
-	var total int64
-	cutoff := time.Now().Add(-MaxAge)
+	files := make([]os.FileInfo, 0, len(matches))
 	for _, path := range matches {
 		var fi os.FileInfo
 		fi, err = os.Stat(path)
 		if err != nil {
 			continue
 		}
-		if fi.ModTime().Before(cutoff) {
-			_ = os.Remove(path)
-			continue
-		}
 		files = append(files, fi)
-		total += fi.Size()
 	}
-	slices.SortFunc(files, func(a, b os.FileInfo) int {
-		return a.ModTime().Compare(b.ModTime())
-	})
-	for total > MaxTotalSize && len(files) > 0 {
-		total -= files[0].Size()
-		_ = os.Remove(filepath.Join(s.dir, files[0].Name()))
-		files = files[1:]
-	}
+	util.PruneOldest(s.dir, files, MaxAge, MaxTotalSize)
 }

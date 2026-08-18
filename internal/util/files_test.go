@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestWriteFile(t *testing.T) {
+func TestWriteIfChangedErrors(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
@@ -67,25 +67,29 @@ func TestWriteFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := WriteFile(tt.filename, tt.data, tt.perm)
+			err := WriteIfChanged(tt.filename, tt.data, tt.perm)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("WriteFile() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("WriteIfChanged() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if tt.wantErr && tt.errMsg != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("WriteFile() error = %v, want error containing %q", err, tt.errMsg)
+					t.Errorf(
+						"WriteIfChanged() error = %v, want error containing %q",
+						err,
+						tt.errMsg,
+					)
 				}
 				return
 			}
 			if !tt.wantErr {
 				got, readErr := os.ReadFile(tt.filename)
 				if readErr != nil {
-					t.Errorf("WriteFile() created file but ReadFile failed: %v", readErr)
+					t.Errorf("WriteIfChanged() created file but ReadFile failed: %v", readErr)
 					return
 				}
 				if string(got) != string(tt.data) {
-					t.Errorf("WriteFile() wrote %q, want %q", string(got), string(tt.data))
+					t.Errorf("WriteIfChanged() wrote %q, want %q", string(got), string(tt.data))
 				}
 			}
 		})

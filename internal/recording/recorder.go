@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -329,12 +328,7 @@ func EnforceRetention(p paths.Paths) error {
 		return err
 	}
 
-	type recordFile struct {
-		path string
-		info os.FileInfo
-	}
-
-	var files []recordFile
+	var files []os.FileInfo
 	for _, e := range entries {
 		// Check for .cast and .cast.gz files.
 		if e.IsDir() ||
@@ -346,41 +340,9 @@ func EnforceRetention(p paths.Paths) error {
 		if err != nil {
 			continue
 		}
-		files = append(files, recordFile{
-			path: filepath.Join(p.RecordsDir, e.Name()),
-			info: info,
-		})
+		files = append(files, info)
 	}
 
-	slices.SortFunc(files, func(a, b recordFile) int {
-		return a.info.ModTime().Compare(b.info.ModTime())
-	})
-
-	cutoffTime := time.Now().Add(-MaxAge)
-	var totalSize int64
-	var keptFiles []recordFile
-
-	for _, f := range files {
-		if f.info.ModTime().Before(cutoffTime) {
-			if err = os.Remove(f.path); err != nil {
-				slog.Warn("remove old recording", "path", f.path, "error", err)
-			}
-			continue
-		}
-		keptFiles = append(keptFiles, f)
-		totalSize += f.info.Size()
-	}
-
-	for _, f := range keptFiles {
-		if totalSize <= MaxTotalSpace {
-			break
-		}
-		if err = os.Remove(f.path); err != nil {
-			slog.Warn("remove recording for space", "path", f.path, "error", err)
-			continue
-		}
-		totalSize -= f.info.Size()
-	}
-
+	util.PruneOldest(p.RecordsDir, files, MaxAge, MaxTotalSpace)
 	return nil
 }
