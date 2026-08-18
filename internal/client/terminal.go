@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"golang.org/x/time/rate"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
+	"github.com/nokku-sh/nokkud/internal/ptysession"
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
@@ -82,11 +82,13 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 
 	shell := sysutil.UserShell(sysUser)
 	cmd := ptmx.Command(shell)
-	cmd.Args[0] = "-" + filepath.Base(shell)
-	cmd.Dir = sysUser.HomeDir
-	cmd.Env = sysutil.CmdEnv(sysUser, shell)
-	cmd.SysProcAttr, err = sysutil.SysProcAttr(sysUser)
-	if err != nil {
+	if err = ptysession.Configure(
+		cmd,
+		sysUser,
+		shell,
+		"",
+		sysutil.CmdEnv(sysUser, shell),
+	); err != nil {
 		_ = ptmx.Close()
 		return err
 	}
