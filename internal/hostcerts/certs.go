@@ -1,3 +1,6 @@
+// Package hostcerts manages the host SSH certificate lifecycle. It signs
+// host keys against the backend and stores certs and the trusted CA where
+// the embedded SSH server reads them.
 package hostcerts
 
 import (
@@ -14,6 +17,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
+	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/util"
 )
 
@@ -29,10 +33,10 @@ type KeyPair struct {
 // hostKeyPair returns the active host key. The TPM-backed key when it exists,
 // otherwise the on-disk software key. ok is false when no host key exists yet
 // (e.g. the SSH server has never started).
-func (m *Manager) hostKeyPair() (KeyPair, bool) {
+func hostKeyPair(p paths.Paths) (KeyPair, bool) {
 	for _, c := range []struct{ pub, cert string }{
-		{m.paths.TPMHostKeyPub(), m.paths.TPMHostKeyCert()},
-		{m.paths.SoftwareHostKeyPub(), m.paths.SoftwareHostKeyCert()},
+		{p.TPMHostKeyPub(), p.TPMHostKeyCert()},
+		{p.SoftwareHostKeyPub(), p.SoftwareHostKeyCert()},
 	} {
 		data, readErr := os.ReadFile(filepath.Clean(c.pub))
 		if readErr != nil {
@@ -50,8 +54,8 @@ func (m *Manager) hostKeyPair() (KeyPair, bool) {
 // OutdatedHostCerts returns the host key when its certificate is missing,
 // signed for another principal, signed for another key, or within
 // renewBeforeExpiry of expiring.
-func (m *Manager) OutdatedHostCerts(targetID string) ([]KeyPair, error) {
-	kp, ok := m.hostKeyPair()
+func OutdatedHostCerts(p paths.Paths, targetID string) ([]KeyPair, error) {
+	kp, ok := hostKeyPair(p)
 	if !ok {
 		return nil, nil
 	}
@@ -79,8 +83,9 @@ func matchesKey(cert *ssh.Certificate, kp KeyPair) bool {
 // is used after a CA rollover to refetch the CA and re-sign the host identity
 // under the new authority. Returns the count. Failures are logged and the
 // first one returned.
-func (m *Manager) RenewHostCerts(
+func RenewHostCerts(
 	ctx context.Context,
+	p paths.Paths,
 	targetID string,
 	sign func(context.Context, KeyPair) (*nokkuv1.SignSSHCertificateResponse, error),
 	force bool,
@@ -88,11 +93,11 @@ func (m *Manager) RenewHostCerts(
 	var pairs []KeyPair
 	var err error
 	if force {
-		if kp, ok := m.hostKeyPair(); ok {
+		if kp, ok := hostKeyPair(p); ok {
 			pairs = []KeyPair{kp}
 		}
 	} else {
-		pairs, err = m.OutdatedHostCerts(targetID)
+		pairs, err = OutdatedHostCerts(p, targetID)
 	}
 	if err != nil {
 		return 0, err
@@ -110,7 +115,7 @@ func (m *Manager) RenewHostCerts(
 			}
 			continue
 		}
-		if err = m.saveCertificate(res, kp.CertPath); err != nil {
+		if err = saveCertificate(p, res, kp.CertPath); err != nil {
 			slog.Warn("failed to save host certificate", "path", kp.CertPath, "error", err)
 			if firstErr == nil {
 				firstErr = err
@@ -124,10 +129,10 @@ func (m *Manager) RenewHostCerts(
 
 // NextRenewal returns the renewal deadline for the host certificate. Now, if
 // it is already out of date or none exists yet.
-func (m *Manager) NextRenewal(targetID string) time.Time {
+func NextRenewal(p paths.Paths, targetID string) time.Time {
 	now := time.Now()
 
-	kp, ok := m.hostKeyPair()
+	kp, ok := hostKeyPair(p)
 	if !ok {
 		return now
 	}
@@ -154,7 +159,7 @@ func (m *Manager) NextRenewal(targetID string) time.Time {
 
 // saveCertificate verifies the cert was signed by the returned CA key,
 // then stores both where the embedded SSH server reads them.
-func (m *Manager) saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path string) error {
+func saveCertificate(p paths.Paths, res *nokkuv1.SignSSHCertificateResponse, path string) error {
 	signedCert := bytes.TrimSpace([]byte(res.GetSignedCertificate()))
 	caPubKey := bytes.TrimSpace([]byte(res.GetCaPublicKey()))
 
@@ -177,21 +182,21 @@ func (m *Manager) saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path 
 	// grace window (see sshd.loadTrustedCAs). The retired file's mtime is
 	// stamped with the retirement time so the grace window starts at the
 	// rollover, not when the old CA was last written.
-	if current, readErr := os.ReadFile(filepath.Clean(m.paths.UserCAFile())); readErr == nil &&
+	if current, readErr := os.ReadFile(filepath.Clean(p.UserCAFile())); readErr == nil &&
 		!bytes.Equal(bytes.TrimSpace(current), caPubKey) {
 		if renameErr := os.Rename(
-			filepath.Clean(m.paths.UserCAFile()),
-			filepath.Clean(m.paths.RetiredCAFile()),
+			filepath.Clean(p.UserCAFile()),
+			filepath.Clean(p.RetiredCAFile()),
 		); renameErr != nil {
 			return fmt.Errorf("retire previous CA: %w", renameErr)
 		}
 		now := time.Now()
-		if stampErr := os.Chtimes(m.paths.RetiredCAFile(), now, now); stampErr != nil {
+		if stampErr := os.Chtimes(p.RetiredCAFile(), now, now); stampErr != nil {
 			return fmt.Errorf("stamp retired CA: %w", stampErr)
 		}
 	}
 
-	if err = util.WriteIfChanged(m.paths.UserCAFile(), caPubKey, 0o644); err != nil {
+	if err = util.WriteIfChanged(p.UserCAFile(), caPubKey, 0o644); err != nil {
 		return fmt.Errorf("write user CA: %w", err)
 	}
 

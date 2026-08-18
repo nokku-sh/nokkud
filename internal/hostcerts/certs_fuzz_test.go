@@ -63,7 +63,6 @@ func FuzzSaveCertificate(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, signedCert, caPub []byte) {
 		p := paths.Paths{ConfigDir: t.TempDir()}
-		m := New(p)
 		certPath := filepath.Join(p.ConfigDir, "ssh_host_ed25519_key-cert.pub")
 
 		certStr, caStr := string(signedCert), string(caPub)
@@ -71,7 +70,7 @@ func FuzzSaveCertificate(f *testing.F) {
 			SignedCertificate: &certStr,
 			CaPublicKey:       &caStr,
 		}
-		err := m.saveCertificate(res, certPath)
+		err := saveCertificate(p, res, certPath)
 		if err != nil {
 			return
 		}

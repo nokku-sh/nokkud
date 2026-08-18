@@ -18,7 +18,6 @@ import (
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
-	"github.com/nokku-sh/nokkud/internal/hostcerts"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sshd"
@@ -35,7 +34,6 @@ type Client struct {
 	sessionWG sync.WaitGroup
 	paths     paths.Paths
 
-	ssh     *hostcerts.Manager
 	sshSrv  *sshd.Server
 	cache   *state.Cache
 	config  *state.Config
@@ -75,7 +73,6 @@ func New(
 		config:       config,
 		signer:       signer,
 		proofer:      proofer,
-		ssh:          hostcerts.New(p),
 		sshSrv:       sshSrv,
 		paths:        p,
 		sessionSlots: make(chan struct{}, maxConcurrentSessions),

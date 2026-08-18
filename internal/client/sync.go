@@ -118,6 +118,7 @@ func (c *Client) applyConfig() {
 	opts.GatewayPorts = boolField(cfg.GatewayPorts, opts.GatewayPorts)
 	opts.MaxSessions = intField(cfg.MaxSessions, opts.MaxSessions)
 	opts.MaxConnections = intField(cfg.MaxConnections, opts.MaxConnections)
+	opts.MaxSessionsPerUser = intField(cfg.MaxSessionsPerUser, opts.MaxSessionsPerUser)
 	if d := cfg.GetClientAliveInterval(); d != nil {
 		opts.ClientAliveInterval = d.AsDuration()
 	}
@@ -141,7 +142,7 @@ func intField(v *int32, def int) int {
 }
 
 func (c *Client) renewHostCerts(ctx context.Context, force bool) error {
-	renewed, err := c.ssh.RenewHostCerts(ctx, c.config.TargetID, c.signHostCert, force)
+	renewed, err := hostcerts.RenewHostCerts(ctx, c.paths, c.config.TargetID, c.signHostCert, force)
 	slog.Debug("renew host certificates", "renewed", renewed, "force", force, "error", err)
 	if err != nil {
 		return err
