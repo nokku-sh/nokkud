@@ -22,8 +22,9 @@ import (
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
-// PrincipalsFunc reports the subject UUIDs allowed to log in as username.
-type PrincipalsFunc func(username string) ([]string, bool)
+// PrincipalsFunc reports the subject UUIDs allowed to log in as username. An
+// empty result denies access.
+type PrincipalsFunc func(username string) []string
 
 // AuthorizeFunc runs after CA and principal checks and can deny the login.
 type AuthorizeFunc func(conn ssh.ConnMetadata, cert *ssh.Certificate, principal string) error
@@ -38,17 +39,16 @@ type SubsystemHandler func(sess *session) uint32
 
 // Server is an SSH server. Construct with New and serve with Serve.
 type Server struct {
-	logger          *slog.Logger
-	cfg             *ssh.ServerConfig
-	paths           paths.Paths
-	principals      PrincipalsFunc
-	authorize       AuthorizeFunc
-	audit           Audit
-	record          atomic.Bool
-	forwarding      atomic.Bool
-	agentForwarding atomic.Bool
-	gatewayPorts    atomic.Bool
-	maxSessions     atomic.Int32
+	logger     *slog.Logger
+	cfg        *ssh.ServerConfig
+	paths      paths.Paths
+	principals PrincipalsFunc
+	authorize  AuthorizeFunc
+	audit      Audit
+
+	// tun holds the live-adjustable options. It is swapped atomically so a
+	// concurrent SetOptions never tears down established connections.
+	tun atomic.Pointer[tunables]
 
 	// certsMu guards trustedCAs and hostKeys so a reload can swap them out
 	// without tearing down established connections.
@@ -61,11 +61,15 @@ type Server struct {
 	hostKeyClosers  []io.Closer
 
 	// connection limits
-	maxConns      atomic.Int32
-	activeConns   atomic.Int32
-	aliveInterval atomic.Int64
-	closeOnce     sync.Once
-	connsWg       sync.WaitGroup
+	activeConns     atomic.Int32
+	unauthenticated atomic.Int32
+	closeOnce       sync.Once
+	connsWg         sync.WaitGroup
+
+	// principalSessions counts active sessions per principal (SSH username)
+	// so one user cannot exhaust the daemon across many connections.
+	principalMu       sync.Mutex
+	principalSessions map[string]int32
 
 	// mu guards the listener installed by ListenAndServe so Close can stop it.
 	mu       sync.Mutex
@@ -119,9 +123,17 @@ type Options struct {
 	// MaxSessions caps session channels per connection (OpenSSH's MaxSessions).
 	// Zero means no per-connection cap.
 	MaxSessions int
-	// MaxConnections caps concurrent SSH connections (OpenSSH's MaxStartups).
-	// Zero means no cap. Over-cap connections are dropped immediately.
+	// MaxConnections caps concurrent SSH connections. Zero means no cap.
+	// Over-cap connections are dropped immediately.
 	MaxConnections int
+	// MaxStartups caps concurrent connections still in the pre-auth handshake
+	// (OpenSSH's MaxStartups). Zero means no cap. This bounds brute-force and
+	// half-open floods without affecting authenticated users behind a NAT.
+	MaxStartups int
+	// MaxSessionsPerUser caps concurrent sessions per authenticated principal
+	// (SSH username) across all connections, for fairness between users. Zero
+	// means no per-user cap.
+	MaxSessionsPerUser int
 	// ClientAliveInterval is how often the server sends keepalive requests to
 	// an idle client. A client that fails to respond for 3 intervals is
 	// disconnected (OpenSSH's ClientAliveInterval). Zero disables probing.
@@ -135,14 +147,15 @@ type Options struct {
 func OptionsFrom(p paths.Paths, cache *state.Cache, record bool) Options {
 	return Options{
 		Paths: p,
-		Principals: func(username string) ([]string, bool) {
-			return cache.GetUUIDs(username), true
+		Principals: func(username string) []string {
+			return cache.GetUUIDs(username)
 		},
 		Record:               record,
 		AllowForwarding:      true,
 		AllowAgentForwarding: true,
 		MaxSessions:          10,
 		MaxConnections:       100,
+		MaxStartups:          10,
 		ClientAliveInterval:  60 * time.Second,
 		Audit:                newAuditSink(p),
 	}
@@ -183,13 +196,7 @@ func New(opts Options) (*Server, error) {
 			sftpSubsystem: func(sess *session) uint32 { return sess.runSFTP() },
 		},
 	}
-	s.record.Store(opts.Record)
-	s.forwarding.Store(opts.AllowForwarding)
-	s.agentForwarding.Store(opts.AllowAgentForwarding)
-	s.gatewayPorts.Store(opts.GatewayPorts)
-	s.maxSessions.Store(sessionCapToInt32(opts.MaxSessions))
-	s.maxConns.Store(connCapToInt32(opts.MaxConnections))
-	s.aliveInterval.Store(int64(opts.ClientAliveInterval))
+	s.tun.Store(tunablesFrom(opts))
 
 	hostKeys, hostClosers, err := s.loadHostIdentity()
 	if err != nil {
@@ -291,7 +298,7 @@ func (s *Server) Serve(l net.Listener) error {
 // counter approach keeps the cap live-adjustable: a concurrent SetOptions
 // swaps maxConns without tearing down established connections.
 func (s *Server) acquireConn() bool {
-	limit := s.maxConns.Load()
+	limit := s.tun.Load().maxConns
 	if limit > 0 {
 		for {
 			cur := s.activeConns.Load()
@@ -309,6 +316,58 @@ func (s *Server) acquireConn() bool {
 
 func (s *Server) releaseConn() {
 	s.activeConns.Add(-1)
+}
+
+// acquireUnauthenticated reserves a slot for a connection still in the
+// pre-auth handshake. It caps concurrent half-open connections so a brute
+// force or SYN flood cannot exhaust the daemon ahead of authentication.
+func (s *Server) acquireUnauthenticated() bool {
+	limit := s.tun.Load().maxStartups
+	if limit <= 0 {
+		return true
+	}
+	for {
+		cur := s.unauthenticated.Load()
+		if cur >= limit {
+			return false
+		}
+		if s.unauthenticated.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+func (s *Server) releaseUnauthenticated() {
+	s.unauthenticated.Add(-1)
+}
+
+// acquirePrincipalSession reserves a session slot for a principal, capping
+// concurrent sessions per user across all connections. limit <= 0 disables
+// the cap.
+func (s *Server) acquirePrincipalSession(principal string, limit int32) bool {
+	if limit <= 0 {
+		return true
+	}
+	s.principalMu.Lock()
+	defer s.principalMu.Unlock()
+	if s.principalSessions == nil {
+		s.principalSessions = make(map[string]int32)
+	}
+	if s.principalSessions[principal] >= limit {
+		return false
+	}
+	s.principalSessions[principal]++
+	return true
+}
+
+func (s *Server) releasePrincipalSession(principal string) {
+	s.principalMu.Lock()
+	defer s.principalMu.Unlock()
+	if n := s.principalSessions[principal]; n <= 1 {
+		delete(s.principalSessions, principal)
+	} else {
+		s.principalSessions[principal] = n - 1
+	}
 }
 
 // Shutdown gracefully drains active connections. It closes the listener to
@@ -379,9 +438,33 @@ func sessionCapToInt32(n int) int32 {
 	return int32(n)
 }
 
-// connCapToInt32 bounds a configured connection cap to a positive int32.
-func connCapToInt32(n int) int32 {
-	return sessionCapToInt32(n)
+// tunables is the runtime-tunable subset of Options. It is stored behind an
+// atomic pointer so a SetOptions swap is safe against concurrent readers
+// (handshakes, sessions, forwards).
+type tunables struct {
+	record              bool
+	forwarding          bool
+	agentForwarding     bool
+	gatewayPorts        bool
+	maxSessions         int32
+	maxConns            int32
+	maxStartups         int32
+	maxSessionsPerUser  int32
+	clientAliveInterval time.Duration
+}
+
+func tunablesFrom(opts Options) *tunables {
+	return &tunables{
+		record:              opts.Record,
+		forwarding:          opts.AllowForwarding,
+		agentForwarding:     opts.AllowAgentForwarding,
+		gatewayPorts:        opts.GatewayPorts,
+		maxSessions:         sessionCapToInt32(opts.MaxSessions),
+		maxConns:            sessionCapToInt32(opts.MaxConnections),
+		maxStartups:         sessionCapToInt32(opts.MaxStartups),
+		maxSessionsPerUser:  sessionCapToInt32(opts.MaxSessionsPerUser),
+		clientAliveInterval: opts.ClientAliveInterval,
+	}
 }
 
 // SetOptions applies runtime-tunable options (record, forwarding, session and
@@ -389,13 +472,7 @@ func connCapToInt32(n int) int32 {
 // replaces every tunable, so pass the full set. An unspecified field disables
 // that feature.
 func (s *Server) SetOptions(opts Options) {
-	s.record.Store(opts.Record)
-	s.forwarding.Store(opts.AllowForwarding)
-	s.agentForwarding.Store(opts.AllowAgentForwarding)
-	s.gatewayPorts.Store(opts.GatewayPorts)
-	s.maxSessions.Store(sessionCapToInt32(opts.MaxSessions))
-	s.maxConns.Store(connCapToInt32(opts.MaxConnections))
-	s.aliveInterval.Store(int64(opts.ClientAliveInterval))
+	s.tun.Store(tunablesFrom(opts))
 }
 
 // Defaults returns the tunable options the server was constructed with. The
@@ -403,14 +480,17 @@ func (s *Server) SetOptions(opts Options) {
 // field falls back to the compiled-in policy instead of silently disabling
 // the feature.
 func (s *Server) Defaults() Options {
+	t := s.tun.Load()
 	return Options{
-		Record:               s.record.Load(),
-		AllowForwarding:      s.forwarding.Load(),
-		AllowAgentForwarding: s.agentForwarding.Load(),
-		GatewayPorts:         s.gatewayPorts.Load(),
-		MaxSessions:          int(s.maxSessions.Load()),
-		MaxConnections:       int(s.maxConns.Load()),
-		ClientAliveInterval:  time.Duration(s.aliveInterval.Load()),
+		Record:               t.record,
+		AllowForwarding:      t.forwarding,
+		AllowAgentForwarding: t.agentForwarding,
+		GatewayPorts:         t.gatewayPorts,
+		MaxSessions:          int(t.maxSessions),
+		MaxConnections:       int(t.maxConns),
+		MaxStartups:          int(t.maxStartups),
+		MaxSessionsPerUser:   int(t.maxSessionsPerUser),
+		ClientAliveInterval:  t.clientAliveInterval,
 	}
 }
 
@@ -476,11 +556,29 @@ func (s *Server) HandleConn(nc net.Conn) {
 func (s *Server) handleConn(nc net.Conn) {
 	defer nc.Close()
 
+	// Cap concurrent pre-auth connections (MaxStartups). The slot is released
+	// as soon as the handshake finishes, success or not.
+	if !s.acquireUnauthenticated() {
+		s.logger.Warn(
+			"sshd: dropping connection, unauthenticated limit reached",
+			"remote",
+			nc.RemoteAddr(),
+		)
+		return
+	}
+	authenticated := false
+	defer func() {
+		if !authenticated {
+			s.releaseUnauthenticated()
+		}
+	}()
+
 	// Client-alive probing. Wrap the conn so inbound traffic refreshes a
 	// read deadline. The probing goroutine disconnects a client that never
 	// responds.
+	interval := s.tun.Load().clientAliveInterval
 	var alive *aliveConn
-	if interval := time.Duration(s.aliveInterval.Load()); interval > 0 {
+	if interval > 0 {
 		alive = &aliveConn{Conn: nc, timeout: 3 * interval}
 		nc = alive
 	}
@@ -491,6 +589,8 @@ func (s *Server) handleConn(nc net.Conn) {
 		return
 	}
 	conn, chans, reqs, err := ssh.NewServerConn(nc, s.currentConfig())
+	s.releaseUnauthenticated()
+	authenticated = true
 	if err != nil {
 		s.logger.Debug("sshd: handshake failed",
 			"remote", nc.RemoteAddr(), "error", err)
@@ -504,7 +604,7 @@ func (s *Server) handleConn(nc net.Conn) {
 	if alive != nil {
 		alive.activate()
 		aliveDone = make(chan struct{})
-		go s.clientAlive(conn, time.Duration(s.aliveInterval.Load()), aliveDone)
+		go s.clientAlive(conn, interval, aliveDone)
 	}
 
 	s.logger.Info(
@@ -562,18 +662,25 @@ var channelHandlers = map[string]channelHandler{
 }
 
 // handleSession accepts a "session" channel and serves its request stream,
-// enforcing the per-connection session cap.
+// enforcing the per-connection session cap and the per-principal session cap.
 func (s *Server) handleSession(
 	conn *ssh.ServerConn,
 	st *connState,
 	newCh ssh.NewChannel,
 	ch *ssh.Channel,
 ) {
-	if !st.acquireSession(int(s.maxSessions.Load())) {
+	if !st.acquireSession(int(s.tun.Load().maxSessions)) {
 		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions")
 		return
 	}
 	defer st.releaseSession()
+
+	if !s.acquirePrincipalSession(conn.User(), s.tun.Load().maxSessionsPerUser) {
+		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions for user")
+		return
+	}
+	defer s.releasePrincipalSession(conn.User())
+
 	c, reqs, err := newCh.Accept()
 	if err != nil {
 		s.logger.Debug("sshd: accept session channel", "error", err)

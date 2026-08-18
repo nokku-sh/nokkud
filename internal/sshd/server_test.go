@@ -104,11 +104,11 @@ func startTestServerOpts(t *testing.T, ca testCA, extra Options) (addr string, c
 	if err != nil {
 		t.Fatalf("current user: %v", err)
 	}
-	principals := func(username string) ([]string, bool) {
+	principals := func(username string) []string {
 		if username == cur.Username {
-			return []string{testPrincipal}, true
+			return []string{testPrincipal}
 		}
-		return nil, false
+		return nil
 	}
 
 	p := paths.Paths{ConfigDir: t.TempDir()}
@@ -351,8 +351,8 @@ func TestNewWithoutTrustedCA(t *testing.T) {
 	p := paths.Paths{ConfigDir: t.TempDir()}
 	srv, err := New(Options{
 		Paths: p,
-		Principals: func(string) ([]string, bool) {
-			return nil, false
+		Principals: func(string) []string {
+			return nil
 		},
 	})
 	if err != nil {
@@ -376,8 +376,8 @@ func TestServerLivePrincipals(t *testing.T) {
 	p := paths.Paths{ConfigDir: t.TempDir()}
 	srv, err := New(Options{
 		Paths: p,
-		Principals: func(username string) ([]string, bool) {
-			return cache.GetUUIDs(username), true
+		Principals: func(username string) []string {
+			return cache.GetUUIDs(username)
 		},
 		TrustedCAs: []ssh.PublicKey{ca.pub},
 	})

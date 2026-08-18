@@ -89,6 +89,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			if err != nil {
 				return fmt.Errorf("failed to initialize configuration: %w", err)
 			}
+
 			slog.Info("Starting nokkud", "version", buildinfo.Version)
 			return cli.Run(ctx)
 		},
@@ -154,11 +155,11 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 						if err != nil {
 							return fmt.Errorf("resolve current user: %w", err)
 						}
-						opts.Principals = func(username string) ([]string, bool) {
+						opts.Principals = func(username string) []string {
 							if username != self.Username {
-								return nil, false
+								return nil
 							}
-							return cache.GetUUIDs(username), true
+							return cache.GetUUIDs(username)
 						}
 					}
 
@@ -197,7 +198,12 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					if err != nil {
 						return fmt.Errorf("failed to initialize configuration: %w", err)
 					}
-					_ = cli.DeleteDaemon(ctx)
+					if err = cli.DeleteDaemon(ctx); err != nil {
+						slog.Warn(
+							"failed to delete daemon from backend; local state is still removed",
+							"error", err,
+						)
+					}
 					p.Cleanup()
 					return nil
 				},

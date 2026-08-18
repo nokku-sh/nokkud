@@ -362,18 +362,18 @@ func TestServerGatewayPortsToggle(t *testing.T) {
 	ca := newTestCA(t)
 	srv, err := New(Options{
 		Paths:           paths.Paths{ConfigDir: t.TempDir()},
-		Principals:      func(string) ([]string, bool) { return nil, false },
+		Principals:      func(string) []string { return nil },
 		TrustedCAs:      []ssh.PublicKey{ca.pub},
 		AllowForwarding: true,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
-	if srv.gatewayPorts.Load() {
+	if srv.tun.Load().gatewayPorts {
 		t.Fatal("gateway ports enabled by default")
 	}
 	srv.SetOptions(Options{AllowForwarding: true, GatewayPorts: true})
-	if !srv.gatewayPorts.Load() {
+	if !srv.tun.Load().gatewayPorts {
 		t.Fatal("SetOptions did not enable gateway ports")
 	}
 }

@@ -92,8 +92,8 @@ func (s *Server) publicKeyCallback(
 		return nil, s.deny(conn, errors.New("sshd: certificate signed by unrecognized authority"))
 	}
 
-	allowed, ok := s.principals(conn.User())
-	if !ok || len(allowed) == 0 {
+	allowed := s.principals(conn.User())
+	if len(allowed) == 0 {
 		return nil, s.deny(conn, fmt.Errorf("sshd: no access rules for user %q", conn.User()))
 	}
 

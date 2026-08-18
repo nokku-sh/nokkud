@@ -30,11 +30,11 @@ func TestServerReloadPicksUpCA(t *testing.T) {
 	// state directory.
 	srv, err := New(Options{
 		Paths: p,
-		Principals: func(username string) ([]string, bool) {
+		Principals: func(username string) []string {
 			if username == currentUser(t) {
-				return []string{testPrincipal}, true
+				return []string{testPrincipal}
 			}
-			return nil, false
+			return nil
 		},
 		TrustedCAs: []ssh.PublicKey{ca.pub},
 		HostKeys:   softwareHostKeys(p),
@@ -152,11 +152,11 @@ func TestServerReloadRefreshesHostCerts(t *testing.T) {
 
 	srv, err := New(Options{
 		Paths: p,
-		Principals: func(username string) ([]string, bool) {
+		Principals: func(username string) []string {
 			if username == currentUser(t) {
-				return []string{testPrincipal}, true
+				return []string{testPrincipal}
 			}
-			return nil, false
+			return nil
 		},
 		TrustedCAs: []ssh.PublicKey{ca.pub},
 		HostKeys:   softwareHostKeys(p),

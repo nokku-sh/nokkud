@@ -81,7 +81,7 @@ func (s *Server) serveDirectTCPIP(
 		return
 	}
 
-	if !s.forwarding.Load() {
+	if !s.tun.Load().forwarding {
 		_ = newCh.Reject(ssh.Prohibited, "port forwarding is disabled")
 		return
 	}
@@ -139,7 +139,7 @@ type tcpipForwardSuccess struct {
 // tcpipForward binds a listener for the client's -R request and accepts
 // connections into forwarded-tcpip channels back to the client.
 func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
-	if !s.forwarding.Load() {
+	if !s.tun.Load().forwarding {
 		_ = req.Reply(false, []byte("port forwarding is disabled"))
 		return
 	}
@@ -151,7 +151,7 @@ func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
 	// Bind policy-controlled. Loopback unless gateway ports are enabled.
 	// The address reported back to the client is the one requested verbatim,
 	// since OpenSSH keys -R forwards by it.
-	bindAddr := remoteBindAddr(f.BindAddr, s.gatewayPorts.Load())
+	bindAddr := remoteBindAddr(f.BindAddr, s.tun.Load().gatewayPorts)
 	addr := net.JoinHostPort(bindAddr, strconv.FormatUint(uint64(f.BindPort), 10))
 
 	st.mu.Lock()
@@ -204,7 +204,7 @@ func (s *Server) cancelTCPIPForward(st *connState, req *ssh.Request) {
 		return
 	}
 	addr := net.JoinHostPort(
-		remoteBindAddr(f.BindAddr, s.gatewayPorts.Load()),
+		remoteBindAddr(f.BindAddr, s.tun.Load().gatewayPorts),
 		strconv.FormatUint(uint64(f.BindPort), 10),
 	)
 

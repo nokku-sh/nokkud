@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -16,6 +15,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/audit"
+	"github.com/nokku-sh/nokkud/internal/ptysession"
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
@@ -343,7 +343,7 @@ func (sess *session) ptyReq(req *ssh.Request) {
 	sess.ptmx = ptmx
 	sess.setEnv("TERM", r.Term)
 
-	if sess.server.record.Load() && sess.server.paths.RecordsDir != "" {
+	if sess.server.tun.Load().record && sess.server.paths.RecordsDir != "" {
 		var sink io.WriteCloser
 		if sess.server.recordingSinkFactory != nil {
 			sink = sess.server.recordingSinkFactory(sess.sessionID, sess.sysUser.Username)
@@ -499,62 +499,31 @@ func (sess *session) run() {
 // runPTY runs the command attached to the pty, relaying stdin/stdout and
 // recording when enabled.
 func (sess *session) runPTY() {
-	ptmx := sess.ptmx
-	cmd := ptmx.Command(sess.shell)
-	if sess.rawCmd != "" {
-		cmd = ptmx.Command(sess.shell, "-c", sess.rawCmd)
-	}
-	cmd.Args[0] = "-" + filepath.Base(sess.shell) // login shell
-	cmd.Dir = sess.sysUser.HomeDir
-	cmd.Env = sess.buildEnv()
-	attr, err := sysutil.SysProcAttr(sess.sysUser)
-	if err != nil {
+	cmd := sess.ptmx.Command(sess.shell)
+	if err := ptysession.Configure(
+		cmd,
+		sess.sysUser,
+		sess.shell,
+		sess.rawCmd,
+		sess.buildEnv(),
+	); err != nil {
 		sess.Exit(1)
 		return
 	}
-	cmd.SysProcAttr = attr
 
-	if err = cmd.Start(); err != nil {
-		sess.server.logger.Debug("sshd: start command", "error", err)
-		sess.Exit(1)
-		return
-	}
-	sess.setProc(cmd.Process)
-	// The child has its own dup'd slave fds. Dropping the parent's copy
-	// makes the master report EOF as soon as the child exits, so the
-	// output relay below is not left blocked forever.
-	closePTYSlave(ptmx)
-
-	// Stdin relay: record input while the pty echo is enabled, matching
-	// the password-handling behaviour of the existing proxy.
-	var relay sync.WaitGroup
-	relay.Go(func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, rerr := sess.Read(buf)
-			if n > 0 {
-				if sess.rec != nil && sysutil.EchoEnabled(ptmx.Fd()) {
-					sess.rec.RecordInput(buf[:n])
-				}
-				if _, werr := ptmx.Write(buf[:n]); werr != nil {
-					return
-				}
-			}
-			if rerr != nil {
-				return
-			}
-		}
+	ps, waitInput := ptysession.Run(ptysession.RunOptions{
+		Pty:     sess.ptmx,
+		Cmd:     cmd,
+		In:      sess,
+		Out:     sess,
+		Rec:     sess.rec,
+		OnStart: sess.setProc,
 	})
 
-	// Stdout relay.
-	out := sess.outputWriter()
-	_, _ = io.Copy(out, ptmx)
-	_ = ptmx.Close()
-	_ = cmd.Wait()
-
-	// Closing the session unblocks the stdin relay above.
-	sess.ExitProcess(cmd.ProcessState)
-	relay.Wait()
+	// ExitProcess closes the session channel, which unblocks the input relay
+	// Run spawned; join it afterwards.
+	sess.ExitProcess(ps)
+	waitInput()
 }
 
 // runPlain runs the command without a pty, wiring the channel straight to
@@ -656,25 +625,6 @@ func (sess *session) buildEnv() []string {
 	return env
 }
 
-// outputWriter returns a writer that records output and forwards it to the
-// channel.
-func (sess *session) outputWriter() io.Writer {
-	if sess.rec == nil {
-		return sess
-	}
-	return &recordingWriter{dst: sess, rec: sess.rec}
-}
-
-type recordingWriter struct {
-	dst io.Writer
-	rec *recording.Recorder
-}
-
-func (w *recordingWriter) Write(p []byte) (int, error) {
-	w.rec.RecordOutput(p)
-	return w.dst.Write(p)
-}
-
 func exitCodeOf(st *os.ProcessState) uint32 {
 	if st == nil {
 		return 1
@@ -692,12 +642,4 @@ func exitCodeToU32(code int) uint32 {
 		return 1
 	}
 	return uint32(code)
-}
-
-// closePTYSlave drops the parent's reference to the pty slave so the
-// master reports EOF once the child exits. No-op without a slave end.
-func closePTYSlave(p pty.Pty) {
-	if u, ok := p.(pty.UnixPty); ok {
-		_ = u.Slave().Close()
-	}
 }
