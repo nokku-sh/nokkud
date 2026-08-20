@@ -143,7 +143,7 @@ func (c *Client) reconcile(ctx context.Context, serverVersion int64) error {
 	return nil
 }
 
-func (c *Client) startSession(ctx context.Context, req *nokkuv1.Session) {
+func (c *Client) startSession(ctx context.Context, req *nokkuv1.DaemonSession) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("session handler panicked", "id", req.GetSessionId(), "panic", r)

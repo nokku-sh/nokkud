@@ -37,7 +37,7 @@ func recoverLog(desc string) {
 // error.
 //
 //nolint:funlen,gocognit
-func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error {
+func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) error {
 	sessionID := req.GetSessionId()
 	username := req.GetUsername()
 	userID := req.GetUserId()
@@ -74,7 +74,7 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 
 	// Open the session stream before spawning the shell: if the backend
 	// refuses the session there is no stray process to reap.
-	stream, err := c.dss.Session(ctx)
+	stream, err := c.dss.DaemonSession(ctx)
 	if err != nil {
 		_ = ptmx.Close()
 		return err
@@ -135,13 +135,13 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 	}
 	defer cleanup()
 
-	rr := &nokkuv1.SessionReady{
+	rr := &nokkuv1.DaemonSessionReady{
 		SessionId: &sessionID,
 		Username:  &username,
 		UserId:    &userID,
 	}
-	if err = stream.Send(&nokkuv1.SessionRequest{
-		Msg: &nokkuv1.SessionRequest_Ready{Ready: rr},
+	if err = stream.Send(&nokkuv1.DaemonSessionRequest{
+		Msg: &nokkuv1.DaemonSessionRequest_Ready{Ready: rr},
 	}); err != nil {
 		return err
 	}
@@ -186,7 +186,7 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 				return
 			}
 			switch m := msg.GetMsg().(type) {
-			case *nokkuv1.SessionResponse_Stdin:
+			case *nokkuv1.DaemonSessionResponse_Stdin:
 				resetIdle()
 				// Omit input while the pty has echo disabled (password prompts).
 				if rec != nil && sysutil.EchoEnabled(ptmx.Fd()) {
@@ -195,7 +195,7 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 				if _, writeErr := ptmx.Write(m.Stdin); writeErr != nil {
 					logger.Warn("PTY write failed", "error", writeErr)
 				}
-			case *nokkuv1.SessionResponse_Resize:
+			case *nokkuv1.DaemonSessionResponse_Resize:
 				w, h := m.Resize.GetWidth(), m.Resize.GetHeight()
 				if resizeErr := ptmx.Resize(int(w), int(h)); resizeErr != nil {
 					logger.Warn("Terminal resize failed", "error", resizeErr)
@@ -203,7 +203,7 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 				if rec != nil {
 					rec.RecordResize(int(w), int(h))
 				}
-			case *nokkuv1.SessionResponse_Close:
+			case *nokkuv1.DaemonSessionResponse_Close:
 				logger.Info("session closed by server")
 				finish()
 				return
@@ -228,8 +228,8 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 				if waitErr := limiter.WaitN(ctx, n); waitErr != nil {
 					return
 				}
-				if sendErr := stream.Send(&nokkuv1.SessionRequest{
-					Msg: &nokkuv1.SessionRequest_Stdout{Stdout: chunk},
+				if sendErr := stream.Send(&nokkuv1.DaemonSessionRequest{
+					Msg: &nokkuv1.DaemonSessionRequest_Stdout{Stdout: chunk},
 				}); sendErr != nil {
 					return
 				}
@@ -244,8 +244,8 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.Session) error 
 	cleanup()
 	logger.Debug("session disconnected")
 
-	_ = stream.Send(&nokkuv1.SessionRequest{
-		Msg: &nokkuv1.SessionRequest_Exited{Exited: &nokkuv1.SessionEnded{}},
+	_ = stream.Send(&nokkuv1.DaemonSessionRequest{
+		Msg: &nokkuv1.DaemonSessionRequest_Exited{Exited: &nokkuv1.DaemonSessionEnded{}},
 	})
 	return nil
 }
