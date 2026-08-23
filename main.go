@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mizuchilabs/kata/buildinfo"
@@ -61,7 +62,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			if err := cfg.Load(); err != nil {
 				return err
 			}
-			cfg.APIURL = cmd.String("api")
+			cfg.APIURL = strings.TrimRight(cmd.String("api"), "/")
 			cfg.SSHAddr = cmd.String("ssh-addr")
 			if err := cfg.Save(); err != nil {
 				return err

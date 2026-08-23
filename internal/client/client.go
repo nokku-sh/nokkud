@@ -40,7 +40,6 @@ type Client struct {
 	signer  tpm.Signer
 	proofer *dpop.Proofer
 	httpc   *http.Client
-	auth    *authInterceptor
 
 	cc  nokkuv1connect.CertificateServiceClient
 	dc  nokkuv1connect.DaemonServiceClient
@@ -80,14 +79,6 @@ func New(
 
 	if err = c.setupClients(config.APIURL, cmd.Bool("insecure")); err != nil {
 		return nil, err
-	}
-
-	// Bootstrap the DPoP nonce so the enrollment proof does not need a
-	// stale-nonce 401 round-trip. A failed fetch is non-fatal: the enrollment
-	// interceptor learns the nonce from the server's error response and
-	// retries once.
-	if nonce, ferr := FetchNonce(ctx, c.httpc, config.APIURL); ferr == nil && nonce != "" {
-		c.auth.setNonce(nonce)
 	}
 
 	// The embedded SSH server records sessions through the same upload
