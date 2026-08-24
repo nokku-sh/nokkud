@@ -4,10 +4,7 @@ package state
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 	"sync"
 
@@ -175,35 +172,12 @@ func (c *Cache) Clear() {
 // Load reads the cache from disk. A missing file is not an error. A
 // corrupted one is discarded so the next sync rebuilds it.
 func (c *Cache) Load() error {
-	data, err := os.ReadFile(c.paths.CacheFile())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("reading cache: %w", err)
-	}
-
-	if err = json.Unmarshal(data, c); err != nil {
-		c.Clear()
-		if rmErr := os.Remove(c.paths.CacheFile()); rmErr != nil {
-			slog.Warn("remove corrupted cache", "error", rmErr)
-		}
-		return nil
-	}
-	return nil
+	return loadJSON(c.paths.CacheFile(), c, c.Clear)
 }
 
 // Save writes the cache atomically, skipping unchanged content.
 func (c *Cache) Save() error {
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("serializing cache: %w", err)
-	}
-
-	if err = util.WriteIfChanged(c.paths.CacheFile(), data, 0o640); err != nil {
-		return fmt.Errorf("writing cache: %w", err)
-	}
-	return nil
+	return saveJSON(c.paths.CacheFile(), c, 0o640)
 }
 
 // MarshalJSON serializes the cache under its read lock.

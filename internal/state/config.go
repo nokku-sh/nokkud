@@ -1,14 +1,14 @@
 package state
 
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log/slog"
-	"os"
+import "github.com/nokku-sh/nokkud/internal/paths"
 
-	"github.com/nokku-sh/nokkud/internal/paths"
-	"github.com/nokku-sh/nokkud/internal/util"
+// Built-in defaults for the runtime options the daemon persists. They live
+// here rather than on the CLI flags so the persisted config is the single
+// source of truth and a bare default never clobbers a value the user already
+// configured in config.json.
+const (
+	DefaultAPIURL  = "https://app.nokku.sh"
+	DefaultSSHAddr = ":4022"
 )
 
 // Config is the persisted enrollment state: target/daemon IDs, API
@@ -16,14 +16,11 @@ import (
 // recording, recording key, caps) lives in the [Cache]. paths is never
 // serialized.
 type Config struct {
-	WorkspaceID string `json:"workspace_id,omitempty"`
-	TargetID    string `json:"target_id,omitempty"`
-	DaemonID    string `json:"daemon_id,omitempty"`
-	APIURL      string `json:"api_url,omitempty"`
-	SSHAddr     string `json:"ssh_addr,omitempty"`
-	// SessionToken is the DPoP-bound, non-expiring session token issued at
-	// enrollment. It is persisted (0600) and useless without the daemon's
-	// signing key.
+	WorkspaceID  string `json:"workspace_id,omitempty"`
+	TargetID     string `json:"target_id,omitempty"`
+	DaemonID     string `json:"daemon_id,omitempty"`
+	APIURL       string `json:"api_url,omitempty"`
+	SSHAddr      string `json:"ssh_addr,omitempty"`
 	SessionToken string `json:"session_token,omitempty"`
 
 	paths paths.Paths
@@ -38,37 +35,13 @@ func NewConfig(p paths.Paths) *Config {
 // corrupted one is cleared so the daemon starts unenrolled, never
 // half-enrolled.
 func (c *Config) Load() error {
-	data, err := os.ReadFile(c.paths.ConfigFile())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("reading config: %w", err)
-	}
-	if err = json.Unmarshal(data, c); err != nil {
-		c.Clear()
-		if rmErr := os.Remove(c.paths.ConfigFile()); rmErr != nil {
-			slog.Warn("remove corrupted config", "error", rmErr)
-		}
-		return nil
-	}
-	return nil
+	return loadJSON(c.paths.ConfigFile(), c, c.Clear)
 }
 
 // Save writes the config atomically with 0600 perms, skipping unchanged
 // content.
 func (c *Config) Save() error {
-	// #nosec G117 -- the session token is a bearer credential persisted to a
-	// 0600 file, never logged; it is useless without the daemon's signing key.
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("serializing config: %w", err)
-	}
-
-	if err = util.WriteIfChanged(c.paths.ConfigFile(), data, 0o600); err != nil {
-		return fmt.Errorf("writing config: %w", err)
-	}
-	return nil
+	return saveJSON(c.paths.ConfigFile(), c, 0o600)
 }
 
 // Clear resets the config to its zero state, keeping the paths binding.
