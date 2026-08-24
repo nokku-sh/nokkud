@@ -17,7 +17,7 @@ const fuzzMaxEvent = 64 << 10
 
 // FuzzRecordEvents checks the recording format end to end: after recording
 // arbitrary session bytes the file must be valid gzip holding a valid
-// asciicast v2 header plus well-formed event lines, and the recorded payload
+// asciicast v3 header plus well-formed event lines, and the recorded payload
 // must round-trip through the JSON wire format (invalid UTF-8 is replaced by
 // U+FFFD by the format itself, so byte equality only holds for valid UTF-8).
 func FuzzRecordEvents(f *testing.F) {
@@ -80,8 +80,8 @@ func FuzzRecordEvents(f *testing.F) {
 		var header struct {
 			Version int `json:"version"`
 		}
-		if err = json.Unmarshal(lines[0], &header); err != nil || header.Version != 2 {
-			t.Fatalf("first line is not an asciicast v2 header: %v", err)
+		if err = json.Unmarshal(lines[0], &header); err != nil || header.Version != 3 {
+			t.Fatalf("first line is not an asciicast v3 header: %v", err)
 		}
 
 		var sawOutput, sawInput bool

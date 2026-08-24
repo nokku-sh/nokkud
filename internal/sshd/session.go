@@ -389,12 +389,13 @@ func (sess *session) ptyReq(req *ssh.Request) {
 		}
 		var rec *recording.Recorder
 		rec, err = recording.New(sess.server.paths, recording.Options{
-			Width:     int(r.Width),
-			Height:    int(r.Height),
-			Title:     fmt.Sprintf("ssh-%s", sess.sysUser.Username),
-			Label:     sess.sysUser.Username,
-			SessionID: sess.sessionID,
-			Sink:      sink,
+			Width:         int(r.Width),
+			Height:        int(r.Height),
+			Title:         fmt.Sprintf("ssh-%s", sess.sysUser.Username),
+			Label:         sess.sysUser.Username,
+			SessionID:     sess.sessionID,
+			RedactSecrets: true,
+			Sink:          sink,
 		})
 		if err == nil && rec != nil {
 			sess.rec = rec
@@ -513,6 +514,7 @@ func (sess *session) finish(code int, send func()) {
 	sess.cancel()
 
 	if sess.rec != nil {
+		sess.rec.RecordExit(code)
 		sess.rec.Close()
 	}
 

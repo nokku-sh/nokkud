@@ -62,6 +62,215 @@ func TestRecorderCorrelatesSessionID(t *testing.T) {
 	}
 }
 
+// TestRecorderV3Schema verifies the file carries the v3 term block in the
+// header and an exit event as the last line of the event stream.
+func TestRecorderV3Schema(t *testing.T) {
+	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
+	if err := os.MkdirAll(p.RecordsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := New(p, Options{Width: 100, Height: 40, Title: "t", SessionID: "sess-1"})
+	if err != nil {
+		t.Fatalf("new recorder: %v", err)
+	}
+	rec.RecordOutput([]byte("hi"))
+	rec.RecordExit(7)
+	rec.Close()
+
+	entries, err := os.ReadDir(p.RecordsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 recording, got %d", len(entries))
+	}
+	f, err := os.Open(filepath.Join(p.RecordsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+
+	lines := strings.Split(strings.TrimSuffix(string(mustReadAll(t, gz)), "\n"), "\n")
+
+	var hdr struct {
+		Version int `json:"version"`
+		Term    struct {
+			Cols int    `json:"cols"`
+			Rows int    `json:"rows"`
+			Type string `json:"type"`
+		} `json:"term"`
+	}
+	if err = json.Unmarshal([]byte(lines[0]), &hdr); err != nil {
+		t.Fatalf("decode header: %v", err)
+	}
+	if hdr.Version != 3 {
+		t.Fatalf("header version = %d, want 3", hdr.Version)
+	}
+	if hdr.Term.Cols != 100 || hdr.Term.Rows != 40 || hdr.Term.Type == "" {
+		t.Fatalf("term block = %+v, want cols=100 rows=40 type set", hdr.Term)
+	}
+
+	last := lines[len(lines)-1]
+	var exit []any
+	if err = json.Unmarshal([]byte(last), &exit); err != nil {
+		t.Fatalf("last event %q is not valid JSON: %v", last, err)
+	}
+	if len(exit) != 3 || exit[1] != "x" || exit[2] != "7" {
+		t.Fatalf("last event = %v, want [interval,\"x\",\"7\"]", exit)
+	}
+}
+
+// TestRecorderScrubsInput verifies recorded input events are redacted too,
+// and that the input and output scrubbers keep separate buffers so one stream
+// never leaks into the other.
+func TestRecorderScrubsInput(t *testing.T) {
+	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
+	if err := os.MkdirAll(p.RecordsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := New(p, Options{Width: 80, Height: 24, SessionID: "s1", RedactSecrets: true})
+	if err != nil {
+		t.Fatalf("new recorder: %v", err)
+	}
+	// A secret typed into the input stream, and plain output.
+	rec.RecordInput([]byte("export SECRET=YOOOO\n"))
+	rec.RecordOutput([]byte("export SECRET=YOOOO\r\n"))
+	recRecordAndReadEvents(t, p, rec, func(events []eventLine) {
+		var sawInputMask, sawOutputMask bool
+		for _, e := range events {
+			data := string(e.Data)
+			if strings.Contains(data, "YOOOO") {
+				t.Fatalf("secret leaked in %q event: %q", e.Code, data)
+			}
+			switch e.Code {
+			case "i":
+				if strings.Contains(data, redaction) {
+					sawInputMask = true
+				}
+			case "o":
+				if strings.Contains(data, redaction) {
+					sawOutputMask = true
+				}
+			}
+		}
+		if !sawInputMask {
+			t.Fatal("input event was not redacted")
+		}
+		if !sawOutputMask {
+			t.Fatal("output event was not redacted")
+		}
+	})
+}
+
+// eventLine is a decoded asciicast event: [interval, code, data].
+type eventLine struct {
+	Interval float64
+	Code     string
+	Data     []byte
+}
+
+// recRecordAndReadEvents records the events into rec, closes it, and hands
+// the decoded event lines to check.
+func recRecordAndReadEvents(
+	t *testing.T,
+	p paths.Paths,
+	rec *Recorder,
+	check func([]eventLine),
+) {
+	t.Helper()
+	rec.Close()
+
+	entries, err := os.ReadDir(p.RecordsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 recording, got %d", len(entries))
+	}
+	f, err := os.Open(filepath.Join(p.RecordsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+
+	lines := strings.Split(strings.TrimSuffix(string(mustReadAll(t, gz)), "\n"), "\n")
+	events := make([]eventLine, 0, len(lines)-1)
+	for _, line := range lines[1:] {
+		var ev []json.RawMessage
+		if jerr := json.Unmarshal([]byte(line), &ev); jerr != nil {
+			t.Fatalf("decode event %q: %v", line, jerr)
+		}
+		var code string
+		var data string
+		if len(ev) >= 3 {
+			_ = json.Unmarshal(ev[1], &code)
+			_ = json.Unmarshal(ev[2], &data)
+		}
+		events = append(events, eventLine{Code: code, Data: []byte(data)})
+	}
+	check(events)
+}
+
+// TestRecorderNoHTMLEscape verifies event data is marshaled without HTML
+// escapes, so terminal output like pipes/angles stays readable in the raw
+// cast instead of `\u003c`.
+func TestRecorderNoHTMLEscape(t *testing.T) {
+	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
+	if err := os.MkdirAll(p.RecordsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := New(p, Options{Width: 80, Height: 24, SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("new recorder: %v", err)
+	}
+	rec.RecordOutput([]byte("a < b & c > d\n"))
+	rec.Close()
+
+	entries, err := os.ReadDir(p.RecordsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(filepath.Join(p.RecordsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+
+	raw := string(mustReadAll(t, gz))
+	if !strings.Contains(raw, "<") || !strings.Contains(raw, "&") || !strings.Contains(raw, ">") {
+		t.Fatalf("expected literal angle/ampersand in cast, got %q", raw)
+	}
+	if strings.Contains(raw, `\u003c`) || strings.Contains(raw, `\u0026`) {
+		t.Fatalf("cast contains HTML escapes: %q", raw)
+	}
+}
+
+func mustReadAll(t *testing.T, r io.Reader) []byte {
+	t.Helper()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read gzip: %v", err)
+	}
+	return data
+}
+
 // TestRecorderFlushesWithoutClose verifies events reach disk while the
 // session is still running: the recorder flushes on a bounded interval, so
 // a crash loses only the tail, never everything since the last explicit

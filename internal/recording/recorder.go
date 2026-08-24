@@ -1,13 +1,16 @@
 package recording
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -19,22 +22,27 @@ import (
 const (
 	// MaxSize is the maximum uncompressed size of a recording.
 	MaxSize = 50 << 20
-	// MaxIdleTime is the maximum gap between events during playback.
+	// MaxIdleTime is the maximum gap between events recorded in the cast.
 	MaxIdleTime = 2 * time.Second
 	// maxFlushInterval bounds how long compressed data sits in the gzip
 	// buffer. A crash loses at most this much of the tail of a recording.
 	maxFlushInterval = 100 * time.Millisecond
 )
 
-// Header is the asciicast v2 metadata block written first in a recording.
+// Header is the asciicast v3 metadata block written first in a recording.
 type Header struct {
-	Version   int               `json:"version"`
-	Width     int               `json:"width"`
-	Height    int               `json:"height"`
-	Timestamp int64             `json:"timestamp"`
-	Title     string            `json:"title,omitempty"`
-	SessionID string            `json:"session_id,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
+	Version   int    `json:"version"`
+	Term      Term   `json:"term"`
+	Timestamp int64  `json:"timestamp,omitempty"`
+	Title     string `json:"title,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// Term is the terminal info block of an asciicast v3 header.
+type Term struct {
+	Cols int    `json:"cols"`
+	Rows int    `json:"rows"`
+	Type string `json:"type,omitempty"`
 }
 
 // Options configures a recording. SessionID ties it to audit events.
@@ -45,24 +53,35 @@ type Options struct {
 	Label     string // short human-usable label for the filename
 	SessionID string // correlates the recording with the session's audit events
 	Username  string // recorded in the upload metadata
+	// RedactSecrets masks common credentials (keys, tokens, passwords) in
+	// recorded output so they never reach the file or the upload.
+	RedactSecrets bool
 	// Sink, when set, receives every flushed batch of compressed data in
 	// addition to the local file. A failure inside the sink is logged and
 	// the sink is dropped: the local file must keep the data either way.
 	Sink io.WriteCloser
 }
 
-// Recorder writes session events to a single gzipped asciicast v2 file.
+// Recorder writes session events to a single gzipped asciicast v3 file.
 type Recorder struct {
 	mu        sync.Mutex
 	cw        *countingWriter
 	gw        *gzip.Writer
 	enc       *json.Encoder
 	sink      io.WriteCloser
-	started   time.Time
+	scrub     *Scrubber // redacts recorded output
+	scrubIn   *Scrubber // redacts recorded input
 	lastEvent time.Time
-	dirty     bool
-	done      chan struct{}
-	closed    bool
+	// msCarry carries the fractional-millisecond rounding error from one
+	// interval to the next, so the written intervals sum to the real time
+	// even after each is rounded to the nearest millisecond.
+	msCarry float64
+	// exitCode is the session's exit status written last, once the scrubber
+	// tail has been flushed, so the x event stays the final event.
+	exitCode *int
+	dirty    bool
+	done     chan struct{}
+	closed   bool
 }
 
 type countingWriter struct {
@@ -123,13 +142,15 @@ func New(p paths.Paths, opts Options) (*Recorder, error) {
 	}
 
 	if err = enc.Encode(Header{
-		Version:   2,
-		Width:     opts.Width,
-		Height:    opts.Height,
+		Version: 3,
+		Term: Term{
+			Cols: opts.Width,
+			Rows: opts.Height,
+			Type: term,
+		},
 		Timestamp: time.Now().Unix(),
 		Title:     opts.Title,
 		SessionID: opts.SessionID,
-		Env:       map[string]string{"TERM": term},
 	}); err != nil {
 		_ = gw.Close()
 		_ = f.Close()
@@ -149,9 +170,12 @@ func New(p paths.Paths, opts Options) (*Recorder, error) {
 		gw:        gw,
 		enc:       enc,
 		sink:      opts.Sink,
-		started:   time.Now(),
 		lastEvent: time.Now(),
 		done:      make(chan struct{}),
+	}
+	if opts.RedactSecrets {
+		rec.scrub = NewScrubber()
+		rec.scrubIn = NewScrubber()
 	}
 	go rec.flushLoop()
 	return rec, nil
@@ -218,25 +242,78 @@ func (r *Recorder) event(eventType string, data []byte) {
 		return
 	}
 
-	now := time.Now()
-	if gap := now.Sub(r.lastEvent); gap > MaxIdleTime {
-		r.started = r.started.Add(gap - MaxIdleTime)
+	// Output and input pass through their own scrubbers. Each keeps its own
+	// buffer so the two streams are never interleaved, and a held partial
+	// line is released when its newline (or close) arrives so the secret
+	// stays masked across reads.
+	switch eventType {
+	case "o":
+		if r.scrub != nil {
+			data = r.scrub.Rub(data)
+			if len(data) == 0 {
+				return
+			}
+		}
+	case "i":
+		if r.scrubIn != nil {
+			data = r.scrubIn.Rub(data)
+			if len(data) == 0 {
+				return
+			}
+		}
 	}
+
+	r.emit(eventType, data)
+}
+
+// emit writes one event line. Caller holds r.mu and has checked not closed.
+func (r *Recorder) emit(eventType string, data []byte) {
+	// asciicast v3 timestamps are intervals from the previous event. Real
+	// idle gaps longer than MaxIdleTime are clamped so playback does not
+	// dwell on terminal inactivity, matching the historical behavior.
+	now := time.Now()
+	gap := min(now.Sub(r.lastEvent), MaxIdleTime)
 	r.lastEvent = now
 
-	elapsed := time.Since(r.started).Seconds()
-	encodedData, err := json.Marshal(string(data))
-	if err != nil {
-		slog.Error("marshal recording event", "error", err)
-		return
-	}
+	encodedData := marshalEventData(string(data))
 
-	line := fmt.Sprintf("[%f, %q, %s]\n", elapsed, eventType, encodedData)
+	line := fmt.Sprintf("[%s, %q, %s]\n", r.roundInterval(gap), eventType, encodedData)
 
-	if _, err = r.gw.Write([]byte(line)); err != nil {
+	if _, err := r.gw.Write([]byte(line)); err != nil {
 		slog.Error("write recording event", "error", err)
 	}
 	r.dirty = true
+}
+
+// marshalEventData encodes a string as JSON without escaping <, >, and &,
+// matching the header encoder, so terminal output (pipes, redirects, Go
+// operators) and the redaction mask stay readable in the raw cast. Literal
+// backslash-u003c in the data is double-escaped by the marshaler, so these
+// unescapes can only ever map back to the real characters.
+func marshalEventData(s string) []byte {
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		return []byte(`""`)
+	}
+	// json.Marshal produces lowercase-hex escapes; unescape only the three
+	// HTML-significant ones.
+	return bytes.ReplaceAll(
+		bytes.ReplaceAll(
+			bytes.ReplaceAll(encoded, []byte(`\u003c`), []byte(`<`)),
+			[]byte(`\u003e`), []byte(`>`),
+		),
+		[]byte(`\u0026`), []byte(`&`),
+	)
+}
+
+// roundInterval renders a gap as a millisecond-precision interval, carrying
+// the rounding error into the next event (error diffusion) so the sum of the
+// written intervals tracks the real time instead of drifting.
+func (r *Recorder) roundInterval(gap time.Duration) string {
+	r.msCarry += gap.Seconds() * 1000
+	ms := int64(math.Round(r.msCarry))
+	r.msCarry -= float64(ms)
+	return fmt.Sprintf("%d.%03d", ms/1000, ms%1000)
 }
 
 // RecordOutput appends an output ("o") event.
@@ -254,12 +331,43 @@ func (r *Recorder) RecordResize(width, height int) {
 	r.event("r", fmt.Appendf(nil, "%dx%d", width, height))
 }
 
+// RecordExit records the session's exit status in an exit ("x") event. It is
+// written as the last event during Close, after any held redaction tail.
+func (r *Recorder) RecordExit(status int) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
+	code := status
+	r.exitCode = &code
+}
+
 func (r *Recorder) closeLocked() {
 	if r.closed {
 		return
 	}
 	r.closed = true
 	close(r.done)
+
+	// Flush any held redaction tail and the pending exit status so they land
+	// before the gzip footer, with the x event last.
+	if r.scrubIn != nil {
+		if tail := r.scrubIn.Flush(); len(tail) > 0 {
+			r.emit("i", tail)
+		}
+	}
+	if r.scrub != nil {
+		if tail := r.scrub.Flush(); len(tail) > 0 {
+			r.emit("o", tail)
+		}
+	}
+	if r.exitCode != nil {
+		r.emit("x", []byte(strconv.Itoa(*r.exitCode)))
+	}
 
 	// gw.Close flushes pending data and writes the gzip footer, so the
 	// file is complete and self-contained after Close. The sink receives
