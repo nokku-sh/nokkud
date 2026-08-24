@@ -96,9 +96,8 @@ func New(
 				return nopWriteCloser{}
 			}
 			return recording.NewUploader(c.ctx, c.rc, recording.UploaderOptions{
-				SessionID:   sessionID,
-				Username:    username,
-				KeyProvider: c.RecordingKey,
+				SessionID: sessionID,
+				Username:  username,
 			})
 		})
 	}
@@ -207,15 +206,4 @@ func (c *Client) DeleteDaemon(ctx context.Context) error {
 
 	_, err := c.dc.DeleteDaemon(ctx, &nokkuv1.DeleteDaemonRequest{})
 	return err
-}
-
-// RecordingKey returns the workspace recording public key and fingerprint
-// from the synced cache, or ("", "") when unset or invalid so sessions
-// stay local.
-func (c *Client) RecordingKey() (string, string) {
-	pubkey, fp, ok := recording.Key(c.cache.RecordingKey())
-	if !ok {
-		return "", ""
-	}
-	return pubkey, fp
 }

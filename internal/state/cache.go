@@ -142,14 +142,6 @@ func (c *Cache) DaemonConfig() *nokkuv1.DaemonConfig {
 	return c.daemonConfig
 }
 
-// RecordingKey returns the workspace recording public key from the synced
-// daemon config, or "" when recording encryption is disabled.
-func (c *Cache) RecordingKey() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.daemonConfig.GetRecordingPublicKey()
-}
-
 // RecordSessions reports whether the synced daemon config enables session
 // recording.
 func (c *Cache) RecordSessions() bool {
