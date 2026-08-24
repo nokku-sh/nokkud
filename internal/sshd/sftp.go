@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/pkg/sftp"
 
@@ -57,53 +56,8 @@ func (sess *session) runSFTP() uint32 {
 	cmd.SysProcAttr = attr
 	cmd.Dir = home
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		sess.server.logger.Debug("sshd: sftp stdin pipe", "error", err)
-		return 1
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		sess.server.logger.Debug("sshd: sftp stdout pipe", "error", err)
-		return 1
-	}
-	cmd.Stderr = &slogWriter{log: sess.server.logger}
-
-	if err = cmd.Start(); err != nil {
-		sess.server.logger.Debug("sshd: start sftp", "error", err)
-		_ = stdin.Close()
-		_ = stdout.Close()
-		return 1
-	}
-	sess.setProc(cmd.Process)
-
-	var wg sync.WaitGroup
-
-	// client -> sftp-server
-	wg.Go(func() {
-		defer stdin.Close()
-		_, _ = io.Copy(stdin, sess)
-	})
-
-	// sftp-server -> client
-	stdoutDone := make(chan struct{})
-	wg.Go(func() {
-		defer close(stdoutDone)
-		_, _ = io.Copy(sess, stdout)
-	})
-
-	// Drain stdout before reaping. cmd.Wait() closes the stdout pipe, which
-	// would truncate any output the relay has not yet copied.
-	<-stdoutDone
-	_ = cmd.Wait()
-	code := exitCodeOf(cmd.ProcessState)
-
-	// Exit closes the session channel, which unblocks both relays above.
-	// Join them so no goroutine outlives the session.
-	sess.ExitProcess(cmd.ProcessState)
-	wg.Wait()
-	return code
+	state := sess.runProcess(cmd, &slogWriter{log: sess.server.logger})
+	return exitCodeOf(state)
 }
 
 // sftpServerCommand builds the `nokkud sftp-server` subprocess. Under the test

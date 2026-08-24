@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"math"
 	"net"
 	"runtime/debug"
 	"sync"
@@ -37,6 +36,12 @@ type Audit interface {
 // SubsystemHandler serves a named SSH subsystem (e.g. "sftp") for a session.
 type SubsystemHandler func(sess *session) uint32
 
+// shutdownGrace bounds how long Shutdown waits for active connections to
+// drain before closing resources regardless. It is fixed rather than passed
+// as a context so the daemon's lifecycle is driven by a single context that
+// flows top-down; the server never manufactures its own shutdown context.
+const shutdownGrace = 10 * time.Second
+
 // Server is an SSH server. Construct with New and serve with Serve.
 type Server struct {
 	logger     *slog.Logger
@@ -48,7 +53,12 @@ type Server struct {
 
 	// tun holds the live-adjustable options. It is swapped atomically so a
 	// concurrent SetOptions never tears down established connections.
-	tun atomic.Pointer[tunables]
+	tun atomic.Pointer[Options]
+	// defaults are the options the server was constructed with. Defaults
+	// returns them so the client can overlay a synced backend config on the
+	// compiled-in policy rather than the previous live state. Never mutated
+	// after New.
+	defaults Options
 
 	// certsMu guards trustedCAs and hostKeys so a reload can swap them out
 	// without tearing down established connections.
@@ -61,15 +71,15 @@ type Server struct {
 	hostKeyClosers  []io.Closer
 
 	// connection limits
-	activeConns     atomic.Int32
-	unauthenticated atomic.Int32
+	activeConns     atomic.Int64
+	unauthenticated atomic.Int64
 	closeOnce       sync.Once
 	connsWg         sync.WaitGroup
 
 	// principalSessions counts active sessions per principal (SSH username)
 	// so one user cannot exhaust the daemon across many connections.
 	principalMu       sync.Mutex
-	principalSessions map[string]int32
+	principalSessions map[string]int
 
 	// mu guards the listener installed by ListenAndServe so Close can stop it.
 	mu       sync.Mutex
@@ -196,7 +206,8 @@ func New(opts Options) (*Server, error) {
 			sftpSubsystem: func(sess *session) uint32 { return sess.runSFTP() },
 		},
 	}
-	s.tun.Store(tunablesFrom(opts))
+	s.defaults = opts
+	s.tun.Store(&opts)
 
 	hostKeys, hostClosers, err := s.loadHostIdentity()
 	if err != nil {
@@ -208,6 +219,22 @@ func New(opts Options) (*Server, error) {
 
 	logger.Debug("sshd: server configured", "host_keys", len(hostKeys), "trusted_cas", len(trusted))
 	return s, nil
+}
+
+// SetOptions applies the runtime-tunable options (record, forwarding, session
+// and connection caps, client-alive interval) live, without restarting. Field
+// values from Options that are not tunable (paths, principals, CAs, host
+// keys) are ignored, so the caller may pass a partial Options.
+func (s *Server) SetOptions(opts Options) {
+	s.tun.Store(&opts)
+}
+
+// Defaults returns the compiled-in options the server was constructed with.
+// The client overlays the backend's synced daemon config on top of these so
+// an unset field falls back to the policy compiled into the daemon instead of
+// silently disabling the feature or inheriting a previous backend value.
+func (s *Server) Defaults() Options {
+	return s.defaults
 }
 
 // loadHostIdentity resolves the server's host key signers, preferring the
@@ -296,13 +323,13 @@ func (s *Server) Serve(l net.Listener) error {
 // activeConns is kept in lockstep with the connection lifecycle regardless of
 // the cap, so re-enabling the cap later starts from an accurate count. The
 // counter approach keeps the cap live-adjustable: a concurrent SetOptions
-// swaps maxConns without tearing down established connections.
+// swaps the cap without tearing down established connections.
 func (s *Server) acquireConn() bool {
-	limit := s.tun.Load().maxConns
+	limit := s.tun.Load().MaxConnections
 	if limit > 0 {
 		for {
 			cur := s.activeConns.Load()
-			if cur >= limit {
+			if cur >= int64(limit) {
 				return false
 			}
 			if s.activeConns.CompareAndSwap(cur, cur+1) {
@@ -322,13 +349,13 @@ func (s *Server) releaseConn() {
 // pre-auth handshake. It caps concurrent half-open connections so a brute
 // force or SYN flood cannot exhaust the daemon ahead of authentication.
 func (s *Server) acquireUnauthenticated() bool {
-	limit := s.tun.Load().maxStartups
+	limit := s.tun.Load().MaxStartups
 	if limit <= 0 {
 		return true
 	}
 	for {
 		cur := s.unauthenticated.Load()
-		if cur >= limit {
+		if cur >= int64(limit) {
 			return false
 		}
 		if s.unauthenticated.CompareAndSwap(cur, cur+1) {
@@ -344,14 +371,14 @@ func (s *Server) releaseUnauthenticated() {
 // acquirePrincipalSession reserves a session slot for a principal, capping
 // concurrent sessions per user across all connections. limit <= 0 disables
 // the cap.
-func (s *Server) acquirePrincipalSession(principal string, limit int32) bool {
+func (s *Server) acquirePrincipalSession(principal string, limit int) bool {
 	if limit <= 0 {
 		return true
 	}
 	s.principalMu.Lock()
 	defer s.principalMu.Unlock()
 	if s.principalSessions == nil {
-		s.principalSessions = make(map[string]int32)
+		s.principalSessions = make(map[string]int)
 	}
 	if s.principalSessions[principal] >= limit {
 		return false
@@ -369,12 +396,6 @@ func (s *Server) releasePrincipalSession(principal string) {
 		s.principalSessions[principal] = n - 1
 	}
 }
-
-// shutdownGrace bounds how long Shutdown waits for active connections to
-// drain before closing resources regardless. It is fixed rather than passed
-// as a context so the daemon's lifecycle is driven by a single context that
-// flows top-down; the server never manufactures its own shutdown context.
-const shutdownGrace = 10 * time.Second
 
 // Shutdown gracefully drains active connections. It closes the listener to
 // stop accepting new connections and blocks until all active connections have
@@ -429,73 +450,6 @@ func (s *Server) Close() error {
 		}
 	})
 	return nil
-}
-
-// sessionCapToInt32 bounds a configured session cap to a positive int32.
-func sessionCapToInt32(n int) int32 {
-	if n <= 0 {
-		return 0
-	}
-	if n > math.MaxInt32 {
-		return math.MaxInt32
-	}
-	return int32(n)
-}
-
-// tunables is the runtime-tunable subset of Options. It is stored behind an
-// atomic pointer so a SetOptions swap is safe against concurrent readers
-// (handshakes, sessions, forwards).
-type tunables struct {
-	record              bool
-	forwarding          bool
-	agentForwarding     bool
-	gatewayPorts        bool
-	maxSessions         int32
-	maxConns            int32
-	maxStartups         int32
-	maxSessionsPerUser  int32
-	clientAliveInterval time.Duration
-}
-
-func tunablesFrom(opts Options) *tunables {
-	return &tunables{
-		record:              opts.Record,
-		forwarding:          opts.AllowForwarding,
-		agentForwarding:     opts.AllowAgentForwarding,
-		gatewayPorts:        opts.GatewayPorts,
-		maxSessions:         sessionCapToInt32(opts.MaxSessions),
-		maxConns:            sessionCapToInt32(opts.MaxConnections),
-		maxStartups:         sessionCapToInt32(opts.MaxStartups),
-		maxSessionsPerUser:  sessionCapToInt32(opts.MaxSessionsPerUser),
-		clientAliveInterval: opts.ClientAliveInterval,
-	}
-}
-
-// SetOptions applies runtime-tunable options (record, forwarding, session and
-// connection caps, client-alive interval) live, without restarting. It
-// replaces every tunable, so pass the full set. An unspecified field disables
-// that feature.
-func (s *Server) SetOptions(opts Options) {
-	s.tun.Store(tunablesFrom(opts))
-}
-
-// Defaults returns the tunable options the server was constructed with. The
-// client merges the backend's synced daemon config over these so an unset
-// field falls back to the compiled-in policy instead of silently disabling
-// the feature.
-func (s *Server) Defaults() Options {
-	t := s.tun.Load()
-	return Options{
-		Record:               t.record,
-		AllowForwarding:      t.forwarding,
-		AllowAgentForwarding: t.agentForwarding,
-		GatewayPorts:         t.gatewayPorts,
-		MaxSessions:          int(t.maxSessions),
-		MaxConnections:       int(t.maxConns),
-		MaxStartups:          int(t.maxStartups),
-		MaxSessionsPerUser:   int(t.maxSessionsPerUser),
-		ClientAliveInterval:  t.clientAliveInterval,
-	}
 }
 
 // ListenAndServe binds addr and starts serving on it, returning the bound
@@ -575,7 +529,7 @@ func (s *Server) handleConn(nc net.Conn) {
 	// Client-alive probing. Wrap the conn so inbound traffic refreshes a
 	// read deadline. The probing goroutine disconnects a client that never
 	// responds.
-	interval := s.tun.Load().clientAliveInterval
+	interval := s.tun.Load().ClientAliveInterval
 	var alive *aliveConn
 	if interval > 0 {
 		alive = &aliveConn{Conn: nc, timeout: 3 * interval}
@@ -648,45 +602,6 @@ func (s *Server) handleConn(nc net.Conn) {
 			handler(s, conn, st, newCh, &ch)
 		})
 	}
-}
-
-// channelHandler serves one accepted SSH channel type.
-type channelHandler func(*Server, *ssh.ServerConn, *connState, ssh.NewChannel, *ssh.Channel)
-
-// channelHandlers maps SSH channel types to handlers so new types slot in
-// without touching the accept loop.
-var channelHandlers = map[string]channelHandler{
-	"session":      (*Server).handleSession,
-	"direct-tcpip": (*Server).serveDirectTCPIP,
-}
-
-// handleSession accepts a "session" channel and serves its request stream,
-// enforcing the per-connection session cap and the per-principal session cap.
-func (s *Server) handleSession(
-	conn *ssh.ServerConn,
-	st *connState,
-	newCh ssh.NewChannel,
-	ch *ssh.Channel,
-) {
-	if !st.acquireSession(int(s.tun.Load().maxSessions)) {
-		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions")
-		return
-	}
-	defer st.releaseSession()
-
-	if !s.acquirePrincipalSession(conn.User(), s.tun.Load().maxSessionsPerUser) {
-		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions for user")
-		return
-	}
-	defer s.releasePrincipalSession(conn.User())
-
-	c, reqs, err := newCh.Accept()
-	if err != nil {
-		s.logger.Debug("sshd: accept session channel", "error", err)
-		return
-	}
-	*ch = c
-	s.serveSession(conn, c, reqs)
 }
 
 // recoverAndLog contains a panic on the current goroutine, logs it with a

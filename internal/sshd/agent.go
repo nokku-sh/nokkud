@@ -26,7 +26,7 @@ func (sess *session) agentRequest(req *ssh.Request) bool {
 		_ = req.Reply(false, nil)
 		return false
 	}
-	if !sess.server.tun.Load().agentForwarding {
+	if !sess.server.tun.Load().AllowAgentForwarding {
 		_ = req.Reply(false, nil)
 		return false
 	}

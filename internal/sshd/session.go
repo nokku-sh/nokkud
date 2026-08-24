@@ -20,6 +20,45 @@ import (
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
+// channelHandler serves one accepted SSH channel type.
+type channelHandler func(*Server, *ssh.ServerConn, *connState, ssh.NewChannel, *ssh.Channel)
+
+// channelHandlers maps SSH channel types to handlers so new types slot in
+// without touching the accept loop.
+var channelHandlers = map[string]channelHandler{
+	"session":      (*Server).handleSession,
+	"direct-tcpip": (*Server).serveDirectTCPIP,
+}
+
+// handleSession accepts a "session" channel and serves its request stream,
+// enforcing the per-connection session cap and the per-principal session cap.
+func (s *Server) handleSession(
+	conn *ssh.ServerConn,
+	st *connState,
+	newCh ssh.NewChannel,
+	ch *ssh.Channel,
+) {
+	if !st.acquireSession(s.tun.Load().MaxSessions) {
+		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions")
+		return
+	}
+	defer st.releaseSession()
+
+	if !s.acquirePrincipalSession(conn.User(), s.tun.Load().MaxSessionsPerUser) {
+		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions for user")
+		return
+	}
+	defer s.releasePrincipalSession(conn.User())
+
+	c, reqs, err := newCh.Accept()
+	if err != nil {
+		s.logger.Debug("sshd: accept session channel", "error", err)
+		return
+	}
+	*ch = c
+	s.serveSession(conn, c, reqs)
+}
+
 // session handles a single "session" channel. It embeds the SSH channel so
 // handlers write to it directly, and exposes the request state (env,
 // command, subsystem) plus a single teardown path via Exit.
@@ -343,7 +382,7 @@ func (sess *session) ptyReq(req *ssh.Request) {
 	sess.ptmx = ptmx
 	sess.setEnv("TERM", r.Term)
 
-	if sess.server.tun.Load().record && sess.server.paths.RecordsDir != "" {
+	if sess.server.tun.Load().Record && sess.server.paths.RecordsDir != "" {
 		var sink io.WriteCloser
 		if sess.server.recordingSinkFactory != nil {
 			sink = sess.server.recordingSinkFactory(sess.sessionID, sess.sysUser.Username)
@@ -549,20 +588,31 @@ func (sess *session) runPlain() {
 	// Stderr goes to the channel's extended data stream (like sshd), not
 	// the regular data stream. Binary protocols (rsync, git, scp -s) are
 	// length-prefixed and break if stderr bytes are interleaved.
-	cmd.Stderr = sess.Stderr()
+	sess.runProcess(cmd, sess.Stderr())
+}
+
+// runProcess starts cmd and relays the session channel to its stdin/stdout
+// until the process exits, then reports the exit via ExitProcess and rejoins
+// the relay goroutines. errW, when non-nil, is wired to the process stderr.
+// The caller must configure the command beforehand (args, env, dir,
+// privileges). It returns the process state so a caller can derive a code.
+func (sess *session) runProcess(cmd *exec.Cmd, errW io.Writer) *os.ProcessState {
+	if errW != nil {
+		cmd.Stderr = errW
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		sess.server.logger.Debug("sshd: stdin pipe", "error", err)
+		sess.server.logger.Debug("sshd: process stdin pipe", "error", err)
 		sess.Exit(1)
-		return
+		return nil
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		sess.server.logger.Debug("sshd: stdout pipe", "error", err)
+		sess.server.logger.Debug("sshd: process stdout pipe", "error", err)
 		sess.Exit(1)
-		return
+		return nil
 	}
 
 	if err = cmd.Start(); err != nil {
@@ -570,7 +620,7 @@ func (sess *session) runPlain() {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		sess.Exit(1)
-		return
+		return nil
 	}
 	sess.setProc(cmd.Process)
 
@@ -593,8 +643,7 @@ func (sess *session) runPlain() {
 	// Drain stdout before reaping. cmd.Wait() closes the stdout pipe,
 	// which would truncate output the relay has not yet copied.
 	<-stdoutDone
-	waitErr := cmd.Wait()
-	if waitErr != nil {
+	if waitErr := cmd.Wait(); waitErr != nil {
 		sess.server.logger.Debug("sshd: command exited", "error", waitErr)
 	}
 
@@ -603,6 +652,7 @@ func (sess *session) runPlain() {
 	// Exit closes it so the io.Copy above returns, then we join the relays.
 	sess.ExitProcess(cmd.ProcessState)
 	relay.Wait()
+	return cmd.ProcessState
 }
 
 // buildEnv combines the target user's environment with the client-requested

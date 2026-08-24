@@ -369,11 +369,11 @@ func TestServerGatewayPortsToggle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
-	if srv.tun.Load().gatewayPorts {
+	if srv.tun.Load().GatewayPorts {
 		t.Fatal("gateway ports enabled by default")
 	}
 	srv.SetOptions(Options{AllowForwarding: true, GatewayPorts: true})
-	if !srv.tun.Load().gatewayPorts {
+	if !srv.tun.Load().GatewayPorts {
 		t.Fatal("SetOptions did not enable gateway ports")
 	}
 }

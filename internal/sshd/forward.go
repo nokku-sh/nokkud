@@ -29,7 +29,7 @@ type connState struct {
 	mu       sync.Mutex
 	forwards map[string]net.Listener
 
-	sessions atomic.Int32
+	sessions atomic.Int64
 }
 
 func newConnState(conn *ssh.ServerConn) *connState {
@@ -44,7 +44,7 @@ func (st *connState) acquireSession(limit int) bool {
 	}
 	for {
 		n := st.sessions.Load()
-		if int64(n) >= int64(limit) {
+		if n >= int64(limit) {
 			return false
 		}
 		if st.sessions.CompareAndSwap(n, n+1) {
@@ -81,7 +81,7 @@ func (s *Server) serveDirectTCPIP(
 		return
 	}
 
-	if !s.tun.Load().forwarding {
+	if !s.tun.Load().AllowForwarding {
 		_ = newCh.Reject(ssh.Prohibited, "port forwarding is disabled")
 		return
 	}
@@ -139,7 +139,7 @@ type tcpipForwardSuccess struct {
 // tcpipForward binds a listener for the client's -R request and accepts
 // connections into forwarded-tcpip channels back to the client.
 func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
-	if !s.tun.Load().forwarding {
+	if !s.tun.Load().AllowForwarding {
 		_ = req.Reply(false, []byte("port forwarding is disabled"))
 		return
 	}
@@ -151,35 +151,23 @@ func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
 	// Bind policy-controlled. Loopback unless gateway ports are enabled.
 	// The address reported back to the client is the one requested verbatim,
 	// since OpenSSH keys -R forwards by it.
-	bindAddr := remoteBindAddr(f.BindAddr, s.tun.Load().gatewayPorts)
+	bindAddr := remoteBindAddr(f.BindAddr, s.tun.Load().GatewayPorts)
 	addr := net.JoinHostPort(bindAddr, strconv.FormatUint(uint64(f.BindPort), 10))
 
 	st.mu.Lock()
 	_, exists := st.forwards[addr]
 	if !exists {
 		var lc net.ListenConfig
-		ln, err := lc.Listen(context.Background(), "tcp", addr)
-		if err == nil {
+		if ln, err := lc.Listen(context.Background(), "tcp", addr); err == nil {
 			st.forwards[addr] = ln
 			go s.acceptForwarded(st, ln, f.BindAddr)
+			st.mu.Unlock()
+			_ = req.Reply(true, ssh.Marshal(tcpipForwardSuccess{BindPort: portOfListener(ln)}))
+			return
 		}
 	}
 	st.mu.Unlock()
-	if exists {
-		_ = req.Reply(false, nil)
-		return
-	}
-
-	st.mu.Lock()
-	ln := st.forwards[addr]
-	st.mu.Unlock()
-	if ln == nil {
-		_ = req.Reply(false, nil)
-		return
-	}
-	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
-	port, _ := strconv.ParseUint(portStr, 10, 32)
-	_ = req.Reply(true, ssh.Marshal(tcpipForwardSuccess{BindPort: uint32(port)}))
+	_ = req.Reply(false, nil)
 }
 
 // remoteBindAddr mirrors OpenSSH's GatewayPorts. Unless enabled, force the
@@ -204,7 +192,7 @@ func (s *Server) cancelTCPIPForward(st *connState, req *ssh.Request) {
 		return
 	}
 	addr := net.JoinHostPort(
-		remoteBindAddr(f.BindAddr, s.tun.Load().gatewayPorts),
+		remoteBindAddr(f.BindAddr, s.tun.Load().GatewayPorts),
 		strconv.FormatUint(uint64(f.BindPort), 10),
 	)
 
