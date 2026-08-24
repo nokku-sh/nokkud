@@ -47,6 +47,13 @@ type Client struct {
 	rc  nokkuv1connect.RecordingServiceClient
 }
 
+// nopWriteCloser discards writes. It stands in for the recording sink so the
+// SSH server never has to special-case an unenrolled daemon.
+type nopWriteCloser struct{}
+
+func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (nopWriteCloser) Close() error                { return nil }
+
 // New builds a Client sharing the caller's principal cache, so backend
 // updates reach the embedded SSH server immediately.
 func New(
@@ -212,8 +219,3 @@ func (c *Client) RecordingKey() (string, string) {
 	}
 	return pubkey, fp
 }
-
-type nopWriteCloser struct{}
-
-func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
-func (nopWriteCloser) Close() error                { return nil }
