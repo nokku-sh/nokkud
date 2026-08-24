@@ -150,11 +150,7 @@ func (s *Sink) run() {
 	for {
 		select {
 		case it := <-s.ch:
-			if it.done != nil {
-				close(it.done)
-				continue
-			}
-			s.write(it.ev)
+			s.handleItem(it)
 		case <-s.done:
 			s.drain()
 			if s.file != nil {
@@ -170,15 +166,20 @@ func (s *Sink) drain() {
 	for {
 		select {
 		case it := <-s.ch:
-			if it.done != nil {
-				close(it.done)
-				continue
-			}
-			s.write(it.ev)
+			s.handleItem(it)
 		default:
 			return
 		}
 	}
+}
+
+// handleItem writes one queued event, or closes a flush barrier when done is set.
+func (s *Sink) handleItem(it item) {
+	if it.done != nil {
+		close(it.done)
+		return
+	}
+	s.write(it.ev)
 }
 
 // write appends one event, rotating and enforcing retention as needed.
