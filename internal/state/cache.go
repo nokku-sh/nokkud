@@ -48,12 +48,7 @@ func (c *Cache) AddUUID(principal string, uuid string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.principals == nil {
-		c.principals = make(map[string][]string)
-	}
-
-	if err := util.ValidatePrincipal(principal); err != nil {
-		slog.Debug("skipping invalid principal", "principal", principal)
+	if !c.preparePrincipal(principal) {
 		return
 	}
 
@@ -68,12 +63,7 @@ func (c *Cache) SetUUIDs(principal string, uuids []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.principals == nil {
-		c.principals = make(map[string][]string)
-	}
-
-	if err := util.ValidatePrincipal(principal); err != nil {
-		slog.Debug("skipping invalid principal", "principal", principal)
+	if !c.preparePrincipal(principal) {
 		return
 	}
 
@@ -81,6 +71,20 @@ func (c *Cache) SetUUIDs(principal string, uuids []string) {
 	copy(cacheCopy, uuids)
 
 	c.principals[principal] = cacheCopy
+}
+
+// preparePrincipal ensures the principal map is non-nil and that principal is
+// a safe username, reporting whether a write for it should proceed. The
+// caller must hold the write lock.
+func (c *Cache) preparePrincipal(principal string) bool {
+	if c.principals == nil {
+		c.principals = make(map[string][]string)
+	}
+	if err := util.ValidatePrincipal(principal); err != nil {
+		slog.Debug("skipping invalid principal", "principal", principal)
+		return false
+	}
+	return true
 }
 
 // GetUUIDs safely retrieves a copy of the UUIDs for a principal.
