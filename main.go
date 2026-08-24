@@ -11,13 +11,10 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/mizuchilabs/kata/buildinfo"
 	"github.com/mizuchilabs/kata/logx"
 	"github.com/mizuchilabs/kata/sigx"
-	altsrc "github.com/urfave/cli-altsrc/v3"
-	json "github.com/urfave/cli-altsrc/v3/json"
 	"github.com/urfave/cli/v3"
 
 	"github.com/nokku-sh/nokkud/internal/client"
@@ -57,22 +54,41 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				return err
 			}
 
-			// Update config
+			// Load the persisted config, then apply env/flag overrides only
+			// when one was explicitly provided. This keeps a bare default
+			// from clobbering a value the user already configured in
+			// config.json.
 			cfg := state.NewConfig(p)
 			if err := cfg.Load(); err != nil {
 				return err
 			}
-			cfg.APIURL = strings.TrimRight(cmd.String("api"), "/")
-			cfg.SSHAddr = cmd.String("ssh-addr")
+			if cmd.IsSet("api") {
+				cfg.APIURL = strings.TrimRight(cmd.String("api"), "/")
+			} else if cfg.APIURL == "" {
+				cfg.APIURL = state.DefaultAPIURL
+			}
+			if cmd.IsSet("ssh-addr") {
+				cfg.SSHAddr = cmd.String("ssh-addr")
+			} else if cfg.SSHAddr == "" {
+				cfg.SSHAddr = state.DefaultSSHAddr
+			}
 			if err := cfg.Save(); err != nil {
 				return err
 			}
 
-			// Embedded SSH server, on by default. Set --ssh-addr to empty to
-			// disable.
+			// Build the SSH server (when enabled) and then the client, so the
+			// client wires the recording sink before the server ever accepts a
+			// session. Shutdown is deferred because it is idempotent and also
+			// covers exits that did not go through a context cancellation
+			// (e.g. the daemon being rejected by the backend). The single ctx
+			// flowing into ListenAndServe and Run drives the cancel; the
+			// server drains against its own internal grace window.
 			var sshSrv *sshd.Server
 			if cfg.SSHAddr != "" {
-				srv, err := startSSHServer(ctx, p, cfg.SSHAddr, cache)
+				if err := util.IsRoot(); err != nil {
+					return err
+				}
+				srv, err := sshd.New(sshd.OptionsFrom(p, cache, true))
 				if err != nil {
 					return err
 				}
@@ -80,15 +96,19 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			}
 			defer func() {
 				if sshSrv != nil {
-					shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					_ = sshSrv.Shutdown(shutdownCtx)
+					_ = sshSrv.Shutdown()
 				}
 			}()
 
 			cli, err := client.New(ctx, cmd, p, cache, cfg, sshSrv)
 			if err != nil {
 				return fmt.Errorf("failed to initialize configuration: %w", err)
+			}
+
+			if sshSrv != nil {
+				if _, listenErr := sshSrv.ListenAndServe(ctx, cfg.SSHAddr); listenErr != nil {
+					return fmt.Errorf("listen on %s: %w", cfg.SSHAddr, listenErr)
+				}
 			}
 
 			slog.Info("Starting nokkud", "version", buildinfo.Version)
@@ -176,7 +196,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					fmt.Println(addr.String())
 
 					<-ctx.Done()
-					return nil
+					return srv.Shutdown()
 				},
 			},
 			{
@@ -226,22 +246,14 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				Sources: cli.EnvVars("NOKKUD_REQUIRE_TPM"),
 			},
 			&cli.StringFlag{
-				Name:  "ssh-addr",
-				Usage: "listen address for the embedded SSH server (set to empty to disable)",
-				Value: ":4022",
-				Sources: cli.NewValueSourceChain(
-					cli.EnvVar("NOKKUD_SSH_ADDR"),
-					json.JSON("ssh_addr", altsrc.NewStringPtrSourcer(new(p.ConfigFile()))),
-				),
+				Name:    "ssh-addr",
+				Usage:   "listen address for the embedded SSH server (set to empty to disable)",
+				Sources: cli.EnvVars("NOKKUD_SSH_ADDR"),
 			},
 			&cli.StringFlag{
-				Name:  "api",
-				Usage: "Nokku API URL",
-				Value: "https://app.nokku.sh",
-				Sources: cli.NewValueSourceChain(
-					cli.EnvVar("NOKKUD_API_URL"),
-					json.JSON("api_url", altsrc.NewStringPtrSourcer(new(p.ConfigFile()))),
-				),
+				Name:    "api",
+				Usage:   "Nokku API URL",
+				Sources: cli.EnvVars("NOKKUD_API_URL"),
 			},
 			&cli.StringFlag{
 				Name:    "ca",
@@ -261,24 +273,4 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 		fmt.Fprintf(os.Stderr, "%s: %v\n", cmd.Name, err)
 		os.Exit(1)
 	}
-}
-
-// startSSHServer runs the embedded SSH server on addr and returns it.
-func startSSHServer(
-	ctx context.Context,
-	p paths.Paths,
-	addr string,
-	cache *state.Cache,
-) (*sshd.Server, error) {
-	if err := util.IsRoot(); err != nil {
-		return nil, err
-	}
-	srv, err := sshd.New(sshd.OptionsFrom(p, cache, true))
-	if err != nil {
-		return nil, fmt.Errorf("init ssh server: %w", err)
-	}
-	if _, err = srv.ListenAndServe(ctx, addr); err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", addr, err)
-	}
-	return srv, nil
 }

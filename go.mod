@@ -1,6 +1,6 @@
 module github.com/nokku-sh/nokkud
 
-go 1.26.6
+go 1.26.7
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260709200747-435963d16310.1
@@ -10,7 +10,6 @@ require (
 	github.com/google/go-tpm v0.9.8
 	github.com/mizuchilabs/kata v0.1.3
 	github.com/pkg/sftp v1.13.11
-	github.com/urfave/cli-altsrc/v3 v3.1.0
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/sys v0.47.0
@@ -29,7 +28,6 @@ require (
 	github.com/u-root/u-root v0.16.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace github.com/mizuchilabs/kagi => /home/roxas/Projects/kagi

@@ -370,11 +370,18 @@ func (s *Server) releasePrincipalSession(principal string) {
 	}
 }
 
+// shutdownGrace bounds how long Shutdown waits for active connections to
+// drain before closing resources regardless. It is fixed rather than passed
+// as a context so the daemon's lifecycle is driven by a single context that
+// flows top-down; the server never manufactures its own shutdown context.
+const shutdownGrace = 10 * time.Second
+
 // Shutdown gracefully drains active connections. It closes the listener to
 // stop accepting new connections and blocks until all active connections have
-// completed or until ctx is cancelled. It always closes the server resources
-// (host keys, audit logs) before returning.
-func (s *Server) Shutdown(ctx context.Context) error {
+// completed, or until shutdownGrace elapses. It always closes the server
+// resources (host keys, audit logs) before returning. Safe to call more than
+// once and concurrently with serving.
+func (s *Server) Shutdown() error {
 	s.mu.Lock()
 	l := s.listener
 	s.mu.Unlock()
@@ -388,15 +395,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		close(done)
 	}()
 
-	var err error
 	select {
 	case <-done:
-	case <-ctx.Done():
-		err = ctx.Err()
+	case <-time.After(shutdownGrace):
 	}
 
-	_ = s.Close()
-	return err
+	return s.Close()
 }
 
 // Close stops the listener (if ListenAndServe started one) and closes the
@@ -494,10 +498,11 @@ func (s *Server) Defaults() Options {
 	}
 }
 
-// ListenAndServe binds addr, starts serving on it, and returns the bound
-// address. The listener closes automatically when ctx is cancelled, so the
-// daemon's lifecycle is driven by a single context. Serve errors are logged
-// rather than returned. Use Serve directly when the caller needs them.
+// ListenAndServe binds addr and starts serving on it, returning the bound
+// address. It does not own the server's shutdown: the caller calls Shutdown
+// (e.g. when its context is cancelled) to stop accepting and drain. Serve
+// errors are logged rather than returned. Use Serve directly when the caller
+// needs them.
 func (s *Server) ListenAndServe(ctx context.Context, addr string) (net.Addr, error) {
 	var lc net.ListenConfig
 	l, err := lc.Listen(ctx, "tcp", addr)
@@ -513,12 +518,6 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) (net.Addr, err
 		if serr := s.Serve(l); serr != nil {
 			s.logger.Error("sshd: serve", "error", serr)
 		}
-	}()
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		_ = s.Shutdown(shutdownCtx)
 	}()
 
 	s.logger.Info("sshd: server listening", "addr", l.Addr().String())
