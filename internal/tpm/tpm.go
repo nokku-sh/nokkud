@@ -175,13 +175,7 @@ func (s *tpmCryptoSigner) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpt
 }
 
 func (s *tpmSigner) Close() error {
-	var err error
-	_, ferr := tpm2.FlushContext{FlushHandle: s.key.hnd}.Execute(s.tpm)
-	err = errors.Join(err, ferr)
-	if s.closer != nil {
-		err = errors.Join(err, s.closer.Close())
-	}
-	return err
+	return closeKey(s.tpm, s.key.hnd, s.closer)
 }
 
 func publicToECDSA(pub tpm2.TPM2BPublic) (*ecdsa.PublicKey, error) {

@@ -123,22 +123,26 @@ func unwrapSoftKey(st *state) (*ecdsa.PrivateKey, error) {
 }
 
 func wrapSoftKey(plaintext, salt, nonce []byte) ([]byte, error) {
-	key, err := softWrapKey(salt)
+	gcm, err := newSoftGCM(salt)
 	if err != nil {
 		return nil, err
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("create cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("create gcm: %w", err)
 	}
 	return gcm.Seal(nil, nonce, plaintext, nil), nil
 }
 
 func unwrapSoftData(data, salt, nonce []byte) ([]byte, error) {
+	gcm, err := newSoftGCM(salt)
+	if err != nil {
+		return nil, err
+	}
+	return gcm.Open(nil, nonce, data, nil)
+}
+
+// newSoftGCM builds the AEAD for the wrapping key derived from salt. Both the
+// seal and open paths derive the key and cipher identically, so a software
+// key wrapped on one boot opens on another as long as the machine identity is
+// unchanged.
+func newSoftGCM(salt []byte) (cipher.AEAD, error) {
 	key, err := softWrapKey(salt)
 	if err != nil {
 		return nil, err
@@ -151,7 +155,7 @@ func unwrapSoftData(data, salt, nonce []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create gcm: %w", err)
 	}
-	return gcm.Open(nil, nonce, data, nil)
+	return gcm, nil
 }
 
 func softWrapKey(salt []byte) ([]byte, error) {

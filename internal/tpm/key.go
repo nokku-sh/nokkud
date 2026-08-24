@@ -81,13 +81,7 @@ func (k *Key) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, 
 // Close flushes the key handle and closes the TPM transport if the Key owns
 // it (see OpenKey).
 func (k *Key) Close() error {
-	var err error
-	_, ferr := tpm2.FlushContext{FlushHandle: k.key.hnd}.Execute(k.tpm)
-	err = errors.Join(err, ferr)
-	if k.closer != nil {
-		err = errors.Join(err, k.closer.Close())
-	}
-	return err
+	return closeKey(k.tpm, k.key.hnd, k.closer)
 }
 
 // createPrimary derives the deterministic signing primary key for salt from
@@ -154,4 +148,16 @@ func asn1MarshalECDSA(r, s []byte) ([]byte, error) {
 		R: new(big.Int).SetBytes(r),
 		S: new(big.Int).SetBytes(s),
 	})
+}
+
+// closeKey flushes the key handle and closes the transport when the caller
+// owns it (closer != nil). Shared by the host-key and daemon signing paths.
+func closeKey(t transport.TPM, h tpm2.TPMHandle, closer transport.TPMCloser) error {
+	var err error
+	_, ferr := tpm2.FlushContext{FlushHandle: h}.Execute(t)
+	err = errors.Join(err, ferr)
+	if closer != nil {
+		err = errors.Join(err, closer.Close())
+	}
+	return err
 }
