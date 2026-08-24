@@ -132,12 +132,14 @@ func (c *Client) Run(ctx context.Context) error {
 	b.MaxInterval = time.Minute
 
 	var connected, offlineReported bool
+	var connectLogged, disconnectLogged bool
 
 	for {
 		err := c.runControlStream(ctx, func() {
 			b.Reset()
-			if !connected {
+			if !connectLogged {
 				slog.Info("control stream connected")
+				connectLogged = true
 			}
 			connected = true
 		})
@@ -154,10 +156,19 @@ func (c *Client) Run(ctx context.Context) error {
 		switch {
 		case connected:
 			connected = false
-			if err != nil {
-				slog.Warn("control stream disconnected, reconnecting in background", "error", err)
+			if disconnectLogged {
+				slog.Debug("control stream disconnected, reconnecting", "error", err)
 			} else {
-				slog.Info("control stream closed, reconnecting in background")
+				disconnectLogged = true
+				if err != nil {
+					slog.Warn(
+						"control stream disconnected, reconnecting in background",
+						"error",
+						err,
+					)
+				} else {
+					slog.Info("control stream closed, reconnecting in background")
+				}
 			}
 		case !offlineReported:
 			offlineReported = true
