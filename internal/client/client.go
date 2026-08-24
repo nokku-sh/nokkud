@@ -28,11 +28,10 @@ import (
 var errDaemonRejected = errors.New("daemon rejected by backend")
 
 type Client struct {
+	ctx          context.Context
 	sessionSlots chan struct{}
-	// sessionWG tracks the PTY session goroutines spawned from the control
-	// stream so shutdown can drain them.
-	sessionWG sync.WaitGroup
-	paths     paths.Paths
+	sessionWG    sync.WaitGroup
+	paths        paths.Paths
 
 	sshSrv  *sshd.Server
 	cache   *state.Cache
@@ -68,6 +67,7 @@ func New(
 	}
 
 	c := &Client{
+		ctx:          ctx,
 		cache:        cache,
 		config:       config,
 		signer:       signer,
@@ -88,7 +88,7 @@ func New(
 			if c.config.DaemonID == "" {
 				return nopWriteCloser{}
 			}
-			return recording.NewUploader(context.Background(), c.rc, recording.UploaderOptions{
+			return recording.NewUploader(c.ctx, c.rc, recording.UploaderOptions{
 				SessionID:   sessionID,
 				Username:    username,
 				KeyProvider: c.RecordingKey,

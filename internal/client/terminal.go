@@ -106,14 +106,20 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) 
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
 		}
-		rec, err = recording.NewSessionRecorder(c.paths, c.rc, c.RecordingKey, recording.Options{
-			Width:     80,
-			Height:    24,
-			Title:     fmt.Sprintf("%s@%s", sysUser.Username, sessionID),
-			Label:     fmt.Sprintf("%s-%s", sysUser.Username, shortID),
-			SessionID: sessionID,
-			Username:  sysUser.Username,
-		})
+		rec, err = recording.NewSessionRecorder(
+			c.ctx,
+			c.paths,
+			c.rc,
+			c.RecordingKey,
+			recording.Options{
+				Width:     80,
+				Height:    24,
+				Title:     fmt.Sprintf("%s@%s", sysUser.Username, sessionID),
+				Label:     fmt.Sprintf("%s-%s", sysUser.Username, shortID),
+				SessionID: sessionID,
+				Username:  sysUser.Username,
+			},
+		)
 		if err != nil {
 			logger.Debug("session recording unavailable", "reason", err)
 		}
