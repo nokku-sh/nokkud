@@ -36,7 +36,7 @@ func recoverLog(desc string) {
 // PTY exit, idle timeout, TTL expiry, a server-issued Close, or any stream
 // error.
 //
-//nolint:funlen,gocognit
+//nolint:funlen,gocognit,cyclop // is fine
 func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) error {
 	sessionID := req.GetSessionId()
 	username := req.GetUsername()
@@ -149,6 +149,12 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) 
 		Username:  &username,
 		UserId:    &userID,
 	}
+	// Connect streams forbid calling Send concurrently with itself. The
+	// stdout pump and the final exit notice therefore serialize through
+	// sendGate (a cap-1 channel, so the exit notice can time out instead of
+	// blocking teardown behind a wedged stream). Ready goes out before the
+	// pumps start and needs no gate.
+	sendGate := make(chan struct{}, 1)
 	if err = stream.Send(&nokkuv1.DaemonSessionRequest{
 		Msg: &nokkuv1.DaemonSessionRequest_Ready{Ready: rr},
 	}); err != nil {
@@ -237,9 +243,16 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) 
 				if waitErr := limiter.WaitN(ctx, n); waitErr != nil {
 					return
 				}
-				if sendErr := stream.Send(&nokkuv1.DaemonSessionRequest{
-					Msg: &nokkuv1.DaemonSessionRequest_Stdout{Stdout: chunk},
-				}); sendErr != nil {
+				select {
+				case sendGate <- struct{}{}:
+					sendErr := stream.Send(&nokkuv1.DaemonSessionRequest{
+						Msg: &nokkuv1.DaemonSessionRequest_Stdout{Stdout: chunk},
+					})
+					<-sendGate
+					if sendErr != nil {
+						return
+					}
+				case <-ctx.Done():
 					return
 				}
 			}
@@ -250,11 +263,20 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) 
 	}()
 
 	<-done
+	// Report the exit while the stream context is still alive: cleanup
+	// cancels it, and a Send on a canceled context is rejected locally, so
+	// the backend would never learn the PTY ended. Bounded so a wedged
+	// stream cannot stall shutdown; the backend also ends the session when
+	// the stream itself tears down.
+	select {
+	case sendGate <- struct{}{}:
+		_ = stream.Send(&nokkuv1.DaemonSessionRequest{
+			Msg: &nokkuv1.DaemonSessionRequest_Exited{Exited: &nokkuv1.DaemonSessionEnded{}},
+		})
+		<-sendGate
+	case <-time.After(2 * time.Second):
+	}
 	cleanup()
 	logger.Debug("session disconnected")
-
-	_ = stream.Send(&nokkuv1.DaemonSessionRequest{
-		Msg: &nokkuv1.DaemonSessionRequest_Exited{Exited: &nokkuv1.DaemonSessionEnded{}},
-	})
 	return nil
 }
