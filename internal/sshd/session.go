@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"strings"
 	"sync"
+	"uuid"
 
 	"github.com/aymanbagabas/go-pty"
 	"golang.org/x/crypto/ssh"
@@ -119,11 +120,7 @@ func (s *Server) serveSession(conn *ssh.ServerConn, ch ssh.Channel, reqs <-chan 
 		return
 	}
 
-	sessionID, err := newSessionID()
-	if err != nil {
-		s.logger.Debug("sshd: session id", "error", err)
-	}
-
+	sessionID := uuid.NewV7().String()
 	ctx, cancel := context.WithCancel(context.Background())
 	sess := &session{
 		Channel:   ch,
