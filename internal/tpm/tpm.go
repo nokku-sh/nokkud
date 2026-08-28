@@ -190,9 +190,37 @@ func publicToECDSA(pub tpm2.TPM2BPublic) (*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode ECC point: %w", err)
 	}
-	return &ecdsa.PublicKey{
-		Curve: elliptic.P256(),
-		X:     new(big.Int).SetBytes(point.X.Buffer),
-		Y:     new(big.Int).SetBytes(point.Y.Buffer),
-	}, nil
+	curve := elliptic.P256()
+	size := (curve.Params().BitSize + 7) / 8
+
+	// TPM coordinates are big-endian with leading zero bytes stripped.
+	// SEC 1 uncompressed form is 0x04 || X || Y with each coordinate
+	// padded to the curve size.
+	pad := func(b []byte) ([]byte, error) {
+		if len(b) > size {
+			return nil, errors.New("coordinate longer than curve size")
+		}
+		out := make([]byte, size)
+		copy(out[size-len(b):], b)
+		return out, nil
+	}
+	x, err := pad(point.X.Buffer)
+	if err != nil {
+		return nil, fmt.Errorf("parse ECC point: %w", err)
+	}
+	y, err := pad(point.Y.Buffer)
+	if err != nil {
+		return nil, fmt.Errorf("parse ECC point: %w", err)
+	}
+
+	data := make([]byte, 1+2*size)
+	data[0] = 0x04
+	copy(data[1:], x)
+	copy(data[1+size:], y)
+
+	key, err := ecdsa.ParseUncompressedPublicKey(curve, data)
+	if err != nil {
+		return nil, fmt.Errorf("parse ECC point: %w", err)
+	}
+	return key, nil
 }
