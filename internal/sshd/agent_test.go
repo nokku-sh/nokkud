@@ -17,7 +17,11 @@ import (
 // can reach the client's agent through it.
 func TestServerAgentForwarding(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowAgentForwarding: true}})
+	addr, closeFn := startTestServerOpts(
+		t,
+		ca,
+		Options{Tunables: Tunables{AllowAgentForwarding: true}},
+	)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -65,7 +69,11 @@ func TestServerAgentForwarding(t *testing.T) {
 // session opens the socket and lists keys from the client's agent.
 func TestServerAgentForwardingKeyList(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowAgentForwarding: true}})
+	addr, closeFn := startTestServerOpts(
+		t,
+		ca,
+		Options{Tunables: Tunables{AllowAgentForwarding: true}},
+	)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -193,7 +201,11 @@ func TestServerAgentForwardingInterop(t *testing.T) {
 	}
 
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowAgentForwarding: true}})
+	addr, closeFn := startTestServerOpts(
+		t,
+		ca,
+		Options{Tunables: Tunables{AllowAgentForwarding: true}},
+	)
 	defer closeFn()
 	host, port := hostPort(t, addr)
 	user := currentUser(t)
