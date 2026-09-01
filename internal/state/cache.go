@@ -43,21 +43,6 @@ func NewCache(p paths.Paths) *Cache {
 	}
 }
 
-// AddUUID safely adds a unique UUID to a principal.
-func (c *Cache) AddUUID(principal string, uuid string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.preparePrincipal(principal) {
-		return
-	}
-
-	// Check for uniqueness before appending.
-	if !slices.Contains(c.principals[principal], uuid) {
-		c.principals[principal] = append(c.principals[principal], uuid)
-	}
-}
-
 // SetUUIDs replaces the entire list of UUIDs for a given principal.
 func (c *Cache) SetUUIDs(principal string, uuids []string) {
 	c.mu.Lock()
@@ -116,13 +101,6 @@ func (c *Cache) GetStateVersion() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.stateVersion
-}
-
-// SetStateVersion records the state version the cache was synced to.
-func (c *Cache) SetStateVersion(v int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.stateVersion = v
 }
 
 // SetDaemonConfig replaces the backend-synced daemon config. The recording
