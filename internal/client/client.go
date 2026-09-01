@@ -15,14 +15,15 @@ import (
 	"github.com/cenkalti/backoff/v7"
 	"github.com/urfave/cli/v3"
 
-	"github.com/nokku-sh/nokkud/internal/dpop"
+	"github.com/nokku-sh/mon/dpop"
+	"github.com/nokku-sh/mon/id"
+	"github.com/nokku-sh/mon/tpm"
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/state"
-	"github.com/nokku-sh/nokkud/internal/tpm"
 )
 
 var errDaemonRejected = errors.New("daemon rejected by backend")
@@ -65,11 +66,19 @@ func New(
 	config *state.Config,
 	sshSrv *sshd.Server,
 ) (*Client, error) {
-	signer, err := tpm.New(p, cmd.Bool("require-tpm"))
+	// The signing identity is the machine's: TPM-backed when available,
+	// else a machine-wrapped software key. The daemon's enrollment is bound
+	// to this key, so a changed identity fails instead of recovering.
+	signer, err := tpm.NewSigner(tpm.SignerOptions{
+		Salt:       []byte(tpm.SaltDaemon),
+		Store:      tpm.NewFileStore(p.SignerStateFile()),
+		MachineID:  id.MachineID,
+		RequireTPM: cmd.Bool("require-tpm"),
+	})
 	if err != nil {
 		return nil, err
 	}
-	proofer, err := dpop.NewProofer(signer.CryptoSigner(), dpop.ProoferOptions{})
+	proofer, err := dpop.NewProofer(signer, dpop.ProoferOptions{})
 	if err != nil {
 		return nil, err
 	}

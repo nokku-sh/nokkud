@@ -11,8 +11,8 @@ import (
 	"github.com/google/go-tpm/tpm2/transport"
 	"github.com/google/go-tpm/tpm2/transport/simulator"
 
+	"github.com/nokku-sh/mon/tpm"
 	"github.com/nokku-sh/nokkud/internal/paths"
-	"github.com/nokku-sh/nokkud/internal/tpm"
 )
 
 // withSimulatedTPM points the host key loader at the TPM simulator and

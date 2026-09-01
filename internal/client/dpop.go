@@ -11,7 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/nokku-sh/nokkud/internal/dpop"
+	"github.com/nokku-sh/mon/dpop"
 	nokkuv1connect "github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 	"github.com/nokku-sh/nokkud/internal/state"
 )

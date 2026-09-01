@@ -15,14 +15,15 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/nokku-sh/mon/tpm"
 	"github.com/nokku-sh/nokkud/internal/paths"
-	"github.com/nokku-sh/nokkud/internal/tpm"
 )
 
 // hostKeySalt namespaces the TPM key derivation for the SSH host identity.
-// It must stay different from the request-signing salts ("nokku-daemon",
-// "nokku-cli") so each purpose derives a distinct key from the same TPM.
-var hostKeySalt = []byte("nokku-host")
+// It is the canonical nokkud host salt from the shared registry in mon, kept
+// distinct from the request-signing salts so each purpose derives a distinct
+// key from the same TPM.
+var hostKeySalt = []byte(tpm.SaltHost)
 
 // openHostKeyTPM opens the TPM-resident host key. It is a variable so tests
 // can point it at the TPM simulator.
