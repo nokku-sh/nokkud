@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v7"
-	"github.com/mizuchilabs/kagi/dpop"
 	"github.com/urfave/cli/v3"
 
+	"github.com/nokku-sh/nokkud/internal/dpop"
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 	"github.com/nokku-sh/nokkud/internal/paths"

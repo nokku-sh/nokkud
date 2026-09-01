@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mizuchilabs/kagi/dpop"
+	"github.com/nokku-sh/nokkud/internal/dpop"
 
 	nokkuv1connect "github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 	"github.com/nokku-sh/nokkud/internal/state"
@@ -85,6 +85,24 @@ func TestDPoPAuthEnrollUnboundProof(t *testing.T) {
 	}
 	if _, ok := proofClaims(t, proof)["ath"]; ok {
 		t.Error("enrollment proof must not carry an ath claim")
+	}
+}
+
+func TestDPoPAuthHTUHasNoDoubleSlash(t *testing.T) {
+	t.Parallel()
+	st := &state.Config{APIURL: "https://app.example.com"} // no SessionToken yet
+	a := &dpopAuth{config: st, proofer: newTestProofer(t)}
+
+	header := http.Header{}
+	if err := a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	proof := header.Get("DPoP")
+	if proof == "" {
+		t.Fatal("expected a DPoP proof header")
+	}
+	if got := proofClaims(t, proof)["htu"]; got != "https://app.example.com"+nokkuv1connect.DaemonServiceEnrollDaemonProcedure {
+		t.Errorf("proof htu = %v", got)
 	}
 }
 

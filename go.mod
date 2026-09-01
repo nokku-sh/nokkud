@@ -7,8 +7,8 @@ require (
 	connectrpc.com/connect v1.20.0
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/cenkalti/backoff/v7 v7.0.0
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/go-tpm v0.9.8
-	github.com/mizuchilabs/kagi v0.0.0
 	github.com/mizuchilabs/kata v0.1.3
 	github.com/pkg/sftp v1.13.11
 	github.com/urfave/cli/v3 v3.11.0
@@ -21,11 +21,8 @@ require (
 
 require (
 	github.com/creack/pty v1.1.24 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/google/go-tpm-tools v0.3.13-0.20230620182252-4639ecce2aba // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 )
-
-replace github.com/mizuchilabs/kagi => /home/roxas/Projects/kagi

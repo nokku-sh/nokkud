@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/mizuchilabs/kagi/dpop"
 
+	"github.com/nokku-sh/nokkud/internal/dpop"
 	nokkuv1connect "github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 	"github.com/nokku-sh/nokkud/internal/state"
 )
