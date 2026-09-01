@@ -56,10 +56,9 @@ type Event struct {
 	Extra     json.RawMessage `json:"extra,omitempty"`
 }
 
-// item is one queued event, or a flush barrier when done is non-nil.
+// item is one queued event.
 type item struct {
-	ev   Event
-	done chan struct{}
+	ev Event
 }
 
 // Sink appends events to a rotation-managed JSONL log. Emit hands events
@@ -113,20 +112,6 @@ func (s *Sink) Emit(ev Event) {
 	}
 }
 
-// Flush blocks until every event emitted before the call has been written
-// to disk. It is a no-op after Close.
-func (s *Sink) Flush() {
-	if s == nil {
-		return
-	}
-	done := make(chan struct{})
-	select {
-	case s.ch <- item{done: done}:
-		<-done
-	case <-s.done:
-	}
-}
-
 // Close stops accepting events, drains the queue and closes the current
 // audit file. Safe to call more than once and concurrently with Emit.
 func (s *Sink) Close() error {
@@ -173,12 +158,8 @@ func (s *Sink) drain() {
 	}
 }
 
-// handleItem writes one queued event, or closes a flush barrier when done is set.
+// handleItem writes one queued event.
 func (s *Sink) handleItem(it item) {
-	if it.done != nil {
-		close(it.done)
-		return
-	}
 	s.write(it.ev)
 }
 

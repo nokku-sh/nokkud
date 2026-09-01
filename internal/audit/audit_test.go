@@ -24,7 +24,6 @@ func TestEmitAndRead(t *testing.T) {
 
 	s.Emit(Event{Type: EventAuthSuccess, User: "bob", Principal: "p1"})
 	s.Emit(Event{Type: EventCommand, User: "bob", Command: "ls"})
-	s.Flush()
 	if err = s.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -82,7 +81,7 @@ func TestNoEmptyFileOnNew(t *testing.T) {
 	}
 
 	s.Emit(Event{Type: EventAuthSuccess, User: "bob"})
-	s.Flush()
+	s.Close()
 	matches, err = filepath.Glob(filepath.Join(dir, "audit-*.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +113,7 @@ func TestRotation(t *testing.T) {
 	for range 300 {
 		s.Emit(Event{Type: EventForward, Target: "t", Extra: payload})
 	}
-	s.Flush()
+	s.Close()
 
 	matches, err := filepath.Glob(filepath.Join(dir, "audit-*.jsonl"))
 	if err != nil {
