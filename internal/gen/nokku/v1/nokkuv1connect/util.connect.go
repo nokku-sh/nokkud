@@ -35,6 +35,8 @@ const (
 const (
 	// UtilServiceGetVersionProcedure is the fully-qualified name of the UtilService's GetVersion RPC.
 	UtilServiceGetVersionProcedure = "/nokku.v1.UtilService/GetVersion"
+	// UtilServiceWhoamiProcedure is the fully-qualified name of the UtilService's Whoami RPC.
+	UtilServiceWhoamiProcedure = "/nokku.v1.UtilService/Whoami"
 	// UtilServiceListRolesProcedure is the fully-qualified name of the UtilService's ListRoles RPC.
 	UtilServiceListRolesProcedure = "/nokku.v1.UtilService/ListRoles"
 	// UtilServiceListAuditLogsProcedure is the fully-qualified name of the UtilService's ListAuditLogs
@@ -48,6 +50,7 @@ const (
 // UtilServiceClient is a client for the nokku.v1.UtilService service.
 type UtilServiceClient interface {
 	GetVersion(context.Context, *v1.GetVersionRequest) (*v1.GetVersionResponse, error)
+	Whoami(context.Context, *v1.WhoamiRequest) (*v1.WhoamiResponse, error)
 	ListRoles(context.Context, *v1.ListRolesRequest) (*v1.ListRolesResponse, error)
 	ListAuditLogs(context.Context, *v1.ListAuditLogsRequest) (*v1.ListAuditLogsResponse, error)
 	ExportAuditLogs(context.Context, *v1.ExportAuditLogsRequest) (*v1.ExportAuditLogsResponse, error)
@@ -68,6 +71,13 @@ func NewUtilServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			httpClient,
 			baseURL+UtilServiceGetVersionProcedure,
 			connect.WithSchema(utilServiceMethods.ByName("GetVersion")),
+			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
+			connect.WithClientOptions(opts...),
+		),
+		whoami: connect.NewClient[v1.WhoamiRequest, v1.WhoamiResponse](
+			httpClient,
+			baseURL+UtilServiceWhoamiProcedure,
+			connect.WithSchema(utilServiceMethods.ByName("Whoami")),
 			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 			connect.WithClientOptions(opts...),
 		),
@@ -97,6 +107,7 @@ func NewUtilServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 // utilServiceClient implements UtilServiceClient.
 type utilServiceClient struct {
 	getVersion      *connect.Client[v1.GetVersionRequest, v1.GetVersionResponse]
+	whoami          *connect.Client[v1.WhoamiRequest, v1.WhoamiResponse]
 	listRoles       *connect.Client[v1.ListRolesRequest, v1.ListRolesResponse]
 	listAuditLogs   *connect.Client[v1.ListAuditLogsRequest, v1.ListAuditLogsResponse]
 	exportAuditLogs *connect.Client[v1.ExportAuditLogsRequest, v1.ExportAuditLogsResponse]
@@ -105,6 +116,15 @@ type utilServiceClient struct {
 // GetVersion calls nokku.v1.UtilService.GetVersion.
 func (c *utilServiceClient) GetVersion(ctx context.Context, req *v1.GetVersionRequest) (*v1.GetVersionResponse, error) {
 	response, err := c.getVersion.CallUnary(ctx, connect.NewRequest(req))
+	if response != nil {
+		return response.Msg, err
+	}
+	return nil, err
+}
+
+// Whoami calls nokku.v1.UtilService.Whoami.
+func (c *utilServiceClient) Whoami(ctx context.Context, req *v1.WhoamiRequest) (*v1.WhoamiResponse, error) {
+	response, err := c.whoami.CallUnary(ctx, connect.NewRequest(req))
 	if response != nil {
 		return response.Msg, err
 	}
@@ -141,6 +161,7 @@ func (c *utilServiceClient) ExportAuditLogs(ctx context.Context, req *v1.ExportA
 // UtilServiceHandler is an implementation of the nokku.v1.UtilService service.
 type UtilServiceHandler interface {
 	GetVersion(context.Context, *v1.GetVersionRequest) (*v1.GetVersionResponse, error)
+	Whoami(context.Context, *v1.WhoamiRequest) (*v1.WhoamiResponse, error)
 	ListRoles(context.Context, *v1.ListRolesRequest) (*v1.ListRolesResponse, error)
 	ListAuditLogs(context.Context, *v1.ListAuditLogsRequest) (*v1.ListAuditLogsResponse, error)
 	ExportAuditLogs(context.Context, *v1.ExportAuditLogsRequest) (*v1.ExportAuditLogsResponse, error)
@@ -157,6 +178,13 @@ func NewUtilServiceHandler(svc UtilServiceHandler, opts ...connect.HandlerOption
 		UtilServiceGetVersionProcedure,
 		svc.GetVersion,
 		connect.WithSchema(utilServiceMethods.ByName("GetVersion")),
+		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
+		connect.WithHandlerOptions(opts...),
+	)
+	utilServiceWhoamiHandler := connect.NewUnaryHandlerSimple(
+		UtilServiceWhoamiProcedure,
+		svc.Whoami,
+		connect.WithSchema(utilServiceMethods.ByName("Whoami")),
 		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 		connect.WithHandlerOptions(opts...),
 	)
@@ -184,6 +212,8 @@ func NewUtilServiceHandler(svc UtilServiceHandler, opts ...connect.HandlerOption
 		switch r.URL.Path {
 		case UtilServiceGetVersionProcedure:
 			utilServiceGetVersionHandler.ServeHTTP(w, r)
+		case UtilServiceWhoamiProcedure:
+			utilServiceWhoamiHandler.ServeHTTP(w, r)
 		case UtilServiceListRolesProcedure:
 			utilServiceListRolesHandler.ServeHTTP(w, r)
 		case UtilServiceListAuditLogsProcedure:
@@ -201,6 +231,10 @@ type UnimplementedUtilServiceHandler struct{}
 
 func (UnimplementedUtilServiceHandler) GetVersion(context.Context, *v1.GetVersionRequest) (*v1.GetVersionResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.UtilService.GetVersion is not implemented"))
+}
+
+func (UnimplementedUtilServiceHandler) Whoami(context.Context, *v1.WhoamiRequest) (*v1.WhoamiResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.UtilService.Whoami is not implemented"))
 }
 
 func (UnimplementedUtilServiceHandler) ListRoles(context.Context, *v1.ListRolesRequest) (*v1.ListRolesResponse, error) {

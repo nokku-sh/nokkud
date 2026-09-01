@@ -150,17 +150,16 @@ func (x *Workspace) GetUpdatedAt() *timestamppb.Timestamp {
 
 type WorkspaceMember struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	Id              *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"` // User ID
+	Id              *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
 	WorkspaceId     *string                `protobuf:"bytes,2,opt,name=workspace_id,json=workspaceId" json:"workspace_id,omitempty"`
 	Name            *string                `protobuf:"bytes,3,opt,name=name" json:"name,omitempty"`
-	Username        *string                `protobuf:"bytes,4,opt,name=username" json:"username,omitempty"`
-	Email           *string                `protobuf:"bytes,5,opt,name=email" json:"email,omitempty"`
-	EmailVerified   *bool                  `protobuf:"varint,6,opt,name=email_verified,json=emailVerified" json:"email_verified,omitempty"`
-	Picture         *string                `protobuf:"bytes,7,opt,name=picture" json:"picture,omitempty"`
-	RoleName        *string                `protobuf:"bytes,8,opt,name=role_name,json=roleName" json:"role_name,omitempty"`
-	RoleDescription *string                `protobuf:"bytes,9,opt,name=role_description,json=roleDescription" json:"role_description,omitempty"`
-	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
-	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=updated_at,json=updatedAt" json:"updated_at,omitempty"`
+	Email           *string                `protobuf:"bytes,4,opt,name=email" json:"email,omitempty"`
+	EmailVerified   *bool                  `protobuf:"varint,5,opt,name=email_verified,json=emailVerified" json:"email_verified,omitempty"`
+	Picture         *string                `protobuf:"bytes,6,opt,name=picture" json:"picture,omitempty"`
+	RoleName        *string                `protobuf:"bytes,7,opt,name=role_name,json=roleName" json:"role_name,omitempty"`
+	RoleDescription *string                `protobuf:"bytes,8,opt,name=role_description,json=roleDescription" json:"role_description,omitempty"`
+	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=updated_at,json=updatedAt" json:"updated_at,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -212,13 +211,6 @@ func (x *WorkspaceMember) GetWorkspaceId() string {
 func (x *WorkspaceMember) GetName() string {
 	if x != nil && x.Name != nil {
 		return *x.Name
-	}
-	return ""
-}
-
-func (x *WorkspaceMember) GetUsername() string {
-	if x != nil && x.Username != nil {
-		return *x.Username
 	}
 	return ""
 }
@@ -1434,22 +1426,21 @@ const file_nokku_v1_workspace_proto_rawDesc = "" +
 	"created_at\x18\n" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\x89\x03\n" +
+	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xed\x02\n" +
 	"\x0fWorkspaceMember\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x12\n" +
-	"\x04name\x18\x03 \x01(\tR\x04name\x12\x1a\n" +
-	"\busername\x18\x04 \x01(\tR\busername\x12\x14\n" +
-	"\x05email\x18\x05 \x01(\tR\x05email\x12%\n" +
-	"\x0eemail_verified\x18\x06 \x01(\bR\remailVerified\x12\x18\n" +
-	"\apicture\x18\a \x01(\tR\apicture\x12\x1b\n" +
-	"\trole_name\x18\b \x01(\tR\broleName\x12)\n" +
-	"\x10role_description\x18\t \x01(\tR\x0froleDescription\x129\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x14\n" +
+	"\x05email\x18\x04 \x01(\tR\x05email\x12%\n" +
+	"\x0eemail_verified\x18\x05 \x01(\bR\remailVerified\x12\x18\n" +
+	"\apicture\x18\x06 \x01(\tR\apicture\x12\x1b\n" +
+	"\trole_name\x18\a \x01(\tR\broleName\x12)\n" +
+	"\x10role_description\x18\b \x01(\tR\x0froleDescription\x129\n" +
 	"\n" +
-	"created_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\x8f\x01\n" +
+	"updated_at\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\x8f\x01\n" +
 	"\x11WorkspaceSettings\x12.\n" +
 	"\x13enroll_auto_approve\x18\x01 \x01(\bR\x11enrollAutoApprove\x12J\n" +
 	"\x15default_daemon_config\x18\x02 \x01(\v2\x16.nokku.v1.DaemonConfigR\x13defaultDaemonConfig\"B\n" +
@@ -1518,7 +1509,7 @@ const file_nokku_v1_workspace_proto_rawDesc = "" +
 	"\fworkspace_id\x18\x03 \x01(\tR\vworkspaceId\x12\x1d\n" +
 	"\fpayload_json\x18\x04 \x01(\tR\apayload\x129\n" +
 	"\n" +
-	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt2\xbf\f\n" +
+	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt2\xc2\f\n" +
 	"\x10WorkspaceService\x12w\n" +
 	"\fGetWorkspace\x12\x1d.nokku.v1.GetWorkspaceRequest\x1a\x1e.nokku.v1.GetWorkspaceResponse\"(\x82\xd3\xe4\x93\x02\x1f\x12\x1d/v1/workspaces/{workspace_id}\x90\x02\x01\x12n\n" +
 	"\x0eListWorkspaces\x12\x1f.nokku.v1.ListWorkspacesRequest\x1a .nokku.v1.ListWorkspacesResponse\"\x19\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/workspaces\x90\x02\x01\x12q\n" +
@@ -1529,8 +1520,8 @@ const file_nokku_v1_workspace_proto_rawDesc = "" +
 	"\x14ListWorkspaceMembers\x12%.nokku.v1.ListWorkspaceMembersRequest\x1a&.nokku.v1.ListWorkspaceMembersResponse\"0\x82\xd3\xe4\x93\x02'\x12%/v1/workspaces/{workspace_id}/members\x90\x02\x01\x12\xa1\x01\n" +
 	"\x15RemoveWorkspaceMember\x12&.nokku.v1.RemoveWorkspaceMemberRequest\x1a'.nokku.v1.RemoveWorkspaceMemberResponse\"7\x82\xd3\xe4\x93\x021*//v1/workspaces/{workspace_id}/members/{user_id}\x12\xa1\x01\n" +
 	"\x15UpdateWorkspaceMember\x12&.nokku.v1.UpdateWorkspaceMemberRequest\x1a'.nokku.v1.UpdateWorkspaceMemberResponse\"7\x82\xd3\xe4\x93\x021\"//v1/workspaces/{workspace_id}/members/{user_id}\x12\x9e\x01\n" +
-	"\x14UpdateWorkspaceOwner\x12%.nokku.v1.UpdateWorkspaceOwnerRequest\x1a&.nokku.v1.UpdateWorkspaceOwnerResponse\"7\x82\xd3\xe4\x93\x021\"//v1/workspaces/{workspace_id}/owner/{new_owner}\x12\xab\x01\n" +
-	"\x18SubscribeWorkspaceEvents\x12).nokku.v1.SubscribeWorkspaceEventsRequest\x1a*.nokku.v1.SubscribeWorkspaceEventsResponse\"6\x82\xd3\xe4\x93\x020\x12./v1/workspaces/{workspace_id}/events:subscribe0\x01B\x99\x01\n" +
+	"\x14UpdateWorkspaceOwner\x12%.nokku.v1.UpdateWorkspaceOwnerRequest\x1a&.nokku.v1.UpdateWorkspaceOwnerResponse\"7\x82\xd3\xe4\x93\x021\"//v1/workspaces/{workspace_id}/owner/{new_owner}\x12\xae\x01\n" +
+	"\x18SubscribeWorkspaceEvents\x12).nokku.v1.SubscribeWorkspaceEventsRequest\x1a*.nokku.v1.SubscribeWorkspaceEventsResponse\"9\x82\xd3\xe4\x93\x020\x12./v1/workspaces/{workspace_id}/events:subscribe\x90\x02\x010\x01B\x99\x01\n" +
 	"\fcom.nokku.v1B\x0eWorkspaceProtoP\x01Z8github.com/nokku-sh/nokkud/internal/gen/nokku/v1;nokkuv1\xa2\x02\x03NXX\xaa\x02\bNokku.V1\xca\x02\bNokku\\V1\xe2\x02\x14Nokku\\V1\\GPBMetadata\xea\x02\tNokku::V1b\beditionsp\xe8\a"
 
 var (
