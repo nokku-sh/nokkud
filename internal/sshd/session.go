@@ -329,26 +329,6 @@ func (sess *session) runSubsystem(name string) uint32 {
 	return 1
 }
 
-// User returns the username the client authenticated as.
-func (sess *session) User() string {
-	return sess.conn.User()
-}
-
-// RemoteAddr returns the client's address.
-func (sess *session) RemoteAddr() net.Addr {
-	return sess.conn.RemoteAddr()
-}
-
-// Environ returns a copy of the environment set by the client.
-func (sess *session) Environ() []string {
-	return append([]string(nil), sess.env...)
-}
-
-// RawCommand returns the exact command the client requested.
-func (sess *session) RawCommand() string {
-	return sess.rawCmd
-}
-
 // pty-req: string TERM, uint32 width, uint32 height, uint32 width_px,
 // uint32 height_px, string modes.
 func (sess *session) ptyReq(req *ssh.Request) {
