@@ -16,6 +16,8 @@ import (
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
+const urlHeader = "Nokku-Api-Url"
+
 // dpopAuth authenticates the daemon's control-plane RPCs: it sends the
 // persisted session token with the "DPoP" scheme and binds every request to
 // the daemon's signing key with a DPoP proof. Before enrollment there is no
@@ -26,8 +28,9 @@ type dpopAuth struct {
 	config  *state.Config
 	proofer *dpop.Proofer
 
-	mu    sync.Mutex
-	nonce string
+	mu        sync.Mutex
+	nonce     string
+	serverURL string
 }
 
 func (a *dpopAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -67,12 +70,11 @@ func (a *dpopAuth) WrapStreamingHandler(
 
 // sign sets the DPoP-bound token and DPoP proof on the request header.
 //
-// Before enrollment there is no session token, so the EnrollDaemon request is
-// sent with an unbound proof (no Authorization header, no ath claim); every
-// other request carries the token per RFC 9449 section 7.1.
+// The proof binds to the canonical API URL (htu), not necessarily the
+// configured one: the server tells us which URL it verifies against.
 func (a *dpopAuth) sign(header http.Header, procedure string) error {
 	token := a.config.SessionToken
-	htu := a.config.APIURL + procedure
+	htu := a.htuBase() + procedure
 
 	if token == "" {
 		// No session token yet: only the enrollment request is sent, with an
@@ -104,20 +106,36 @@ func (a *dpopAuth) sign(header http.Header, procedure string) error {
 	return nil
 }
 
+// htuBase returns the URL proofs must bind to: the canonical API URL the
+// server advertises when known, else the configured API URL.
+func (a *dpopAuth) htuBase() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.serverURL != "" {
+		return a.serverURL
+	}
+	return a.config.APIURL
+}
+
 // learnNonce records a fresh nonce from a stale-nonce error response and
-// reports whether the server advertised one (so the caller retries).
+// reports whether the server advertised one (so the caller retries). The same
+// response carries the canonical API URL, which is learned alongside.
 func (a *dpopAuth) LearnNonce(err error) bool {
 	var cerr *connect.Error
 	if !errors.As(err, &cerr) || connect.CodeOf(err) != connect.CodeUnauthenticated {
 		return false
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	learned := false
 	if n := cerr.Meta().Get("DPoP-Nonce"); n != "" {
-		a.mu.Lock()
 		a.nonce = n
-		a.mu.Unlock()
-		return true
+		learned = true
 	}
-	return false
+	if u := cerr.Meta().Get(urlHeader); u != "" {
+		a.serverURL = u
+	}
+	return learned
 }
 
 func (a *dpopAuth) currentNonce() string {
@@ -126,9 +144,11 @@ func (a *dpopAuth) currentNonce() string {
 	return a.nonce
 }
 
-// FetchNonce bootstraps the DPoP nonce from the server before the first
-// DPoP-protected request, avoiding a deliberate 401 round-trip.
-func FetchNonce(httpc *http.Client, baseURL string) (string, error) {
+// FetchNonce bootstraps the DPoP nonce and the canonical API URL from the
+// server before the first DPoP-protected request, avoiding a deliberate 401
+// round-trip. The canonical URL is what proofs must bind to; baseURL is only
+// where to reach the server.
+func FetchNonce(httpc *http.Client, baseURL string) (nonce, apiURL string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -139,12 +159,12 @@ func FetchNonce(httpc *http.Client, baseURL string) (string, error) {
 		nil,
 	)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	resp, err := httpc.Do(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return resp.Header.Get("DPoP-Nonce"), nil
+	return resp.Header.Get("DPoP-Nonce"), resp.Header.Get(urlHeader), nil
 }

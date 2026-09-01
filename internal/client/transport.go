@@ -49,11 +49,12 @@ func (c *Client) setupClients(apiURL string, insecure bool) error {
 
 	interceptors := []connect.Interceptor{withUA()}
 	if c.proofer != nil {
-		initialNonce, _ := FetchNonce(httpc, c.config.APIURL)
+		nonce, serverURL, _ := FetchNonce(httpc, c.config.APIURL)
 		c.auth = &dpopAuth{
-			config:  c.config,
-			proofer: c.proofer,
-			nonce:   initialNonce,
+			config:    c.config,
+			proofer:   c.proofer,
+			nonce:     nonce,
+			serverURL: serverURL,
 		}
 		interceptors = append(interceptors, c.auth)
 	}

@@ -6,9 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	"github.com/nokku-sh/nokkud/internal/dpop"
 
@@ -120,5 +123,50 @@ func TestDPoPAuthNoTokenNoEnrollIsNoop(t *testing.T) {
 	}
 	if header.Get("DPoP") != "" {
 		t.Error("expected no DPoP proof for a non-enroll call without a token")
+	}
+}
+
+func TestDPoPAuthHTUUsesCanonicalServerURL(t *testing.T) {
+	t.Parallel()
+	st := &state.Config{APIURL: "http://localhost:3000"} // connect address
+	a := &dpopAuth{
+		config:    st,
+		proofer:   newTestProofer(t),
+		serverURL: "https://app.example.com", // canonical URL advertised by the server
+	}
+
+	header := http.Header{}
+	if err := a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	want := "https://app.example.com" + nokkuv1connect.DaemonServiceEnrollDaemonProcedure
+	if got := proofClaims(t, header.Get("DPoP"))["htu"]; got != want {
+		t.Errorf("proof htu = %v, want %v", got, want)
+	}
+}
+
+func TestDPoPAuthLearnNonceLearnsServerURL(t *testing.T) {
+	t.Parallel()
+	st := &state.Config{APIURL: "http://localhost:3000"}
+	a := &dpopAuth{config: st, proofer: newTestProofer(t)}
+
+	err := connect.NewError(connect.CodeUnauthenticated, errors.New("stale DPoP nonce"))
+	err.Meta().Set("DPoP-Nonce", "nonce-2")
+	err.Meta().Set(urlHeader, "https://app.example.com")
+	if !a.LearnNonce(err) {
+		t.Fatal("LearnNonce() = false, want true")
+	}
+
+	header := http.Header{}
+	if err := a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	claims := proofClaims(t, header.Get("DPoP"))
+	if got := claims["nonce"]; got != "nonce-2" {
+		t.Errorf("proof nonce = %v, want nonce-2", got)
+	}
+	want := "https://app.example.com" + nokkuv1connect.DaemonServiceEnrollDaemonProcedure
+	if got := claims["htu"]; got != want {
+		t.Errorf("proof htu = %v, want %v", got, want)
 	}
 }
