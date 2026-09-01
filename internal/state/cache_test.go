@@ -5,8 +5,6 @@ import (
 	"sync"
 	"testing"
 
-	"google.golang.org/protobuf/proto"
-
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 )
 
@@ -235,7 +233,7 @@ func TestCacheReplace(t *testing.T) {
 			"alice":     {"uuid-1", "uuid-2"},
 			"../../etc": {"uuid-evil"}, // invalid, must be skipped
 		},
-		&nokkuv1.DaemonConfig{RecordSessions: proto.Bool(true)},
+		&nokkuv1.DaemonConfig{RecordSessions: new(true)},
 		7,
 	)
 
