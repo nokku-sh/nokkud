@@ -16,6 +16,7 @@ import (
 
 	"github.com/nokku-sh/mon/dpop"
 	"github.com/nokku-sh/mon/id"
+	"github.com/nokku-sh/mon/nokku"
 	"github.com/nokku-sh/mon/tpm"
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
@@ -81,7 +82,7 @@ func New(
 	// else a machine-wrapped software key. The daemon's enrollment is bound
 	// to this key, so a changed identity fails instead of recovering.
 	signer, err := tpm.NewSigner(tpm.SignerOptions{
-		Salt:       []byte(tpm.SaltDaemon),
+		Salt:       []byte(nokku.SaltDaemon),
 		Store:      tpm.NewFileStore(p.SignerStateFile()),
 		MachineID:  id.MachineID,
 		RequireTPM: opts.RequireTPM,
