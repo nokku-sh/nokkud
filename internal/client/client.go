@@ -17,6 +17,7 @@ import (
 	"github.com/nokku-sh/mon/dpop"
 	"github.com/nokku-sh/mon/id"
 	"github.com/nokku-sh/mon/tpm"
+
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 	"github.com/nokku-sh/nokkud/internal/paths"
@@ -25,12 +26,10 @@ import (
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
-var errDaemonRejected = errors.New("daemon rejected by backend")
-
-// signerSalt namespaces the daemon's request-signing key derivation. It
-// must stay distinct from the SSH host salt so each purpose derives a
-// distinct key from the same TPM.
-const signerSalt = "nokku-daemon"
+var (
+	errDaemonRejected = errors.New("daemon rejected by backend")
+	signerSalt        = []byte("nokku-daemon")
+)
 
 // Options carries the daemon's runtime configuration from main into the
 // client. Keeping it out of the CLI framework keeps the inputs explicit and
@@ -63,18 +62,11 @@ type Client struct {
 	rc  nokkuv1connect.RecordingServiceClient
 }
 
-// nopWriteCloser discards writes. It stands in for the recording sink so the
-// SSH server never has to special-case an unenrolled daemon.
 type nopWriteCloser struct{}
 
 func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopWriteCloser) Close() error                { return nil }
 
-// New builds a Client sharing the caller's principal cache, so backend
-// updates reach the embedded SSH server immediately. It performs no network
-// I/O except enrollment (when opts.EnrollToken is set) and the best-effort
-// DPoP nonce bootstrap. The root context is not stored: Run and the methods
-// below receive their own.
 func New(
 	p paths.Paths,
 	cache *state.Cache,
@@ -82,11 +74,8 @@ func New(
 	opts Options,
 	sshSrv *sshd.Server,
 ) (*Client, error) {
-	// The signing identity is the machine's: TPM-backed when available,
-	// else a machine-wrapped software key. The daemon's enrollment is bound
-	// to this key, so a changed identity fails instead of recovering.
 	signer, err := tpm.NewSigner(tpm.SignerOptions{
-		Salt:       []byte(signerSalt),
+		Salt:       signerSalt,
 		Store:      tpm.NewFileStore(p.SignerStateFile()),
 		MachineID:  id.MachineID,
 		RequireTPM: opts.RequireTPM,
