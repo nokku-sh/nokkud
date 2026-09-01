@@ -14,12 +14,14 @@ const (
 	enrollTimeout = 30 * time.Second
 )
 
-func (c *Client) enroll(ctx context.Context, token, caid string) error {
+func (c *Client) enroll(token, caid string) error {
 	if token == "" {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, enrollTimeout)
+	// Enrollment only happens at startup, before Run owns the root
+	// context. The timeout bounds the whole exchange instead.
+	ctx, cancel := context.WithTimeout(context.Background(), enrollTimeout)
 	defer cancel()
 
 	// The auth interceptor signs the enrollment request with an unbound DPoP

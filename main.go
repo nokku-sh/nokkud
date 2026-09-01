@@ -100,7 +100,12 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				}
 			}()
 
-			cli, err := client.New(ctx, cmd, p, cache, cfg, sshSrv)
+			cli, err := client.New(p, cache, cfg, client.Options{
+				Insecure:    cmd.Bool("insecure"),
+				RequireTPM:  cmd.Bool("require-tpm"),
+				EnrollToken: cmd.String("enroll"),
+				CAID:        cmd.String("ca"),
+			}, sshSrv)
 			if err != nil {
 				return fmt.Errorf("failed to initialize configuration: %w", err)
 			}
@@ -215,7 +220,12 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					if err := cfg.Load(); err != nil {
 						return err
 					}
-					cli, err := client.New(ctx, cmd, p, cache, cfg, nil)
+					cli, err := client.New(p, cache, cfg, client.Options{
+						Insecure:    cmd.Bool("insecure"),
+						RequireTPM:  cmd.Bool("require-tpm"),
+						EnrollToken: cmd.String("enroll"),
+						CAID:        cmd.String("ca"),
+					}, nil)
 					if err != nil {
 						return fmt.Errorf("failed to initialize configuration: %w", err)
 					}

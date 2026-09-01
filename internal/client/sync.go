@@ -65,14 +65,15 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		return nil // Nothing to apply
 	}
 
-	c.cache.Clear()
-	c.cache.SetDaemonConfig(res.GetConfig())
+	// Build the new state locally and swap it in atomically, so auth reads
+	// never see an empty principal map between Clear and repopulate.
+	principals := make(map[string][]string, len(res.GetPrincipals()))
+	for _, p := range res.GetPrincipals() {
+		principals[p.GetUsername()] = p.GetIds()
+	}
+	c.cache.Replace(principals, res.GetConfig(), res.GetStateVersion())
 
 	c.applyConfig()
-
-	for _, p := range res.GetPrincipals() {
-		c.cache.SetUUIDs(p.GetUsername(), p.GetIds())
-	}
 
 	// CA rollover, re-sign the host certificate under the new authority and
 	// reload the server before acknowledging the new state.
@@ -82,7 +83,6 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		}
 	}
 
-	c.cache.SetStateVersion(res.GetStateVersion())
 	if saveErr := c.cache.Save(); saveErr != nil {
 		return saveErr
 	}
@@ -107,22 +107,22 @@ func (c *Client) applyConfig() {
 		return
 	}
 	cfg := c.cache.DaemonConfig()
-	opts := c.sshSrv.Defaults()
+	t := c.sshSrv.DefaultTunables()
 	if cfg == nil {
-		c.sshSrv.SetOptions(opts)
+		c.sshSrv.SetTunables(t)
 		return
 	}
-	opts.Record = cfg.GetRecordSessions()
-	opts.AllowForwarding = boolField(cfg.AllowForwarding, opts.AllowForwarding)
-	opts.AllowAgentForwarding = boolField(cfg.AllowAgentForwarding, opts.AllowAgentForwarding)
-	opts.GatewayPorts = boolField(cfg.GatewayPorts, opts.GatewayPorts)
-	opts.MaxSessions = intField(cfg.MaxSessions, opts.MaxSessions)
-	opts.MaxConnections = intField(cfg.MaxConnections, opts.MaxConnections)
-	opts.MaxSessionsPerUser = intField(cfg.MaxSessionsPerUser, opts.MaxSessionsPerUser)
+	t.Record = cfg.GetRecordSessions()
+	t.AllowForwarding = boolField(cfg.AllowForwarding, t.AllowForwarding)
+	t.AllowAgentForwarding = boolField(cfg.AllowAgentForwarding, t.AllowAgentForwarding)
+	t.GatewayPorts = boolField(cfg.GatewayPorts, t.GatewayPorts)
+	t.MaxSessions = intField(cfg.MaxSessions, t.MaxSessions)
+	t.MaxConnections = intField(cfg.MaxConnections, t.MaxConnections)
+	t.MaxSessionsPerUser = intField(cfg.MaxSessionsPerUser, t.MaxSessionsPerUser)
 	if d := cfg.GetClientAliveInterval(); d != nil {
-		opts.ClientAliveInterval = d.AsDuration()
+		t.ClientAliveInterval = d.AsDuration()
 	}
-	c.sshSrv.SetOptions(opts)
+	c.sshSrv.SetTunables(t)
 }
 
 // boolField returns v when set, otherwise the daemon's default.

@@ -52,13 +52,13 @@ type Server struct {
 	audit      Audit
 
 	// tun holds the live-adjustable options. It is swapped atomically so a
-	// concurrent SetOptions never tears down established connections.
-	tun atomic.Pointer[Options]
-	// defaults are the options the server was constructed with. Defaults
-	// returns them so the client can overlay a synced backend config on the
-	// compiled-in policy rather than the previous live state. Never mutated
-	// after New.
-	defaults Options
+	// concurrent SetTunables never tears down established connections.
+	tun atomic.Pointer[Tunables]
+	// defaults are the tunables the server was constructed with.
+	// DefaultTunables returns them so the client can overlay a synced
+	// backend config on the compiled-in policy rather than the previous
+	// live state. Never mutated after New.
+	defaults Tunables
 
 	// certsMu guards trustedCAs and hostKeys so a reload can swap them out
 	// without tearing down established connections.
@@ -91,32 +91,24 @@ type Server struct {
 	// recordingSinkFactory builds the upload sink for a session's recorder.
 	// The client wires it so the SSH server can stream recordings without
 	// knowing the API client. Nil disables uploading (local recording only).
-	recordingSinkFactory func(sessionID, username string) io.WriteCloser
+	// The ctx passed to the factory must not be canceled by the session
+	// ending: uploads continue while the session tears down.
+	recordingSinkFactory func(ctx context.Context, sessionID, username string) io.WriteCloser
 }
 
 // SetRecordingSinkFactory installs the factory used to create per-session
 // recording upload sinks. Set once by the client at startup.
-func (s *Server) SetRecordingSinkFactory(fn func(sessionID, username string) io.WriteCloser) {
+func (s *Server) SetRecordingSinkFactory(
+	fn func(ctx context.Context, sessionID, username string) io.WriteCloser,
+) {
 	s.recordingSinkFactory = fn
 }
 
-// Options configures a Server.
-type Options struct {
-	Logger *slog.Logger
-	Paths  paths.Paths
-	// Principals decides which cert principals may log in as which user.
-	Principals PrincipalsFunc
-	// Authorize is an optional post-auth policy hook, e.g. device trust or MFA.
-	Authorize AuthorizeFunc
-	// Audit is an optional sink for security events.
-	Audit Audit
-	// TrustedCAs lists the CA public keys that may sign user certificates.
-	// When empty, the CAs are loaded from Paths.UserCAFile().
-	TrustedCAs []ssh.PublicKey
-	// HostKeys optionally supplies the server's host key signers. Called at
-	// startup and on every Reload. Defaults to a TPM-resident host key when a
-	// TPM 2.0 is present, otherwise the on-disk software key.
-	HostKeys func() ([]ssh.Signer, error)
+// Tunables is the live-adjustable subset of the server policy. The backend
+// can change any field at runtime through the synced daemon config; a
+// concurrent SetTunables swaps them without touching established
+// connections.
+type Tunables struct {
 	// Record enables session recording via the recorder package.
 	Record bool
 	// AllowForwarding enables port forwarding (-L/-D and -R). Disabled by
@@ -150,6 +142,37 @@ type Options struct {
 	ClientAliveInterval time.Duration
 }
 
+// Options configures a Server.
+type Options struct {
+	Logger *slog.Logger
+	Paths  paths.Paths
+	// Principals decides which cert principals may log in as which user.
+	Principals PrincipalsFunc
+	// Authorize is an optional post-auth policy hook, e.g. device trust or MFA.
+	Authorize AuthorizeFunc
+	// Audit is an optional sink for security events.
+	Audit Audit
+	// TrustedCAs lists the CA public keys that may sign user certificates.
+	// When empty, the CAs are loaded from Paths.UserCAFile().
+	TrustedCAs []ssh.PublicKey
+	// HostKeys optionally supplies the server's host key signers. Called at
+	// startup and on every Reload. Defaults to a TPM-resident host key when a
+	// TPM 2.0 is present, otherwise the on-disk software key.
+	HostKeys func() ([]ssh.Signer, error)
+	// Tunables is the compiled-in live-adjustable policy. The backend may
+	// override any of it at runtime through the synced daemon config.
+	Tunables Tunables
+}
+
+// DefaultTunables returns the compiled-in tunables the server was
+// constructed with. The client overlays the backend's synced daemon config
+// on top of these so an unset field falls back to the policy compiled into
+// the daemon instead of silently disabling the feature or inheriting a
+// previous backend value.
+func (s *Server) DefaultTunables() Tunables {
+	return s.defaults
+}
+
 // OptionsFrom returns the daemon's standard SSH server policy. It wires the
 // shared cache, forwarding, a session cap, and the local audit sink. record
 // enables session recording. These are the compiled-in defaults; the backend
@@ -160,14 +183,16 @@ func OptionsFrom(p paths.Paths, cache *state.Cache, record bool) Options {
 		Principals: func(username string) []string {
 			return cache.GetUUIDs(username)
 		},
-		Record:               record,
-		AllowForwarding:      true,
-		AllowAgentForwarding: true,
-		MaxSessions:          10,
-		MaxConnections:       100,
-		MaxStartups:          10,
-		ClientAliveInterval:  60 * time.Second,
-		Audit:                newAuditSink(p),
+		Tunables: Tunables{
+			Record:               record,
+			AllowForwarding:      true,
+			AllowAgentForwarding: true,
+			MaxSessions:          10,
+			MaxConnections:       100,
+			MaxStartups:          10,
+			ClientAliveInterval:  60 * time.Second,
+		},
+		Audit: newAuditSink(p),
 	}
 }
 
@@ -206,8 +231,8 @@ func New(opts Options) (*Server, error) {
 			sftpSubsystem: func(sess *session) uint32 { return sess.runSFTP() },
 		},
 	}
-	s.defaults = opts
-	s.tun.Store(&opts)
+	s.defaults = opts.Tunables
+	s.tun.Store(&opts.Tunables)
 
 	hostKeys, hostClosers, err := s.loadHostIdentity()
 	if err != nil {
@@ -221,20 +246,11 @@ func New(opts Options) (*Server, error) {
 	return s, nil
 }
 
-// SetOptions applies the runtime-tunable options (record, forwarding, session
-// and connection caps, client-alive interval) live, without restarting. Field
-// values from Options that are not tunable (paths, principals, CAs, host
-// keys) are ignored, so the caller may pass a partial Options.
-func (s *Server) SetOptions(opts Options) {
-	s.tun.Store(&opts)
-}
-
-// Defaults returns the compiled-in options the server was constructed with.
-// The client overlays the backend's synced daemon config on top of these so
-// an unset field falls back to the policy compiled into the daemon instead of
-// silently disabling the feature or inheriting a previous backend value.
-func (s *Server) Defaults() Options {
-	return s.defaults
+// SetTunables applies the runtime-tunable policy (record, forwarding,
+// session and connection caps, client-alive interval) live, without
+// restarting.
+func (s *Server) SetTunables(t Tunables) {
+	s.tun.Store(&t)
 }
 
 // loadHostIdentity resolves the server's host key signers, preferring the
@@ -290,6 +306,11 @@ func (s *Server) Reload() error {
 	return nil
 }
 
+// acceptBackoff bounds the retry delay when Accept keeps failing on a live
+// listener (EMFILE under fd exhaustion is the classic case). Without it the
+// accept loop would spin a core and flood the log.
+const acceptBackoff = 10 * time.Millisecond
+
 // Serve accepts connections on l until l is closed.
 func (s *Server) Serve(l net.Listener) error {
 	s.mu.Lock()
@@ -298,15 +319,19 @@ func (s *Server) Serve(l net.Listener) error {
 	}
 	s.mu.Unlock()
 
+	var delay time.Duration
 	for {
 		nc, err := l.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			s.logger.Error("sshd: accept", "error", err)
+			delay = min(2*delay+acceptBackoff, time.Second)
+			s.logger.Error("sshd: accept", "error", err, "retry_in", delay)
+			time.Sleep(delay)
 			continue
 		}
+		delay = 0
 		if !s.acquireConn() {
 			s.logger.Warn("sshd: dropping connection, at capacity", "remote", nc.RemoteAddr())
 			_ = nc.Close()
@@ -322,7 +347,7 @@ func (s *Server) Serve(l net.Listener) error {
 // acquireConn reserves a slot for a new connection when a cap is configured.
 // activeConns is kept in lockstep with the connection lifecycle regardless of
 // the cap, so re-enabling the cap later starts from an accurate count. The
-// counter approach keeps the cap live-adjustable: a concurrent SetOptions
+// counter approach keeps the cap live-adjustable: a concurrent SetTunables
 // swaps the cap without tearing down established connections.
 func (s *Server) acquireConn() bool {
 	limit := s.tun.Load().MaxConnections
@@ -569,7 +594,10 @@ func (s *Server) handleConn(nc net.Conn) {
 
 	// Global requests: remote forwarding (tcpip-forward) and keepalives.
 	st := newConnState(conn)
-	go s.handleGlobalRequests(conn, st, reqs)
+	go func() {
+		defer s.recoverAndLog("global requests", nil)
+		s.handleGlobalRequests(conn, st, reqs)
+	}()
 
 	var wg sync.WaitGroup
 	defer func() {

@@ -41,7 +41,7 @@ func testEchoServer(t *testing.T) net.Listener {
 // reaches the requested destination.
 func TestServerDirectTCPIP(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{AllowForwarding: true})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
 
 	echo := testEchoServer(t)
@@ -98,7 +98,7 @@ func TestServerDirectTCPIPDisabled(t *testing.T) {
 // the server and connections are delivered to the client.
 func TestServerRemoteForward(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{AllowForwarding: true})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -151,7 +151,7 @@ func TestServerRemoteForward(t *testing.T) {
 // TestServerMaxSessions verifies the per-connection session cap.
 func TestServerMaxSessions(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{MaxSessions: 2})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxSessions: 2}})
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -202,7 +202,7 @@ func TestServerMaxSessions(t *testing.T) {
 // itself is pinned to loopback.
 func TestServerRemoteForwardLocalhost(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{AllowForwarding: true})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -262,7 +262,7 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	}
 
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{AllowForwarding: true})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
 	host, port := hostPort(t, addr)
 
@@ -361,10 +361,10 @@ func TestRemoteBindAddr(t *testing.T) {
 func TestServerGatewayPortsToggle(t *testing.T) {
 	ca := newTestCA(t)
 	srv, err := New(Options{
-		Paths:           paths.Paths{ConfigDir: t.TempDir()},
-		Principals:      func(string) []string { return nil },
-		TrustedCAs:      []ssh.PublicKey{ca.pub},
-		AllowForwarding: true,
+		Paths:      paths.Paths{ConfigDir: t.TempDir()},
+		Principals: func(string) []string { return nil },
+		TrustedCAs: []ssh.PublicKey{ca.pub},
+		Tunables:   Tunables{AllowForwarding: true},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -372,15 +372,15 @@ func TestServerGatewayPortsToggle(t *testing.T) {
 	if srv.tun.Load().GatewayPorts {
 		t.Fatal("gateway ports enabled by default")
 	}
-	srv.SetOptions(Options{AllowForwarding: true, GatewayPorts: true})
+	srv.SetTunables(Tunables{AllowForwarding: true, GatewayPorts: true})
 	if !srv.tun.Load().GatewayPorts {
-		t.Fatal("SetOptions did not enable gateway ports")
+		t.Fatal("SetTunables did not enable gateway ports")
 	}
 }
 
 func TestServerForwardingLargeTransfer(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{AllowForwarding: true})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
 
 	payload := bytes.Repeat([]byte("0123456789abcdef"), 512*1024) // 8 MiB

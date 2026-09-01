@@ -382,7 +382,13 @@ func (sess *session) ptyReq(req *ssh.Request) {
 	if sess.server.tun.Load().Record && sess.server.paths.RecordsDir != "" {
 		var sink io.WriteCloser
 		if sess.server.recordingSinkFactory != nil {
-			sink = sess.server.recordingSinkFactory(sess.sessionID, sess.sysUser.Username)
+			// WithoutCancel: the upload stream must outlive the session
+			// context, which is canceled while the session tears down.
+			sink = sess.server.recordingSinkFactory(
+				context.WithoutCancel(sess.ctx),
+				sess.sessionID,
+				sess.sysUser.Username,
+			)
 		}
 		var rec *recording.Recorder
 		rec, err = recording.New(sess.server.paths, recording.Options{

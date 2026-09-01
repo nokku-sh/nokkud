@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v7"
-	"github.com/urfave/cli/v3"
 
 	"github.com/nokku-sh/mon/dpop"
 	"github.com/nokku-sh/mon/id"
@@ -28,8 +27,17 @@ import (
 
 var errDaemonRejected = errors.New("daemon rejected by backend")
 
+// Options carries the daemon's runtime configuration from main into the
+// client. Keeping it out of the CLI framework keeps the inputs explicit and
+// the client testable without constructing a command.
+type Options struct {
+	Insecure    bool
+	RequireTPM  bool
+	EnrollToken string
+	CAID        string
+}
+
 type Client struct {
-	ctx          context.Context
 	sessionSlots chan struct{}
 	sessionWG    sync.WaitGroup
 	paths        paths.Paths
@@ -37,6 +45,7 @@ type Client struct {
 	sshSrv  *sshd.Server
 	cache   *state.Cache
 	config  *state.Config
+	opts    Options
 	signer  tpm.Signer
 	proofer *dpop.Proofer
 	auth    *dpopAuth
@@ -57,13 +66,15 @@ func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopWriteCloser) Close() error                { return nil }
 
 // New builds a Client sharing the caller's principal cache, so backend
-// updates reach the embedded SSH server immediately.
+// updates reach the embedded SSH server immediately. It performs no network
+// I/O except enrollment (when opts.EnrollToken is set) and the best-effort
+// DPoP nonce bootstrap. The root context is not stored: Run and the methods
+// below receive their own.
 func New(
-	ctx context.Context,
-	cmd *cli.Command,
 	p paths.Paths,
 	cache *state.Cache,
 	config *state.Config,
+	opts Options,
 	sshSrv *sshd.Server,
 ) (*Client, error) {
 	// The signing identity is the machine's: TPM-backed when available,
@@ -73,7 +84,7 @@ func New(
 		Salt:       []byte(tpm.SaltDaemon),
 		Store:      tpm.NewFileStore(p.SignerStateFile()),
 		MachineID:  id.MachineID,
-		RequireTPM: cmd.Bool("require-tpm"),
+		RequireTPM: opts.RequireTPM,
 	})
 	if err != nil {
 		return nil, err
@@ -84,9 +95,9 @@ func New(
 	}
 
 	c := &Client{
-		ctx:          ctx,
 		cache:        cache,
 		config:       config,
+		opts:         opts,
 		signer:       signer,
 		proofer:      proofer,
 		sshSrv:       sshSrv,
@@ -94,29 +105,27 @@ func New(
 		sessionSlots: make(chan struct{}, maxConcurrentSessions),
 	}
 
-	if err = c.setupClients(config.APIURL, cmd.Bool("insecure")); err != nil {
+	if err = c.setupClients(config.APIURL, opts.Insecure); err != nil {
 		return nil, err
 	}
 
 	// The embedded SSH server records sessions through the same upload
 	// path as web sessions.
 	if sshSrv != nil {
-		sshSrv.SetRecordingSinkFactory(func(sessionID, username string) io.WriteCloser {
-			if c.config.DaemonID == "" {
-				return nopWriteCloser{}
-			}
-			return recording.NewUploader(c.ctx, c.rc, recording.UploaderOptions{
-				SessionID: sessionID,
-				Username:  username,
-			})
-		})
+		sshSrv.SetRecordingSinkFactory(
+			func(ctx context.Context, sessionID, username string) io.WriteCloser {
+				if c.config.DaemonID == "" {
+					return nopWriteCloser{}
+				}
+				return recording.NewUploader(ctx, c.rc, recording.UploaderOptions{
+					SessionID: sessionID,
+					Username:  username,
+				})
+			},
+		)
 	}
 
-	if err = c.enroll(
-		ctx,
-		cmd.String("enroll"),
-		cmd.String("ca"),
-	); err != nil {
+	if err = c.enroll(opts.EnrollToken, opts.CAID); err != nil {
 		return nil, err
 	}
 

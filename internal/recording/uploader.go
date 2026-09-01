@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -83,8 +84,17 @@ func (u *Uploader) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// uploadCloseTimeout bounds how long Close waits for the backend to
+// acknowledge the final chunk. A black-holed connection must never stall
+// session teardown; the local file is complete either way, and the backend
+// marks the recording truncated when the stream ends without a final
+// message.
+const uploadCloseTimeout = 30 * time.Second
+
 // Close finalizes the recording and closes the upload stream. Safe to call
-// after a failure, the stream is still closed and the error logged.
+// after a failure, the stream is still closed and the error logged. The wait
+// for the backend is bounded by uploadCloseTimeout; on timeout the stream is
+// abandoned and the recording marked truncated server-side.
 func (u *Uploader) Close() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -98,16 +108,31 @@ func (u *Uploader) Close() error {
 	_ = u.stream.Send(&nokkuv1.UploadRecordingRequest{
 		Msg: &nokkuv1.UploadRecordingRequest_Final{Final: &nokkuv1.RecordingFinal{}},
 	})
-	resp, err := u.stream.CloseAndReceive()
-	if err != nil {
-		slog.Debug("recording upload closed", "session_id", u.sessionID, "error", err)
+
+	// CloseAndReceive has no context of its own: it lives on the stream's
+	// request context. Wait bounded, so session teardown never blocks on a
+	// dead backend. An abandoned receive drains on its own when the
+	// connection eventually fails or the process exits.
+	done := make(chan error, 1)
+	go func() {
+		_, err := u.stream.CloseAndReceive()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			slog.Debug("recording upload closed", "session_id", u.sessionID, "error", err)
+			return nil
+		}
+	case <-time.After(uploadCloseTimeout):
+		slog.Warn(
+			"recording upload close timed out, the backend may mark the recording truncated",
+			"session_id", u.sessionID,
+			"timeout", uploadCloseTimeout,
+		)
 		return nil
 	}
-	slog.Debug(
-		"recording uploaded",
-		"session_id", u.sessionID,
-		"size", resp.GetSizeBytes(),
-	)
+	slog.Debug("recording uploaded", "session_id", u.sessionID)
 	return nil
 }
 

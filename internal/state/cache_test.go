@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 )
 
@@ -218,5 +220,44 @@ func TestCacheConcurrentAccess(t *testing.T) {
 	// No data corruption after concurrent access.
 	if !c.HasUUID("user", "uuid-1") && !c.HasUUID("user2", "uuid-1") {
 		t.Fatal("concurrent access lost principals")
+	}
+}
+
+func TestCacheReplace(t *testing.T) {
+	t.Parallel()
+	c := NewCache(newTestPaths(t))
+
+	// Pre-existing state must be fully replaced, not merged.
+	c.SetUUIDs("stale", []string{"uuid-old"})
+
+	c.Replace(
+		map[string][]string{
+			"alice":     {"uuid-1", "uuid-2"},
+			"../../etc": {"uuid-evil"}, // invalid, must be skipped
+		},
+		&nokkuv1.DaemonConfig{RecordSessions: proto.Bool(true)},
+		7,
+	)
+
+	if c.HasUUID("stale", "uuid-old") {
+		t.Fatal("Replace merged instead of replacing")
+	}
+	if got := c.GetUUIDs("alice"); len(got) != 2 || got[0] != "uuid-1" {
+		t.Fatalf("GetUUIDs(alice) = %v", got)
+	}
+	if c.HasUUID("../../etc", "uuid-evil") {
+		t.Fatal("invalid principal must be skipped")
+	}
+	if c.GetStateVersion() != 7 {
+		t.Fatalf("state version = %d, want 7", c.GetStateVersion())
+	}
+	if !c.RecordSessions() {
+		t.Fatal("daemon config lost in Replace")
+	}
+
+	// Replacing with an empty map must yield an empty map, not nil.
+	c.Replace(nil, nil, 0)
+	if c.principals == nil {
+		t.Fatal("Replace left a nil principal map")
 	}
 }

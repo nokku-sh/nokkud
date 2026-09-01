@@ -14,6 +14,14 @@ import (
 
 const heartbeatInterval = 5 * time.Minute
 
+// recoverPanic keeps a panicking daemon goroutine from taking the process
+// down. Every background goroutine the client starts defers this.
+func recoverPanic(where string) {
+	if r := recover(); r != nil {
+		slog.Error("client goroutine panicked", "where", where, "panic", r)
+	}
+}
+
 // runControlStream keeps the control stream open until ctx is cancelled.
 // The stream is the daemon's only periodic contact. An immediate heartbeat
 // reports our state version, later heartbeats keep it alive, and the server
@@ -32,10 +40,16 @@ func (c *Client) runControlStream(ctx context.Context, onConnect func()) error {
 		onConnect()
 	}
 
-	go c.sendHeartbeats(controlCtx, stream)
+	go func() {
+		defer recoverPanic("heartbeat sender")
+		c.sendHeartbeats(controlCtx, stream)
+	}()
 
 	recvCh := make(chan receiveResult, 1)
-	go pumpReceives(controlCtx, stream, recvCh)
+	go func() {
+		defer recoverPanic("control stream receiver")
+		c.pumpReceives(controlCtx, stream, recvCh)
+	}()
 
 	for {
 		select {
@@ -91,7 +105,7 @@ func (c *Client) sendHeartbeats(
 
 // pumpReceives forwards stream messages to recvCh so the run loop can
 // select on context cancellation alongside incoming messages.
-func pumpReceives(
+func (c *Client) pumpReceives(
 	ctx context.Context,
 	stream *connect.BidiStreamForClientSimple[nokkuv1.ConnectRequest, nokkuv1.ConnectResponse],
 	recvCh chan receiveResult,

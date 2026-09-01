@@ -150,6 +150,29 @@ func (c *Cache) RecordSessions() bool {
 	return c.daemonConfig.GetRecordSessions()
 }
 
+// Replace atomically swaps the entire cached synced state. Auth reads
+// (GetUUIDs) never observe an intermediate empty map the way a Clear
+// followed by per-principal writes would, so a concurrent SSH login cannot
+// be denied mid-sync. Invalid principals are skipped.
+func (c *Cache) Replace(principals map[string][]string, dc *nokkuv1.DaemonConfig, version int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	next := make(map[string][]string, len(principals))
+	for principal, uuids := range principals {
+		if err := util.ValidatePrincipal(principal); err != nil {
+			slog.Debug("skipping invalid principal", "principal", principal)
+			continue
+		}
+		ids := make([]string, len(uuids))
+		copy(ids, uuids)
+		next[principal] = ids
+	}
+	c.principals = next
+	c.daemonConfig = dc
+	c.stateVersion = version
+}
+
 func (c *Cache) clearLocked() {
 	c.principals = make(map[string][]string)
 	c.stateVersion = 0

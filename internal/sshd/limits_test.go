@@ -12,7 +12,7 @@ import (
 // over-cap connection is refused immediately.
 func TestServerMaxConnections(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{MaxConnections: 1})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxConnections: 1}})
 	defer closeFn()
 
 	auth := userCert(t, ca, testPrincipal)
@@ -49,7 +49,7 @@ func TestServerMaxConnections(t *testing.T) {
 // connection is refused until it frees it.
 func TestServerMaxStartups(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{MaxStartups: 1})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxStartups: 1}})
 	defer closeFn()
 
 	// A raw TCP connection that never completes the SSH handshake holds the
@@ -86,7 +86,7 @@ func TestServerMaxStartups(t *testing.T) {
 // many connections.
 func TestServerMaxSessionsPerUser(t *testing.T) {
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{MaxSessionsPerUser: 1})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxSessionsPerUser: 1}})
 	defer closeFn()
 
 	auth := userCert(t, ca, testPrincipal)
@@ -139,7 +139,7 @@ func TestServerClientAlive(t *testing.T) {
 	addr, closeFn := startTestServerOpts(
 		t,
 		ca,
-		Options{ClientAliveInterval: 100 * time.Millisecond},
+		Options{Tunables: Tunables{ClientAliveInterval: 100 * time.Millisecond}},
 	)
 	defer closeFn()
 
@@ -186,7 +186,7 @@ func TestServerClientAliveSilent(t *testing.T) {
 	addr, closeFn := startTestServerOpts(
 		t,
 		ca,
-		Options{ClientAliveInterval: 100 * time.Millisecond},
+		Options{Tunables: Tunables{ClientAliveInterval: 100 * time.Millisecond}},
 	)
 	defer closeFn()
 
