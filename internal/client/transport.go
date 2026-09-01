@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -40,7 +41,7 @@ func newHTTPClient(insecure bool) (*http.Client, error) {
 	return &http.Client{Transport: t}, nil
 }
 
-func (c *Client) setupClients(apiURL string, insecure bool) error {
+func (c *Client) setupClients(ctx context.Context, apiURL string, insecure bool) error {
 	httpc, err := newHTTPClient(insecure)
 	if err != nil {
 		return fmt.Errorf("http client: %w", err)
@@ -49,7 +50,7 @@ func (c *Client) setupClients(apiURL string, insecure bool) error {
 
 	interceptors := []connect.Interceptor{withUA()}
 	if c.proofer != nil {
-		nonce, serverURL, _ := FetchNonce(httpc, c.config.APIURL)
+		nonce, serverURL, _ := FetchNonce(ctx, httpc, c.config.APIURL)
 		c.auth = &dpopAuth{
 			config:    c.config,
 			proofer:   c.proofer,

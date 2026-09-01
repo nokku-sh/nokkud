@@ -68,6 +68,7 @@ func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopWriteCloser) Close() error                { return nil }
 
 func New(
+	ctx context.Context,
 	p paths.Paths,
 	cache *state.Cache,
 	config *state.Config,
@@ -99,7 +100,7 @@ func New(
 		sessionSlots: make(chan struct{}, maxConcurrentSessions),
 	}
 
-	if err = c.setupClients(config.APIURL, opts.Insecure); err != nil {
+	if err = c.setupClients(ctx, config.APIURL, opts.Insecure); err != nil {
 		return nil, err
 	}
 
@@ -119,7 +120,7 @@ func New(
 		)
 	}
 
-	if err = c.enroll(opts.EnrollToken, opts.CAID); err != nil {
+	if err = c.enroll(ctx, opts.EnrollToken, opts.CAID); err != nil {
 		return nil, err
 	}
 

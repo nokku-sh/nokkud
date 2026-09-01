@@ -100,7 +100,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				}
 			}()
 
-			cli, err := client.New(p, cache, cfg, client.Options{
+			cl, err := client.New(ctx, p, cache, cfg, client.Options{
 				Insecure:    cmd.Bool("insecure"),
 				RequireTPM:  cmd.Bool("require-tpm"),
 				EnrollToken: cmd.String("enroll"),
@@ -117,7 +117,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			}
 
 			slog.Info("Starting nokkud", "version", buildinfo.Version)
-			return cli.Run(ctx)
+			return cl.Run(ctx)
 		},
 		Commands: []*cli.Command{
 			{
@@ -220,7 +220,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					if err := cfg.Load(); err != nil {
 						return err
 					}
-					cli, err := client.New(p, cache, cfg, client.Options{
+					cl, err := client.New(ctx, p, cache, cfg, client.Options{
 						Insecure:    cmd.Bool("insecure"),
 						RequireTPM:  cmd.Bool("require-tpm"),
 						EnrollToken: cmd.String("enroll"),
@@ -229,7 +229,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					if err != nil {
 						return fmt.Errorf("failed to initialize configuration: %w", err)
 					}
-					if err = cli.DeleteDaemon(ctx); err != nil {
+					if err = cl.DeleteDaemon(ctx); err != nil {
 						slog.Warn(
 							"failed to delete daemon from backend; local state is still removed",
 							"error", err,

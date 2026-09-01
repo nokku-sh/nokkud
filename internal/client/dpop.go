@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"connectrpc.com/connect"
 
@@ -122,8 +121,8 @@ func (a *dpopAuth) htuBase() string {
 // reports whether the server advertised one (so the caller retries). The same
 // response carries the canonical API URL, which is learned alongside.
 func (a *dpopAuth) LearnNonce(err error) bool {
-	var cerr *connect.Error
-	if !errors.As(err, &cerr) || connect.CodeOf(err) != connect.CodeUnauthenticated {
+	cerr, ok := errors.AsType[*connect.Error](err)
+	if !ok || connect.CodeOf(err) != connect.CodeUnauthenticated {
 		return false
 	}
 	a.mu.Lock()
@@ -149,10 +148,7 @@ func (a *dpopAuth) currentNonce() string {
 // server before the first DPoP-protected request, avoiding a deliberate 401
 // round-trip. The canonical URL is what proofs must bind to; baseURL is only
 // where to reach the server.
-func FetchNonce(httpc *http.Client, baseURL string) (nonce, apiURL string, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+func FetchNonce(ctx context.Context, httpc *http.Client, baseURL string) (nonce, apiURL string, err error) {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
