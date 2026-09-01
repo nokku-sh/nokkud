@@ -97,25 +97,29 @@ const uploadCloseTimeout = 30 * time.Second
 // abandoned and the recording marked truncated server-side.
 func (u *Uploader) Close() error {
 	u.mu.Lock()
-	defer u.mu.Unlock()
 	if u.closed {
+		u.mu.Unlock()
 		return nil
 	}
 	u.closed = true
-	if u.stream == nil {
+	stream := u.stream
+	u.stream = nil
+	u.mu.Unlock()
+	if stream == nil {
 		return nil
 	}
-	_ = u.stream.Send(&nokkuv1.UploadRecordingRequest{
+	_ = stream.Send(&nokkuv1.UploadRecordingRequest{
 		Msg: &nokkuv1.UploadRecordingRequest_Final{Final: &nokkuv1.RecordingFinal{}},
 	})
 
 	// CloseAndReceive has no context of its own: it lives on the stream's
 	// request context. Wait bounded, so session teardown never blocks on a
 	// dead backend. An abandoned receive drains on its own when the
-	// connection eventually fails or the process exits.
+	// connection eventually fails or the process exits. The stream is
+	// released above so a concurrent Write no longer blocks behind this wait.
 	done := make(chan error, 1)
 	go func() {
-		_, err := u.stream.CloseAndReceive()
+		_, err := stream.CloseAndReceive()
 		done <- err
 	}()
 	select {
