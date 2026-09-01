@@ -16,7 +16,6 @@ import (
 
 	"github.com/nokku-sh/mon/dpop"
 	"github.com/nokku-sh/mon/id"
-	"github.com/nokku-sh/mon/nokku"
 	"github.com/nokku-sh/mon/tpm"
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
@@ -27,6 +26,11 @@ import (
 )
 
 var errDaemonRejected = errors.New("daemon rejected by backend")
+
+// signerSalt namespaces the daemon's request-signing key derivation. It
+// must stay distinct from the SSH host salt so each purpose derives a
+// distinct key from the same TPM.
+const signerSalt = "nokku-daemon"
 
 // Options carries the daemon's runtime configuration from main into the
 // client. Keeping it out of the CLI framework keeps the inputs explicit and
@@ -82,7 +86,7 @@ func New(
 	// else a machine-wrapped software key. The daemon's enrollment is bound
 	// to this key, so a changed identity fails instead of recovering.
 	signer, err := tpm.NewSigner(tpm.SignerOptions{
-		Salt:       []byte(nokku.SaltDaemon),
+		Salt:       []byte(signerSalt),
 		Store:      tpm.NewFileStore(p.SignerStateFile()),
 		MachineID:  id.MachineID,
 		RequireTPM: opts.RequireTPM,
