@@ -50,10 +50,12 @@ func (c *Client) setupClients(apiURL string, insecure bool) error {
 	interceptors := []connect.Interceptor{withUA()}
 	if c.proofer != nil {
 		initialNonce, _ := FetchNonce(httpc, c.config.APIURL)
-		interceptors = append(
-			interceptors,
-			WithDPoP(c.config, c.proofer, initialNonce),
-		)
+		c.auth = &dpopAuth{
+			config:  c.config,
+			proofer: c.proofer,
+			nonce:   initialNonce,
+		}
+		interceptors = append(interceptors, c.auth)
 	}
 	opts := connect.WithInterceptors(interceptors...)
 	c.cc = nokkuv1connect.NewCertificateServiceClient(httpc, apiURL, opts)

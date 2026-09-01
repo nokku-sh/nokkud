@@ -30,21 +30,6 @@ type dpopAuth struct {
 	nonce string
 }
 
-// WithDPoP builds the interactive-session interceptor. baseURL is the API
-// origin used to reconstruct each request's htu, matching the server's
-// BaseURL configuration.
-func WithDPoP(
-	st *state.Config,
-	proofer *dpop.Proofer,
-	initialNonce string,
-) connect.Interceptor {
-	return &dpopAuth{
-		config:  st,
-		proofer: proofer,
-		nonce:   initialNonce,
-	}
-}
-
 func (a *dpopAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		if err := a.sign(req.Header(), req.Spec().Procedure); err != nil {
@@ -52,7 +37,7 @@ func (a *dpopAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		}
 
 		resp, err := next(ctx, req)
-		if err != nil && a.learnNonce(err) {
+		if err != nil && a.LearnNonce(err) {
 			// Wipe the old DPoP header before signing again
 			req.Header().Del("DPoP")
 			if err = a.sign(req.Header(), req.Spec().Procedure); err != nil {
@@ -121,7 +106,7 @@ func (a *dpopAuth) sign(header http.Header, procedure string) error {
 
 // learnNonce records a fresh nonce from a stale-nonce error response and
 // reports whether the server advertised one (so the caller retries).
-func (a *dpopAuth) learnNonce(err error) bool {
+func (a *dpopAuth) LearnNonce(err error) bool {
 	var cerr *connect.Error
 	if !errors.As(err, &cerr) || connect.CodeOf(err) != connect.CodeUnauthenticated {
 		return false

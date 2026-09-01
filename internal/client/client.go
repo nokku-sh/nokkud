@@ -38,6 +38,7 @@ type Client struct {
 	config  *state.Config
 	signer  tpm.Signer
 	proofer *dpop.Proofer
+	auth    *dpopAuth
 	httpc   *http.Client
 
 	cc  nokkuv1connect.CertificateServiceClient
@@ -149,6 +150,12 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			connected = true
 		})
+
+		// A rejected stream may carry a fresh DPoP nonce: learn it before
+		// dialing again so the reconnect signs with a current one.
+		if err != nil && c.auth != nil {
+			c.auth.LearnNonce(err)
+		}
 
 		if errors.Is(err, errDaemonRejected) {
 			return err
