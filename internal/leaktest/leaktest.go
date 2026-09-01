@@ -1,8 +1,6 @@
 // Package leaktest verifies that tests leave no permanently stuck
 // goroutines behind. It reads the runtime/pprof "goroutineleak" profile
-// instead of depending on a third-party leak checker. The profile is
-// experimental on Go 1.26 (GOEXPERIMENT=goroutineleakprofile) and generally
-// available from Go 1.27; while it is unavailable, VerifyNone is a no-op.
+// instead of depending on a third-party leak checker.
 package leaktest
 
 import (
