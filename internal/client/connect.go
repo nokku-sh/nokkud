@@ -14,11 +14,10 @@ import (
 
 const heartbeatInterval = 5 * time.Minute
 
-// recoverPanic keeps a panicking daemon goroutine from taking the process
-// down. Every background goroutine the client starts defers this.
-func recoverPanic(where string) {
+// recoverLog catches panics in goroutines so a single bug never kills the daemon.
+func recoverLog(where string) {
 	if r := recover(); r != nil {
-		slog.Error("client goroutine panicked", "where", where, "panic", r)
+		slog.Error("goroutine panicked", "where", where, "panic", r)
 	}
 }
 
@@ -41,13 +40,13 @@ func (c *Client) runControlStream(ctx context.Context, onConnect func()) error {
 	}
 
 	go func() {
-		defer recoverPanic("heartbeat sender")
+		defer recoverLog("heartbeat sender")
 		c.sendHeartbeats(controlCtx, stream)
 	}()
 
 	recvCh := make(chan receiveResult, 1)
 	go func() {
-		defer recoverPanic("control stream receiver")
+		defer recoverLog("control stream receiver")
 		c.pumpReceives(controlCtx, stream, recvCh)
 	}()
 

@@ -25,13 +25,6 @@ const (
 	maxConcurrentSessions = 100
 )
 
-// recoverLog catches panics in goroutines so a single bug never kills the daemon.
-func recoverLog(desc string) {
-	if r := recover(); r != nil {
-		slog.Error("goroutine panicked", "component", desc, "panic", r)
-	}
-}
-
 // runPTYSession opens a bidi stream for one PTY session. The session ends on
 // PTY exit, idle timeout, TTL expiry, a server-issued Close, or any stream
 // error.
@@ -102,10 +95,7 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) 
 
 	var rec *recording.Recorder
 	if c.cache.RecordSessions() {
-		shortID := sessionID
-		if len(shortID) > 8 {
-			shortID = shortID[:8]
-		}
+		shortID := sessionID[:min(len(sessionID), 8)]
 		rec, err = recording.NewSessionRecorder(
 			ctx,
 			c.paths,
