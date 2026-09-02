@@ -544,12 +544,7 @@ func (s *Server) handleConn(nc net.Conn) {
 		)
 		return
 	}
-	authenticated := false
-	defer func() {
-		if !authenticated {
-			s.releaseUnauthenticated()
-		}
-	}()
+	defer s.releaseUnauthenticated()
 
 	// Client-alive probing. Wrap the conn so inbound traffic refreshes a
 	// read deadline. The probing goroutine disconnects a client that never
@@ -567,8 +562,6 @@ func (s *Server) handleConn(nc net.Conn) {
 		return
 	}
 	conn, chans, reqs, err := ssh.NewServerConn(nc, s.currentConfig())
-	s.releaseUnauthenticated()
-	authenticated = true
 	if err != nil {
 		s.logger.Debug("sshd: handshake failed",
 			"remote", nc.RemoteAddr(), "error", err)
