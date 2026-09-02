@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -87,7 +88,8 @@ func (s *Server) serveDirectTCPIP(
 	}
 
 	dest := net.JoinHostPort(d.DestAddr, strconv.FormatUint(uint64(d.DestPort), 10))
-	var dialer net.Dialer
+	// A black-holed destination must not hang the channel open forever.
+	dialer := net.Dialer{Timeout: 5 * time.Second}
 	dconn, err := dialer.DialContext(context.Background(), "tcp", dest)
 	if err != nil {
 		s.logger.Debug("sshd: direct-tcpip dial", "dest", dest, "error", err)
