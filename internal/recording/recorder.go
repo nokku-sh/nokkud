@@ -53,9 +53,6 @@ type Options struct {
 	Label     string // short human-usable label for the filename
 	SessionID string // correlates the recording with the session's audit events
 	Username  string // recorded in the upload metadata
-	// RedactSecrets masks common credentials (keys, tokens, passwords) in
-	// recorded output so they never reach the file or the upload.
-	RedactSecrets bool
 	// Sink, when set, receives every flushed batch of compressed data in
 	// addition to the local file. A failure inside the sink is logged and
 	// the sink is dropped: the local file must keep the data either way.
@@ -69,15 +66,13 @@ type Recorder struct {
 	gw        *gzip.Writer
 	enc       *json.Encoder
 	sink      io.WriteCloser
-	scrub     *Scrubber // redacts recorded output
-	scrubIn   *Scrubber // redacts recorded input
 	lastEvent time.Time
 	// msCarry carries the fractional-millisecond rounding error from one
 	// interval to the next, so the written intervals sum to the real time
 	// even after each is rounded to the nearest millisecond.
 	msCarry float64
-	// exitCode is the session's exit status written last, once the scrubber
-	// tail has been flushed, so the x event stays the final event.
+	// exitCode is the session's exit status written last, so the x event
+	// stays the final event.
 	exitCode *int
 	dirty    bool
 	done     chan struct{}
@@ -173,10 +168,6 @@ func New(p paths.Paths, opts Options) (*Recorder, error) {
 		lastEvent: time.Now(),
 		done:      make(chan struct{}),
 	}
-	if opts.RedactSecrets {
-		rec.scrub = NewScrubber()
-		rec.scrubIn = NewScrubber()
-	}
 	go rec.flushLoop()
 	return rec, nil
 }
@@ -240,27 +231,6 @@ func (r *Recorder) event(eventType string, data []byte) {
 		slog.Warn("recording size limit reached, stopping", "size", MaxSize)
 		r.closeLocked()
 		return
-	}
-
-	// Output and input pass through their own scrubbers. Each keeps its own
-	// buffer so the two streams are never interleaved, and a held partial
-	// line is released when its newline (or close) arrives so the secret
-	// stays masked across reads.
-	switch eventType {
-	case "o":
-		if r.scrub != nil {
-			data = r.scrub.Rub(data)
-			if len(data) == 0 {
-				return
-			}
-		}
-	case "i":
-		if r.scrubIn != nil {
-			data = r.scrubIn.Rub(data)
-			if len(data) == 0 {
-				return
-			}
-		}
 	}
 
 	r.emit(eventType, data)
@@ -344,18 +314,8 @@ func (r *Recorder) closeLocked() {
 	r.closed = true
 	close(r.done)
 
-	// Flush any held redaction tail and the pending exit status so they land
-	// before the gzip footer, with the x event last.
-	if r.scrubIn != nil {
-		if tail := r.scrubIn.Flush(); len(tail) > 0 {
-			r.emit("i", tail)
-		}
-	}
-	if r.scrub != nil {
-		if tail := r.scrub.Flush(); len(tail) > 0 {
-			r.emit("o", tail)
-		}
-	}
+	// The exit status lands before the gzip footer, so the x event stays
+	// the final event.
 	if r.exitCode != nil {
 		r.emit("x", []byte(strconv.Itoa(*r.exitCode)))
 	}

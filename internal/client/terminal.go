@@ -101,13 +101,12 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) 
 			c.paths,
 			c.rc,
 			recording.Options{
-				Width:         80,
-				Height:        24,
-				Title:         fmt.Sprintf("%s@%s", sysUser.Username, sessionID),
-				Label:         fmt.Sprintf("%s-%s", sysUser.Username, shortID),
-				SessionID:     sessionID,
-				Username:      sysUser.Username,
-				RedactSecrets: true,
+				Width:     80,
+				Height:    24,
+				Title:     fmt.Sprintf("%s@%s", sysUser.Username, sessionID),
+				Label:     fmt.Sprintf("%s-%s", sysUser.Username, shortID),
+				SessionID: sessionID,
+				Username:  sysUser.Username,
 			},
 		)
 		if err != nil {

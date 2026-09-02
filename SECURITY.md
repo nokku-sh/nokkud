@@ -63,6 +63,12 @@ control stream to the backend.
 - Principal checks fall back to the last local cache when the backend is
   unreachable; new policy updates and certificate renewals require a
   reconnect.
+- **Session recordings** are written unredacted to `recordings/` and streamed to
+  the backend, which scrubs credentials server-side after the upload
+  completes. The daemon performs no redaction of its own, so anyone with
+  access to the recordings directory or the backend's storage can read
+  whatever was on the terminal. Password prompts are exempt: input is only
+  recorded while the PTY has echo enabled.
 - Releases are built via GoReleaser and signed/checksummed. Verify downloads
   against the published checksums and signatures.
 

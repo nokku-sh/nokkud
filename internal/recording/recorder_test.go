@@ -126,49 +126,6 @@ func TestRecorderV3Schema(t *testing.T) {
 	}
 }
 
-// TestRecorderScrubsInput verifies recorded input events are redacted too,
-// and that the input and output scrubbers keep separate buffers so one stream
-// never leaks into the other.
-func TestRecorderScrubsInput(t *testing.T) {
-	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
-	if err := os.MkdirAll(p.RecordsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	rec, err := New(p, Options{Width: 80, Height: 24, SessionID: "s1", RedactSecrets: true})
-	if err != nil {
-		t.Fatalf("new recorder: %v", err)
-	}
-	// A secret typed into the input stream, and plain output.
-	rec.RecordInput([]byte("export SECRET=YOOOO\n"))
-	rec.RecordOutput([]byte("export SECRET=YOOOO\r\n"))
-	recRecordAndReadEvents(t, p, rec, func(events []eventLine) {
-		var sawInputMask, sawOutputMask bool
-		for _, e := range events {
-			data := string(e.Data)
-			if strings.Contains(data, "YOOOO") {
-				t.Fatalf("secret leaked in %q event: %q", e.Code, data)
-			}
-			switch e.Code {
-			case "i":
-				if strings.Contains(data, redaction) {
-					sawInputMask = true
-				}
-			case "o":
-				if strings.Contains(data, redaction) {
-					sawOutputMask = true
-				}
-			}
-		}
-		if !sawInputMask {
-			t.Fatal("input event was not redacted")
-		}
-		if !sawOutputMask {
-			t.Fatal("output event was not redacted")
-		}
-	})
-}
-
 // eventLine is a decoded asciicast event: [interval, code, data].
 type eventLine struct {
 	Interval float64
