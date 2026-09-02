@@ -56,17 +56,12 @@ type Event struct {
 	Extra     json.RawMessage `json:"extra,omitempty"`
 }
 
-// item is one queued event.
-type item struct {
-	ev Event
-}
-
 // Sink appends events to a rotation-managed JSONL log. Emit hands events
 // to a single writer goroutine, so disk I/O never runs on the caller's
 // (auth or session) goroutine. The queue is drained on Close.
 type Sink struct {
 	dir  string
-	ch   chan item
+	ch   chan Event
 	done chan struct{}
 	wg   sync.WaitGroup
 	once sync.Once
@@ -88,7 +83,7 @@ func New(dir string) (*Sink, error) {
 	}
 	s := &Sink{
 		dir:  dir,
-		ch:   make(chan item, maxQueuedEvents),
+		ch:   make(chan Event, maxQueuedEvents),
 		done: make(chan struct{}),
 	}
 	s.wg.Add(1)
@@ -107,7 +102,7 @@ func (s *Sink) Emit(ev Event) {
 		ev.Time = time.Now()
 	}
 	select {
-	case s.ch <- item{ev: ev}:
+	case s.ch <- ev:
 	case <-s.done:
 	}
 }
@@ -134,8 +129,8 @@ func (s *Sink) run() {
 	s.enforceRetention()
 	for {
 		select {
-		case it := <-s.ch:
-			s.handleItem(it)
+		case ev := <-s.ch:
+			s.write(ev)
 		case <-s.done:
 			s.drain()
 			if s.file != nil {
@@ -150,17 +145,12 @@ func (s *Sink) run() {
 func (s *Sink) drain() {
 	for {
 		select {
-		case it := <-s.ch:
-			s.handleItem(it)
+		case ev := <-s.ch:
+			s.write(ev)
 		default:
 			return
 		}
 	}
-}
-
-// handleItem writes one queued event.
-func (s *Sink) handleItem(it item) {
-	s.write(it.ev)
 }
 
 // write appends one event, rotating and enforcing retention as needed.
