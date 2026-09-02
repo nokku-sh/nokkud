@@ -76,13 +76,9 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				return err
 			}
 
-			// Build the SSH server (when enabled) and then the client, so the
-			// client wires the recording sink before the server ever accepts a
-			// session. Shutdown is deferred because it is idempotent and also
-			// covers exits that did not go through a context cancellation
-			// (e.g. the daemon being rejected by the backend). The single ctx
-			// flowing into ListenAndServe and Run drives the cancel; the
-			// server drains against its own internal grace window.
+			// The client wires the recording sink before the server accepts a
+			// session. Deferred Shutdown is idempotent and covers exits that
+			// never see ctx cancellation (e.g. daemon rejected by backend).
 			var sshSrv *sshd.Server
 			if cfg.SSHAddr != "" {
 				if err := util.IsRoot(); err != nil {
@@ -100,14 +96,9 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				}
 			}()
 
-			cl, err := client.New(ctx, p, cache, cfg, client.Options{
-				Insecure:    cmd.Bool("insecure"),
-				RequireTPM:  cmd.Bool("require-tpm"),
-				EnrollToken: cmd.String("enroll"),
-				CAID:        cmd.String("ca"),
-			}, sshSrv)
+			cl, err := newDaemonClient(ctx, cmd, p, cache, cfg, sshSrv)
 			if err != nil {
-				return fmt.Errorf("failed to initialize configuration: %w", err)
+				return err
 			}
 
 			if sshSrv != nil {
@@ -220,14 +211,9 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					if err := cfg.Load(); err != nil {
 						return err
 					}
-					cl, err := client.New(ctx, p, cache, cfg, client.Options{
-						Insecure:    cmd.Bool("insecure"),
-						RequireTPM:  cmd.Bool("require-tpm"),
-						EnrollToken: cmd.String("enroll"),
-						CAID:        cmd.String("ca"),
-					}, nil)
+					cl, err := newDaemonClient(ctx, cmd, p, cache, cfg, nil)
 					if err != nil {
-						return fmt.Errorf("failed to initialize configuration: %w", err)
+						return err
 					}
 					if err = cl.DeleteDaemon(ctx); err != nil {
 						slog.Warn(
@@ -283,4 +269,24 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 		fmt.Fprintf(os.Stderr, "%s: %v\n", cmd.Name, err)
 		os.Exit(1)
 	}
+}
+
+func newDaemonClient(
+	ctx context.Context,
+	cmd *cli.Command,
+	p paths.Paths,
+	cache *state.Cache,
+	cfg *state.Config,
+	sshSrv *sshd.Server,
+) (*client.Client, error) {
+	cl, err := client.New(ctx, p, cache, cfg, client.Options{
+		Insecure:    cmd.Bool("insecure"),
+		RequireTPM:  cmd.Bool("require-tpm"),
+		EnrollToken: cmd.String("enroll"),
+		CAID:        cmd.String("ca"),
+	}, sshSrv)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize configuration: %w", err)
+	}
+	return cl, nil
 }
