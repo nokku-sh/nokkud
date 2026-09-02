@@ -13,8 +13,11 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/nokku-sh/mon/dpop"
+	"github.com/nokku-sh/mon/id"
+	"github.com/nokku-sh/mon/tpm"
 
 	nokkuv1connect "github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
+	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
@@ -22,6 +25,8 @@ const (
 	urlHeader         = "Nokku-Api-Url"
 	nonceRefreshAfter = 5 * time.Minute
 )
+
+var signerSalt = []byte("nokku-daemon")
 
 // dpopAuth authenticates the daemon's control-plane RPCs: it sends the
 // persisted session token with the "DPoP" scheme and binds every request to
@@ -38,6 +43,28 @@ type dpopAuth struct {
 	nonce     string
 	learnedAt time.Time
 	serverURL string
+}
+
+func withDPoP(c *state.Config, httpc *http.Client, requireTPM bool) (*dpopAuth, error) {
+	signer, err := tpm.NewSigner(tpm.SignerOptions{
+		Salt:       signerSalt,
+		Store:      tpm.NewFileStore(paths.SignerStateFile()),
+		MachineID:  id.MachineID,
+		RequireTPM: requireTPM,
+	})
+	if err != nil {
+		return nil, err
+	}
+	proofer, err := dpop.NewProofer(signer, dpop.ProoferOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	return &dpopAuth{
+		config:  c,
+		proofer: proofer,
+		httpc:   httpc,
+	}, nil
 }
 
 func (a *dpopAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -187,7 +214,11 @@ func (a *dpopAuth) currentNonce() string {
 // server before the first DPoP-protected request, avoiding a deliberate 401
 // round-trip. The canonical URL is what proofs must bind to; baseURL is only
 // where to reach the server.
-func FetchNonce(ctx context.Context, httpc *http.Client, baseURL string) (nonce, apiURL string, err error) {
+func FetchNonce(
+	ctx context.Context,
+	httpc *http.Client,
+	baseURL string,
+) (nonce, apiURL string, err error) {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,

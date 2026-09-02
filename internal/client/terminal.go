@@ -98,7 +98,6 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) 
 		shortID := sessionID[:min(len(sessionID), 8)]
 		rec, err = recording.NewSessionRecorder(
 			ctx,
-			c.paths,
 			c.rc,
 			recording.Options{
 				Width:     80,

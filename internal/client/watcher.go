@@ -52,7 +52,7 @@ func (c *Client) watchCertificates(ctx context.Context) {
 			b.Reset()
 			// Sleep until the renewal deadline. Poll at a minimum
 			// interval when no certificate exists yet.
-			delay = max(time.Until(hostcerts.NextRenewal(c.paths, c.config.TargetID)), defaultDelay)
+			delay = max(time.Until(hostcerts.NextRenewal(c.config.TargetID)), defaultDelay)
 		}
 
 		timer := time.NewTimer(delay)

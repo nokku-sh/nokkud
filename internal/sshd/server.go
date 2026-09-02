@@ -17,7 +17,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/audit"
-	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
@@ -46,7 +45,6 @@ const shutdownGrace = 10 * time.Second
 type Server struct {
 	logger     *slog.Logger
 	cfg        *ssh.ServerConfig
-	paths      paths.Paths
 	principals PrincipalsFunc
 	authorize  AuthorizeFunc
 	audit      Audit
@@ -145,7 +143,6 @@ type Tunables struct {
 // Options configures a Server.
 type Options struct {
 	Logger *slog.Logger
-	Paths  paths.Paths
 	// Principals decides which cert principals may log in as which user.
 	Principals PrincipalsFunc
 	// Authorize is an optional post-auth policy hook, e.g. device trust or MFA.
@@ -177,9 +174,8 @@ func (s *Server) DefaultTunables() Tunables {
 // shared cache, forwarding, a session cap, and the local audit sink. record
 // enables session recording. These are the compiled-in defaults; the backend
 // may override any of them live through the synced daemon config.
-func OptionsFrom(p paths.Paths, cache *state.Cache, record bool) Options {
+func OptionsFrom(cache *state.Cache, record bool) Options {
 	return Options{
-		Paths: p,
 		Principals: func(username string) []string {
 			return cache.GetUUIDs(username)
 		},
@@ -192,7 +188,7 @@ func OptionsFrom(p paths.Paths, cache *state.Cache, record bool) Options {
 			MaxStartups:          10,
 			ClientAliveInterval:  60 * time.Second,
 		},
-		Audit: newAuditSink(p),
+		Audit: newAuditSink(),
 	}
 }
 
@@ -213,7 +209,7 @@ func New(opts Options) (*Server, error) {
 	trusted := opts.TrustedCAs
 	if len(trusted) == 0 {
 		var err error
-		trusted, err = loadTrustedCAs(opts.Paths)
+		trusted, err = loadTrustedCAs()
 		if err != nil {
 			logger.Debug("sshd: trusted CAs unavailable, waiting for sync", "error", err)
 		}
@@ -221,7 +217,6 @@ func New(opts Options) (*Server, error) {
 
 	s := &Server{
 		logger:          logger,
-		paths:           opts.Paths,
 		principals:      opts.Principals,
 		authorize:       opts.Authorize,
 		audit:           opts.Audit,
@@ -260,7 +255,7 @@ func (s *Server) loadHostIdentity() ([]ssh.Signer, []io.Closer, error) {
 		keys, err := s.hostKeyProvider()
 		return keys, nil, err
 	}
-	return loadHostKeys(s.paths)
+	return loadHostKeys()
 }
 
 // Reload refreshes the trusted CAs and host keys from disk while serving.
@@ -268,7 +263,7 @@ func (s *Server) loadHostIdentity() ([]ssh.Signer, []io.Closer, error) {
 // Called after a certificate sync so a renewed host cert or rotated CA
 // applies without a restart.
 func (s *Server) Reload() error {
-	trusted, err := loadTrustedCAs(s.paths)
+	trusted, err := loadTrustedCAs()
 	if err != nil {
 		// Fail closed. A CA that can no longer be read must not keep
 		// granting logins from a stale in-memory list.

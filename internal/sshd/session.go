@@ -359,7 +359,7 @@ func (sess *session) ptyReq(req *ssh.Request) {
 	sess.ptmx = ptmx
 	sess.setEnv("TERM", r.Term)
 
-	if sess.server.tun.Load().Record && sess.server.paths.RecordsDir != "" {
+	if sess.server.tun.Load().Record {
 		var sink io.WriteCloser
 		if sess.server.recordingSinkFactory != nil {
 			// WithoutCancel: the upload stream must outlive the session
@@ -371,7 +371,7 @@ func (sess *session) ptyReq(req *ssh.Request) {
 			)
 		}
 		var rec *recording.Recorder
-		rec, err = recording.New(sess.server.paths, recording.Options{
+		rec, err = recording.New(recording.Options{
 			Width:     int(r.Width),
 			Height:    int(r.Height),
 			Title:     fmt.Sprintf("ssh-%s", sess.sysUser.Username),

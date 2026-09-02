@@ -90,10 +90,10 @@ func (cw *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// New starts a recording under p.RecordsDir, enforcing retention first.
+// New starts a recording under the records dir, enforcing retention first.
 // Returns a nil no-op recorder when disk space is too low.
-func New(p paths.Paths, opts Options) (*Recorder, error) {
-	if err := sysutil.CheckDiskSpace(p.RecordsDir); err != nil {
+func New(opts Options) (*Recorder, error) {
+	if err := sysutil.CheckDiskSpace(paths.RecordsDir()); err != nil {
 		slog.Warn("low disk space, skipping recording", "error", err)
 		return nil, nil //nolint:nilnil // intentional: nil recorder is a valid no-op
 	}
@@ -108,13 +108,13 @@ func New(p paths.Paths, opts Options) (*Recorder, error) {
 	// The filename is fully self-constructed (timestamp, sanitized label,
 	// sanitized session id, pid), so joining it with the records dir carries
 	// no traversal risk.
-	path := filepath.Join(p.RecordsDir, filename)
+	path := filepath.Join(paths.RecordsDir(), filename)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600) // #nosec G304
 	if err != nil {
 		return nil, fmt.Errorf("create recording file: %w", err)
 	}
 
-	if err = EnforceRetention(p); err != nil {
+	if err = EnforceRetention(); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
 		return nil, err

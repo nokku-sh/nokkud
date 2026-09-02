@@ -14,24 +14,33 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
+// newRecordsDir points the daemon paths at a scratch dir and creates the
+// recordings directory inside it.
+func newRecordsDir(t *testing.T) string {
+	t.Helper()
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
+	dir := paths.RecordsDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 // TestRecorderCorrelatesSessionID verifies a recording embeds its session ID
 // in both the filename and the asciicast header so it can be matched to the
 // session's audit events.
 func TestRecorderCorrelatesSessionID(t *testing.T) {
-	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
-	if err := os.MkdirAll(p.RecordsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	recordsDir := newRecordsDir(t)
 
 	sessionID := "0123456789abcdef0123456789abcdef"
-	rec, err := New(p, Options{Width: 80, Height: 24, Title: "t", SessionID: sessionID})
+	rec, err := New(Options{Width: 80, Height: 24, Title: "t", SessionID: sessionID})
 	if err != nil {
 		t.Fatalf("new recorder: %v", err)
 	}
 	rec.RecordOutput([]byte("hello"))
 	rec.Close()
 
-	entries, err := os.ReadDir(p.RecordsDir)
+	entries, err := os.ReadDir(recordsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +51,7 @@ func TestRecorderCorrelatesSessionID(t *testing.T) {
 		t.Fatalf("filename %q does not embed the session id", entries[0].Name())
 	}
 
-	f, err := os.Open(filepath.Join(p.RecordsDir, entries[0].Name()))
+	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,12 +74,9 @@ func TestRecorderCorrelatesSessionID(t *testing.T) {
 // TestRecorderV3Schema verifies the file carries the v3 term block in the
 // header and an exit event as the last line of the event stream.
 func TestRecorderV3Schema(t *testing.T) {
-	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
-	if err := os.MkdirAll(p.RecordsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	recordsDir := newRecordsDir(t)
 
-	rec, err := New(p, Options{Width: 100, Height: 40, Title: "t", SessionID: "sess-1"})
+	rec, err := New(Options{Width: 100, Height: 40, Title: "t", SessionID: "sess-1"})
 	if err != nil {
 		t.Fatalf("new recorder: %v", err)
 	}
@@ -78,14 +84,14 @@ func TestRecorderV3Schema(t *testing.T) {
 	rec.RecordExit(7)
 	rec.Close()
 
-	entries, err := os.ReadDir(p.RecordsDir)
+	entries, err := os.ReadDir(recordsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 recording, got %d", len(entries))
 	}
-	f, err := os.Open(filepath.Join(p.RecordsDir, entries[0].Name()))
+	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,21 +143,21 @@ type eventLine struct {
 // the decoded event lines to check.
 func recRecordAndReadEvents(
 	t *testing.T,
-	p paths.Paths,
+	recordsDir string,
 	rec *Recorder,
 	check func([]eventLine),
 ) {
 	t.Helper()
 	rec.Close()
 
-	entries, err := os.ReadDir(p.RecordsDir)
+	entries, err := os.ReadDir(recordsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 recording, got %d", len(entries))
 	}
-	f, err := os.Open(filepath.Join(p.RecordsDir, entries[0].Name()))
+	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,22 +190,19 @@ func recRecordAndReadEvents(
 // escapes, so terminal output like pipes/angles stays readable in the raw
 // cast instead of `\u003c`.
 func TestRecorderNoHTMLEscape(t *testing.T) {
-	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
-	if err := os.MkdirAll(p.RecordsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	rec, err := New(p, Options{Width: 80, Height: 24, SessionID: "s1"})
+	recordsDir := newRecordsDir(t)
+	rec, err := New(Options{Width: 80, Height: 24, SessionID: "s1"})
 	if err != nil {
 		t.Fatalf("new recorder: %v", err)
 	}
 	rec.RecordOutput([]byte("a < b & c > d\n"))
 	rec.Close()
 
-	entries, err := os.ReadDir(p.RecordsDir)
+	entries, err := os.ReadDir(recordsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(filepath.Join(p.RecordsDir, entries[0].Name()))
+	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,14 +227,14 @@ func TestRecorderNoHTMLEscape(t *testing.T) {
 // previous HTML-unescape pass corrupted these into invalid JSON, which broke
 // parsing of the whole cast.
 func TestRecorderEscapedUnicodeRoundTrips(t *testing.T) {
-	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
-	rec, err := New(p, Options{Width: 80, Height: 24, SessionID: "s1"})
+	recordsDir := newRecordsDir(t)
+	rec, err := New(Options{Width: 80, Height: 24, SessionID: "s1"})
 	if err != nil {
 		t.Fatalf("new recorder: %v", err)
 	}
 	input := `echo '\u003c \u003e \u0026'`
 	rec.RecordOutput([]byte(input))
-	recRecordAndReadEvents(t, p, rec, func(events []eventLine) {
+	recRecordAndReadEvents(t, recordsDir, rec, func(events []eventLine) {
 		var found bool
 		for _, e := range events {
 			if string(e.Data) == input {
@@ -258,12 +261,9 @@ func mustReadAll(t *testing.T, r io.Reader) []byte {
 // a crash loses only the tail, never everything since the last explicit
 // flush.
 func TestRecorderFlushesWithoutClose(t *testing.T) {
-	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
-	if err := os.MkdirAll(p.RecordsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	recordsDir := newRecordsDir(t)
 
-	rec, err := New(p, Options{Width: 80, Height: 24, Title: "t"})
+	rec, err := New(Options{Width: 80, Height: 24, Title: "t"})
 	if err != nil {
 		t.Fatalf("new recorder: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestRecorderFlushesWithoutClose(t *testing.T) {
 	// file must already contain the events even though Close never ran.
 	time.Sleep(3 * maxFlushInterval)
 
-	entries, err := os.ReadDir(p.RecordsDir)
+	entries, err := os.ReadDir(recordsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestRecorderFlushesWithoutClose(t *testing.T) {
 		t.Fatalf("expected 1 recording, got %d", len(entries))
 	}
 
-	f, err := os.Open(filepath.Join(p.RecordsDir, entries[0].Name()))
+	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,23 +23,25 @@ const retiredCAGrace = 8 * 24 * time.Hour
 
 // loadTrustedCAs reads every CA public key from the daemon's cached CA files.
 // The active CA plus, within retiredCAGrace of the rollover, the retired one.
-func loadTrustedCAs(p paths.Paths) ([]ssh.PublicKey, error) {
-	keys, err := parseCAFile(p.UserCAFile())
+func loadTrustedCAs() ([]ssh.PublicKey, error) {
+	userCA := paths.UserCAFile()
+	keys, err := parseCAFile(userCA)
 	if err != nil {
 		return nil, err
 	}
 
 	// Best-effort. A corrupt or missing retired file must never take down
 	// authentication, which the active CA still provides.
-	if st, statErr := os.Stat(p.RetiredCAFile()); statErr == nil {
+	retiredCA := paths.RetiredCAFile()
+	if st, statErr := os.Stat(retiredCA); statErr == nil {
 		if time.Since(st.ModTime()) < retiredCAGrace {
-			if retired, parseErr := parseCAFile(p.RetiredCAFile()); parseErr == nil {
+			if retired, parseErr := parseCAFile(retiredCA); parseErr == nil {
 				keys = append(keys, retired...)
 			}
 		}
 	}
 	if len(keys) == 0 {
-		return nil, fmt.Errorf("sshd: no CA public keys found in %s", p.UserCAFile())
+		return nil, fmt.Errorf("sshd: no CA public keys found in %s", userCA)
 	}
 	return keys, nil
 }

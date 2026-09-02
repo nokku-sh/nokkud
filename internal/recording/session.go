@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
-	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
 // NewSessionRecorder builds a recorder for one session. With a non-nil
@@ -14,7 +13,6 @@ import (
 // upload instead of blocking on it.
 func NewSessionRecorder(
 	ctx context.Context,
-	p paths.Paths,
 	client nokkuv1connect.RecordingServiceClient,
 	opts Options,
 ) (*Recorder, error) {
@@ -24,5 +22,5 @@ func NewSessionRecorder(
 			Username:  opts.Username,
 		})
 	}
-	return New(p, opts)
+	return New(opts)
 }

@@ -13,8 +13,8 @@ import (
 // newAuditSink opens the local JSONL audit log under the config dir. It
 // returns nil when the sink cannot be prepared so the server keeps running
 // without audit rather than failing to start.
-func newAuditSink(p paths.Paths) *audit.Sink {
-	s, err := audit.New(p.AuditDir)
+func newAuditSink() *audit.Sink {
+	s, err := audit.New(paths.AuditDir())
 	if err != nil {
 		slog.Warn("audit log unavailable", "error", err)
 		return nil

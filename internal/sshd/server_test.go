@@ -13,7 +13,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
@@ -111,8 +110,7 @@ func startTestServerOpts(t *testing.T, ca testCA, extra Options) (addr string, c
 		return nil
 	}
 
-	p := paths.Paths{ConfigDir: t.TempDir()}
-	extra.Paths = p
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	extra.Principals = principals
 	extra.TrustedCAs = []ssh.PublicKey{ca.pub}
 	srv, err := New(extra)
@@ -317,9 +315,9 @@ func currentUser(t *testing.T) string {
 // TestHostKeysStable verifies that a generated host key survives reloads: if
 // it changed, every known_hosts entry would break on daemon restart.
 func TestHostKeysStable(t *testing.T) {
-	p := paths.Paths{ConfigDir: t.TempDir()}
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 
-	s1, c1, err := loadHostKeys(p)
+	s1, c1, err := loadHostKeys()
 	if err != nil {
 		t.Fatalf("load host keys: %v", err)
 	}
@@ -331,7 +329,7 @@ func TestHostKeysStable(t *testing.T) {
 	}
 	first := s1[0].PublicKey().Marshal()
 
-	s2, c2, err := loadHostKeys(p)
+	s2, c2, err := loadHostKeys()
 	if err != nil {
 		t.Fatalf("reload host keys: %v", err)
 	}
@@ -348,9 +346,8 @@ func TestHostKeysStable(t *testing.T) {
 // first boot (the CA file lands after the first certificate sync). Reload
 // picks it up. Without CAs, no login can succeed until then.
 func TestNewWithoutTrustedCA(t *testing.T) {
-	p := paths.Paths{ConfigDir: t.TempDir()}
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	srv, err := New(Options{
-		Paths: p,
 		Principals: func(string) []string {
 			return nil
 		},
@@ -372,10 +369,10 @@ func TestServerLivePrincipals(t *testing.T) {
 		t.Fatalf("current user: %v", err)
 	}
 
-	cache := state.NewCache(paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()})
-	p := paths.Paths{ConfigDir: t.TempDir()}
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
+	cache := state.NewCache()
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	srv, err := New(Options{
-		Paths: p,
 		Principals: func(username string) []string {
 			return cache.GetUUIDs(username)
 		},

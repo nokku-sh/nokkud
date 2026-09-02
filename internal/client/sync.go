@@ -13,6 +13,7 @@ import (
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/hostcerts"
+	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
@@ -92,7 +93,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 
 // caMatches reports whether the cached CA file already holds key.
 func (c *Client) caMatches(key string) bool {
-	data, err := os.ReadFile(c.paths.UserCAFile())
+	data, err := os.ReadFile(paths.UserCAFile())
 	if err != nil {
 		return false
 	}
@@ -142,7 +143,7 @@ func intField(v *int32, def int) int {
 }
 
 func (c *Client) renewHostCerts(ctx context.Context, force bool) error {
-	renewed, err := hostcerts.RenewHostCerts(ctx, c.paths, c.config.TargetID, c.signHostCert, force)
+	renewed, err := hostcerts.RenewHostCerts(ctx, c.config.TargetID, c.signHostCert, force)
 	slog.Debug("renew host certificates", "renewed", renewed, "force", force, "error", err)
 	if err != nil {
 		return err

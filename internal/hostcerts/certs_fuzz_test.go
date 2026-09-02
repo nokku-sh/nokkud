@@ -2,7 +2,6 @@ package hostcerts
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -62,22 +61,22 @@ func FuzzSaveCertificate(f *testing.F) {
 	f.Add([]byte(""), []byte(""))
 
 	f.Fuzz(func(t *testing.T, signedCert, caPub []byte) {
-		p := paths.Paths{ConfigDir: t.TempDir()}
-		certPath := filepath.Join(p.ConfigDir, "ssh_host_ed25519_key-cert.pub")
+		t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
+		certPath := paths.SoftwareHostKeyCert()
 
 		certStr, caStr := string(signedCert), string(caPub)
 		res := &nokkuv1.SignSSHCertificateResponse{
 			SignedCertificate: &certStr,
 			CaPublicKey:       &caStr,
 		}
-		err := saveCertificate(p, res, certPath)
+		err := saveCertificate(res, certPath)
 		if err != nil {
 			return
 		}
 
 		// Success means the CA file must be a parseable authorized key and
 		// the certificate file must parse back to a certificate.
-		caData, err := os.ReadFile(p.UserCAFile())
+		caData, err := os.ReadFile(paths.UserCAFile())
 		if err != nil {
 			t.Fatalf("saveCertificate succeeded but CA file is unreadable: %v", err)
 		}

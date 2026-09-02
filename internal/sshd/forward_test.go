@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-
-	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
 // testEchoServer runs a TCP server that echoes any data it receives.
@@ -360,8 +358,8 @@ func TestRemoteBindAddr(t *testing.T) {
 // forward bind policy.
 func TestServerGatewayPortsToggle(t *testing.T) {
 	ca := newTestCA(t)
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	srv, err := New(Options{
-		Paths:      paths.Paths{ConfigDir: t.TempDir()},
 		Principals: func(string) []string { return nil },
 		TrustedCAs: []ssh.PublicKey{ca.pub},
 		Tunables:   Tunables{AllowForwarding: true},

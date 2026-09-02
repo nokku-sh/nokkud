@@ -23,7 +23,6 @@ type Cache struct {
 	principals   map[string][]string
 	stateVersion int64
 	daemonConfig *nokkuv1.DaemonConfig
-	paths        paths.Paths
 }
 
 // cacheJSON is the on-disk representation of a Cache. Fields are
@@ -35,11 +34,10 @@ type cacheJSON struct {
 	DaemonConfig *nokkuv1.DaemonConfig `json:"daemon_config,omitempty"`
 }
 
-// NewCache returns an empty, ready-to-use cache backed by the given paths.
-func NewCache(p paths.Paths) *Cache {
+// NewCache returns an empty, ready-to-use cache.
+func NewCache() *Cache {
 	return &Cache{
 		principals: make(map[string][]string),
-		paths:      p,
 	}
 }
 
@@ -140,12 +138,12 @@ func (c *Cache) Clear() {
 // Load reads the cache from disk. A missing file is not an error. A
 // corrupted one is discarded so the next sync rebuilds it.
 func (c *Cache) Load() error {
-	return loadJSON(c.paths.CacheFile(), c, c.Clear)
+	return loadJSON(paths.CacheFile(), c, c.Clear)
 }
 
 // Save writes the cache atomically, skipping unchanged content.
 func (c *Cache) Save() error {
-	return saveJSON(c.paths.CacheFile(), c, 0o640)
+	return saveJSON(paths.CacheFile(), c, 0o640)
 }
 
 // MarshalJSON serializes the cache under its read lock.

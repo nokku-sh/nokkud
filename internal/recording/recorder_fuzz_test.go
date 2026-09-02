@@ -33,8 +33,12 @@ func FuzzRecordEvents(f *testing.F) {
 		}
 
 		dir := t.TempDir()
-		p := paths.Paths{RecordsDir: dir}
-		rec, err := New(p, Options{
+		t.Setenv("NOKKUD_DATA_DIR", dir)
+		recordsDir := paths.RecordsDir()
+		if err := os.MkdirAll(recordsDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		rec, err := New(Options{
 			Width:     80,
 			Height:    24,
 			Title:     "fuzz-session",
@@ -51,11 +55,11 @@ func FuzzRecordEvents(f *testing.F) {
 		rec.RecordInput(data)
 		rec.Close()
 
-		entries, err := os.ReadDir(dir)
+		entries, err := os.ReadDir(recordsDir)
 		if err != nil || len(entries) != 1 {
 			t.Fatalf("expected exactly one recording, got %d (err=%v)", len(entries), err)
 		}
-		raw, err := os.ReadFile(dir + "/" + entries[0].Name())
+		raw, err := os.ReadFile(recordsDir + "/" + entries[0].Name())
 		if err != nil {
 			t.Fatalf("read recording: %v", err)
 		}

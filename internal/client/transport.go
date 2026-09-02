@@ -10,8 +10,6 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/nokku-sh/mon/dpop"
-
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 )
 
@@ -44,24 +42,20 @@ func newHTTPClient(insecure bool) (*http.Client, error) {
 
 // setupClients builds the shared HTTP client and the connect service
 // clients. The proofer comes from NewClient because it needs the TPM signer.
-func (c *Client) setupClients(apiURL string, insecure bool, proofer *dpop.Proofer) error {
+func (c *Client) setupClients(apiURL string, insecure, requireTPM bool) error {
 	httpc, err := newHTTPClient(insecure)
 	if err != nil {
 		return fmt.Errorf("http client: %w", err)
 	}
 	c.httpc = httpc
 
-	interceptors := []connect.Interceptor{withUA()}
-	if proofer != nil {
-		// The nonce starts empty and is fetched on the first request.
-		c.auth = &dpopAuth{
-			config:  c.config,
-			proofer: proofer,
-			httpc:   httpc,
-		}
-		interceptors = append(interceptors, c.auth)
+	c.dpop, err = withDPoP(c.config, c.httpc, requireTPM)
+	if err != nil {
+		return err
 	}
+	interceptors := []connect.Interceptor{withUA(), c.dpop}
 	opts := connect.WithInterceptors(interceptors...)
+
 	c.cc = nokkuv1connect.NewCertificateServiceClient(httpc, apiURL, opts)
 	c.dc = nokkuv1connect.NewDaemonServiceClient(httpc, apiURL, opts)
 	c.dcs = nokkuv1connect.NewDaemonControlServiceClient(httpc, apiURL, opts)

@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
 func TestSSHPort(t *testing.T) {
@@ -65,10 +63,11 @@ func TestValidPort(t *testing.T) {
 // content equality, whitespace tolerance, and the missing-file case.
 func TestCaMatches(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("NOKKUD_DATA_DIR", dir)
 	caPath := filepath.Join(dir, "nokku_ca.pub")
 	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFw2BPSytSBKCcOmfUWab8JA2uRKsEUO/FtuZACsJccE"
 
-	c := &Client{paths: paths.Paths{ConfigDir: dir}}
+	c := &Client{}
 
 	if c.caMatches(key) {
 		t.Fatal("caMatches must report false when no CA file exists")

@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
+	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
 func TestCacheRejectsInvalidPrincipals(t *testing.T) {
 	t.Parallel()
-	c := NewCache(newTestPaths(t))
+	c := NewCache()
 	c.Replace(map[string][]string{
 		"../../etc": {"uuid-1"},
 		"0start":    {"uuid-1"},
@@ -30,7 +31,7 @@ func TestCacheRejectsInvalidPrincipals(t *testing.T) {
 
 func TestCacheReplaceCopiesInput(t *testing.T) {
 	t.Parallel()
-	c := NewCache(newTestPaths(t))
+	c := NewCache()
 
 	uuids := []string{"uuid-1", "uuid-2"}
 	c.Replace(map[string][]string{"alice": uuids}, nil, 0)
@@ -44,7 +45,7 @@ func TestCacheReplaceCopiesInput(t *testing.T) {
 
 func TestCacheGetUUIDsReturnsCopy(t *testing.T) {
 	t.Parallel()
-	c := NewCache(newTestPaths(t))
+	c := NewCache()
 	c.Replace(map[string][]string{"alice": {"uuid-1", "uuid-2"}}, nil, 0)
 
 	got := c.GetUUIDs("alice")
@@ -60,7 +61,7 @@ func TestCacheGetUUIDsReturnsCopy(t *testing.T) {
 
 func TestCacheHasUUID(t *testing.T) {
 	t.Parallel()
-	c := NewCache(newTestPaths(t))
+	c := NewCache()
 	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, 0)
 
 	if !c.HasUUID("alice", "uuid-1") {
@@ -75,9 +76,8 @@ func TestCacheHasUUID(t *testing.T) {
 }
 
 func TestCacheSaveLoadRoundTrip(t *testing.T) {
-	t.Parallel()
-	p := newTestPaths(t)
-	c := NewCache(p)
+	newTestDataDir(t)
+	c := NewCache()
 	c.Replace(map[string][]string{
 		"alice": {"uuid-1", "uuid-2"},
 		"bob":   {"uuid-3"},
@@ -86,7 +86,7 @@ func TestCacheSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	loaded := NewCache(p)
+	loaded := NewCache()
 	if err := loaded.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -97,17 +97,16 @@ func TestCacheSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestCacheLoadMissingFileIsNotAnError(t *testing.T) {
-	t.Parallel()
-	c := NewCache(newTestPaths(t))
+	newTestDataDir(t)
+	c := NewCache()
 	if err := c.Load(); err != nil {
 		t.Fatalf("Load on missing file: %v, want nil", err)
 	}
 }
 
 func TestCacheDaemonConfigRoundTrip(t *testing.T) {
-	t.Parallel()
-	p := newTestPaths(t)
-	c := NewCache(p)
+	newTestDataDir(t)
+	c := NewCache()
 	record := true
 	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, 0)
 	c.SetDaemonConfig(&nokkuv1.DaemonConfig{
@@ -117,7 +116,7 @@ func TestCacheDaemonConfigRoundTrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	loaded := NewCache(p)
+	loaded := NewCache()
 	if err := loaded.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -132,7 +131,7 @@ func TestCacheDaemonConfigRoundTrip(t *testing.T) {
 func TestCacheClearDropsSyncedConfig(t *testing.T) {
 	t.Parallel()
 	record := true
-	c := NewCache(newTestPaths(t))
+	c := NewCache()
 	c.SetDaemonConfig(&nokkuv1.DaemonConfig{RecordSessions: &record})
 	if !c.RecordSessions() {
 		t.Fatal("RecordSessions not set")
@@ -144,32 +143,31 @@ func TestCacheClearDropsSyncedConfig(t *testing.T) {
 }
 
 func TestCacheLoadCorruptedClearsAndRemoves(t *testing.T) {
-	t.Parallel()
-	p := newTestPaths(t)
-	c := NewCache(p)
+	newTestDataDir(t)
+	c := NewCache()
 	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, 0)
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := os.WriteFile(p.CacheFile(), []byte("{not json"), 0o640); err != nil {
+	if err := os.WriteFile(paths.CacheFile(), []byte("{not json"), 0o640); err != nil {
 		t.Fatalf("corrupt cache: %v", err)
 	}
 
-	loaded := NewCache(p)
+	loaded := NewCache()
 	if err := loaded.Load(); err != nil {
 		t.Fatalf("Load on corrupted cache: %v, want nil", err)
 	}
 	if loaded.HasUUID("alice", "uuid-1") {
 		t.Fatal("corrupted cache left stale auth data behind")
 	}
-	if _, err := os.Stat(p.CacheFile()); !os.IsNotExist(err) {
+	if _, err := os.Stat(paths.CacheFile()); !os.IsNotExist(err) {
 		t.Fatalf("corrupted cache file was not removed: %v", err)
 	}
 }
 
 func TestCacheClear(t *testing.T) {
 	t.Parallel()
-	c := NewCache(newTestPaths(t))
+	c := NewCache()
 	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, 0)
 	c.Clear()
 
@@ -185,7 +183,7 @@ func TestCacheClear(t *testing.T) {
 
 func TestCacheConcurrentAccess(t *testing.T) {
 	t.Parallel()
-	c := NewCache(newTestPaths(t))
+	c := NewCache()
 
 	var wg sync.WaitGroup
 	for i := range 4 {
@@ -216,7 +214,7 @@ func TestCacheConcurrentAccess(t *testing.T) {
 
 func TestCacheReplace(t *testing.T) {
 	t.Parallel()
-	c := NewCache(newTestPaths(t))
+	c := NewCache()
 
 	// Pre-existing state must be fully replaced, not merged.
 	c.Replace(map[string][]string{"stale": {"uuid-old"}}, nil, 0)

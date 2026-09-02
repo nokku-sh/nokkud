@@ -13,8 +13,7 @@ const (
 
 // Config is the persisted enrollment state: target/daemon IDs, API
 // endpoint and runtime options. The backend-synced daemon config (session
-// recording, recording key, caps) lives in the [Cache]. paths is never
-// serialized.
+// recording, recording key, caps) lives in the [Cache].
 type Config struct {
 	WorkspaceID  string `json:"workspace_id,omitempty"`
 	TargetID     string `json:"target_id,omitempty"`
@@ -22,29 +21,27 @@ type Config struct {
 	APIURL       string `json:"api_url,omitempty"`
 	SSHAddr      string `json:"ssh_addr,omitempty"`
 	SessionToken string `json:"session_token,omitempty"`
-
-	paths paths.Paths
 }
 
-// NewConfig returns an empty config bound to the given paths.
-func NewConfig(p paths.Paths) *Config {
-	return &Config{paths: p}
+// NewConfig returns an empty config.
+func NewConfig() *Config {
+	return &Config{}
 }
 
 // Load reads the config from disk. A missing file is not an error. A
 // corrupted one is cleared so the daemon starts unenrolled, never
 // half-enrolled.
 func (c *Config) Load() error {
-	return loadJSON(c.paths.ConfigFile(), c, c.Clear)
+	return loadJSON(paths.ConfigFile(), c, c.Clear)
 }
 
 // Save writes the config atomically with 0600 perms, skipping unchanged
 // content.
 func (c *Config) Save() error {
-	return saveJSON(c.paths.ConfigFile(), c, 0o600)
+	return saveJSON(paths.ConfigFile(), c, 0o600)
 }
 
-// Clear resets the config to its zero state, keeping the paths binding.
+// Clear resets the config to its zero state.
 func (c *Config) Clear() {
 	c.WorkspaceID = ""
 	c.TargetID = ""

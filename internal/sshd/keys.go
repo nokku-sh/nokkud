@@ -29,14 +29,14 @@ var (
 // to release when they are swapped out or the server shuts down. On machines
 // with a TPM 2.0 the host key is TPM-resident (the private key never touches
 // disk). Everywhere else an ed25519 key is generated in the state directory.
-func loadHostKeys(p paths.Paths) ([]ssh.Signer, []io.Closer, error) {
-	s, closer, tpmErr := loadTPMHostKey(p)
+func loadHostKeys() ([]ssh.Signer, []io.Closer, error) {
+	s, closer, tpmErr := loadTPMHostKey()
 	if tpmErr == nil {
 		return []ssh.Signer{s}, []io.Closer{closer}, nil
 	}
 	slog.Debug("sshd: tpm host key unavailable, using software key", "error", tpmErr)
 
-	signers, err := loadSoftwareHostKeys(p)
+	signers, err := loadSoftwareHostKeys()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -45,12 +45,12 @@ func loadHostKeys(p paths.Paths) ([]ssh.Signer, []io.Closer, error) {
 
 // loadSoftwareHostKeys returns the daemon's on-disk host identity, generating
 // an ed25519 key on first boot. The TPM is never consulted.
-func loadSoftwareHostKeys(p paths.Paths) ([]ssh.Signer, error) {
-	if s, err := loadHostKey(p.SoftwareHostKey()); err == nil {
+func loadSoftwareHostKeys() ([]ssh.Signer, error) {
+	if s, err := loadHostKey(paths.SoftwareHostKey()); err == nil {
 		return []ssh.Signer{s}, nil
 	}
 
-	s, err := generateHostKey(p)
+	s, err := generateHostKey()
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func loadSoftwareHostKeys(p paths.Paths) ([]ssh.Signer, error) {
 // handle when the signer is no longer needed. On success any software host
 // key from before the TPM migration is removed so the daemon presents a
 // single identity.
-func loadTPMHostKey(p paths.Paths) (ssh.Signer, io.Closer, error) {
+func loadTPMHostKey() (ssh.Signer, io.Closer, error) {
 	key, err := openHostKeyTPM(hostKeySalt)
 	if err != nil {
 		return nil, nil, err
@@ -74,7 +74,7 @@ func loadTPMHostKey(p paths.Paths) (ssh.Signer, io.Closer, error) {
 		return nil, nil, fmt.Errorf("sshd: tpm host key signer: %w", err)
 	}
 
-	pubFile := p.TPMHostKeyPub()
+	pubFile := paths.TPMHostKeyPub()
 	pubData := ssh.MarshalAuthorizedKey(signer.PublicKey())
 
 	// The public half is persisted so the certificate manager can sign it
@@ -90,17 +90,17 @@ func loadTPMHostKey(p paths.Paths) (ssh.Signer, io.Closer, error) {
 		// The identity changed (first boot, TPM cleared or replaced). Any
 		// certificate for the previous key is stale and would be rejected
 		// by NewCertSigner anyway. Drop it so the sync renews it.
-		_ = os.Remove(p.TPMHostKeyCert())
+		_ = os.Remove(paths.TPMHostKeyCert())
 	}
 
 	// A software host key from before the TPM migration must not linger. It
 	// would be renewed and presented as a second identity.
-	_ = os.Remove(p.SoftwareHostKey())
-	_ = os.Remove(p.SoftwareHostKeyPub())
-	_ = os.Remove(p.SoftwareHostKeyCert())
+	_ = os.Remove(paths.SoftwareHostKey())
+	_ = os.Remove(paths.SoftwareHostKeyPub())
+	_ = os.Remove(paths.SoftwareHostKeyCert())
 
 	// Present the host certificate alongside the key when one exists.
-	if cert, certErr := parseHostCertFile(p.TPMHostKeyCert()); certErr == nil {
+	if cert, certErr := parseHostCertFile(paths.TPMHostKeyCert()); certErr == nil {
 		if cs, cerr := ssh.NewCertSigner(cert, signer); cerr == nil {
 			signer = cs
 		}
@@ -153,7 +153,7 @@ func parseHostCertFile(certPath string) (*ssh.Certificate, error) {
 // generateHostKey creates an ed25519 host key and persists it in the daemon's
 // state directory so the host identity survives restarts (including restarts
 // while the backend is unreachable).
-func generateHostKey(p paths.Paths) (ssh.Signer, error) {
+func generateHostKey() (ssh.Signer, error) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("sshd: generate host key: %w", err)
@@ -168,7 +168,7 @@ func generateHostKey(p paths.Paths) (ssh.Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sshd: marshal host private key: %w", err)
 	}
-	keyFile := p.SoftwareHostKey()
+	keyFile := paths.SoftwareHostKey()
 	if err = os.WriteFile(keyFile,
 		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 		return nil, fmt.Errorf("sshd: write host key: %w", err)

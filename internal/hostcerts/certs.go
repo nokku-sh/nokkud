@@ -33,10 +33,10 @@ type KeyPair struct {
 // hostKeyPair returns the active host key. The TPM-backed key when it exists,
 // otherwise the on-disk software key. ok is false when no host key exists yet
 // (e.g. the SSH server has never started).
-func hostKeyPair(p paths.Paths) (KeyPair, bool) {
+func hostKeyPair() (KeyPair, bool) {
 	for _, c := range []struct{ pub, cert string }{
-		{p.TPMHostKeyPub(), p.TPMHostKeyCert()},
-		{p.SoftwareHostKeyPub(), p.SoftwareHostKeyCert()},
+		{paths.TPMHostKeyPub(), paths.TPMHostKeyCert()},
+		{paths.SoftwareHostKeyPub(), paths.SoftwareHostKeyCert()},
 	} {
 		data, readErr := os.ReadFile(filepath.Clean(c.pub))
 		if readErr != nil {
@@ -54,8 +54,8 @@ func hostKeyPair(p paths.Paths) (KeyPair, bool) {
 // OutdatedHostCerts returns the host key when its certificate is missing,
 // signed for another principal, signed for another key, or within
 // renewBeforeExpiry of expiring.
-func OutdatedHostCerts(p paths.Paths, targetID string) ([]KeyPair, error) {
-	kp, ok := hostKeyPair(p)
+func OutdatedHostCerts(targetID string) ([]KeyPair, error) {
+	kp, ok := hostKeyPair()
 	if !ok {
 		return nil, nil
 	}
@@ -85,7 +85,6 @@ func matchesKey(cert *ssh.Certificate, kp KeyPair) bool {
 // first one returned.
 func RenewHostCerts(
 	ctx context.Context,
-	p paths.Paths,
 	targetID string,
 	sign func(context.Context, KeyPair) (*nokkuv1.SignSSHCertificateResponse, error),
 	force bool,
@@ -93,11 +92,11 @@ func RenewHostCerts(
 	var pairs []KeyPair
 	var err error
 	if force {
-		if kp, ok := hostKeyPair(p); ok {
+		if kp, ok := hostKeyPair(); ok {
 			pairs = []KeyPair{kp}
 		}
 	} else {
-		pairs, err = OutdatedHostCerts(p, targetID)
+		pairs, err = OutdatedHostCerts(targetID)
 	}
 	if err != nil {
 		return 0, err
@@ -115,7 +114,7 @@ func RenewHostCerts(
 			}
 			continue
 		}
-		if err = saveCertificate(p, res, kp.CertPath); err != nil {
+		if err = saveCertificate(res, kp.CertPath); err != nil {
 			slog.Warn("failed to save host certificate", "path", kp.CertPath, "error", err)
 			if firstErr == nil {
 				firstErr = err
@@ -129,10 +128,10 @@ func RenewHostCerts(
 
 // NextRenewal returns the renewal deadline for the host certificate. Now, if
 // it is already out of date or none exists yet.
-func NextRenewal(p paths.Paths, targetID string) time.Time {
+func NextRenewal(targetID string) time.Time {
 	now := time.Now()
 
-	kp, ok := hostKeyPair(p)
+	kp, ok := hostKeyPair()
 	if !ok {
 		return now
 	}
@@ -159,7 +158,7 @@ func NextRenewal(p paths.Paths, targetID string) time.Time {
 
 // saveCertificate verifies the cert was signed by the returned CA key,
 // then stores both where the embedded SSH server reads them.
-func saveCertificate(p paths.Paths, res *nokkuv1.SignSSHCertificateResponse, path string) error {
+func saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path string) error {
 	signedCert := bytes.TrimSpace([]byte(res.GetSignedCertificate()))
 	caPubKey := bytes.TrimSpace([]byte(res.GetCaPublicKey()))
 
@@ -182,21 +181,20 @@ func saveCertificate(p paths.Paths, res *nokkuv1.SignSSHCertificateResponse, pat
 	// grace window (see sshd.loadTrustedCAs). The retired file's mtime is
 	// stamped with the retirement time so the grace window starts at the
 	// rollover, not when the old CA was last written.
-	if current, readErr := os.ReadFile(filepath.Clean(p.UserCAFile())); readErr == nil &&
+	userCA := paths.UserCAFile()
+	retiredCA := paths.RetiredCAFile()
+	if current, readErr := os.ReadFile(userCA); readErr == nil &&
 		!bytes.Equal(bytes.TrimSpace(current), caPubKey) {
-		if renameErr := os.Rename(
-			filepath.Clean(p.UserCAFile()),
-			filepath.Clean(p.RetiredCAFile()),
-		); renameErr != nil {
+		if renameErr := os.Rename((userCA), retiredCA); renameErr != nil {
 			return fmt.Errorf("retire previous CA: %w", renameErr)
 		}
 		now := time.Now()
-		if stampErr := os.Chtimes(p.RetiredCAFile(), now, now); stampErr != nil {
-			return fmt.Errorf("stamp retired CA: %w", stampErr)
+		if err = os.Chtimes(retiredCA, now, now); err != nil {
+			return fmt.Errorf("stamp retired CA: %w", err)
 		}
 	}
 
-	if err = util.WriteIfChanged(p.UserCAFile(), caPubKey, 0o644); err != nil {
+	if err = util.WriteIfChanged(userCA, caPubKey, 0o644); err != nil {
 		return fmt.Errorf("write user CA: %w", err)
 	}
 

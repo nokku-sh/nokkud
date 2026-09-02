@@ -14,22 +14,14 @@ import (
 
 	"github.com/cenkalti/backoff/v7"
 
-	"github.com/nokku-sh/mon/dpop"
-	"github.com/nokku-sh/mon/id"
-	"github.com/nokku-sh/mon/tpm"
-
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
-	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
-var (
-	errDaemonRejected = errors.New("daemon rejected by backend")
-	signerSalt        = []byte("nokku-daemon")
-)
+var errDaemonRejected = errors.New("daemon rejected by backend")
 
 // Options carries the daemon's runtime configuration from main into the
 // client. Keeping it out of the CLI framework keeps the inputs explicit and
@@ -44,13 +36,12 @@ type Options struct {
 type Client struct {
 	sessionSlots chan struct{}
 	sessionWG    sync.WaitGroup
-	paths        paths.Paths
 
 	sshSrv *sshd.Server
 	cache  *state.Cache
 	config *state.Config
 	opts   Options
-	auth   *dpopAuth
+	dpop   *dpopAuth
 	httpc  *http.Client
 
 	cc  nokkuv1connect.CertificateServiceClient
@@ -67,36 +58,20 @@ func (nopWriteCloser) Close() error                { return nil }
 
 func New(
 	ctx context.Context,
-	p paths.Paths,
 	cache *state.Cache,
 	config *state.Config,
 	opts Options,
 	sshSrv *sshd.Server,
 ) (*Client, error) {
-	signer, err := tpm.NewSigner(tpm.SignerOptions{
-		Salt:       signerSalt,
-		Store:      tpm.NewFileStore(p.SignerStateFile()),
-		MachineID:  id.MachineID,
-		RequireTPM: opts.RequireTPM,
-	})
-	if err != nil {
-		return nil, err
-	}
-	proofer, err := dpop.NewProofer(signer, dpop.ProoferOptions{})
-	if err != nil {
-		return nil, err
-	}
-
 	c := &Client{
 		cache:        cache,
 		config:       config,
 		opts:         opts,
 		sshSrv:       sshSrv,
-		paths:        p,
 		sessionSlots: make(chan struct{}, maxConcurrentSessions),
 	}
 
-	if err = c.setupClients(config.APIURL, opts.Insecure, proofer); err != nil {
+	if err := c.setupClients(config.APIURL, opts.Insecure, opts.RequireTPM); err != nil {
 		return nil, err
 	}
 
@@ -116,7 +91,7 @@ func New(
 		)
 	}
 
-	if err = c.enroll(ctx, opts.EnrollToken, opts.CAID); err != nil {
+	if err := c.enroll(ctx, opts.EnrollToken, opts.CAID); err != nil {
 		return nil, err
 	}
 
@@ -162,8 +137,8 @@ func (c *Client) Run(ctx context.Context) error {
 
 		// A rejected stream may carry a fresh DPoP nonce: learn it before
 		// dialing again so the reconnect signs with a current one.
-		if err != nil && c.auth != nil {
-			c.auth.LearnNonce(err)
+		if err != nil && c.dpop != nil {
+			c.dpop.LearnNonce(err)
 		}
 
 		if errors.Is(err, errDaemonRejected) {

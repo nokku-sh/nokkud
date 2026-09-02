@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/user"
-	"path/filepath"
 	"strings"
 
 	"github.com/mizuchilabs/kata/buildinfo"
@@ -25,8 +24,6 @@ import (
 )
 
 func main() {
-	p := paths.Default()
-
 	cmd := &cli.Command{
 		EnableShellCompletion: true,
 		Suggest:               true,
@@ -42,14 +39,14 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			// caller-supplied state, so skip the default dir to keep
 			// non-root test runs away from /var/lib/nokkud.
 			if first := cmd.Args().First(); first != "sshd-server" && first != "sftp-server" {
-				if err := p.Verify(); err != nil {
+				if err := paths.Verify(); err != nil {
 					return nil, err
 				}
 			}
 			return ctx, nil
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			cache := state.NewCache(p)
+			cache := state.NewCache()
 			if err := cache.Load(); err != nil {
 				return err
 			}
@@ -58,7 +55,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			// when one was explicitly provided. This keeps a bare default
 			// from clobbering a value the user already configured in
 			// config.json.
-			cfg := state.NewConfig(p)
+			cfg := state.NewConfig()
 			if err := cfg.Load(); err != nil {
 				return err
 			}
@@ -84,7 +81,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				if err := util.IsRoot(); err != nil {
 					return err
 				}
-				srv, err := sshd.New(sshd.OptionsFrom(p, cache, true))
+				srv, err := sshd.New(sshd.OptionsFrom(cache, true))
 				if err != nil {
 					return err
 				}
@@ -96,7 +93,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				}
 			}()
 
-			cl, err := newDaemonClient(ctx, cmd, p, cache, cfg, sshSrv)
+			cl, err := newDaemonClient(ctx, cmd, cache, cfg, sshSrv)
 			if err != nil {
 				return err
 			}
@@ -152,21 +149,19 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 							return err
 						}
 					}
-					hp := paths.Paths{
-						ConfigDir:  cmd.String("config-dir"),
-						RecordsDir: filepath.Join(cmd.String("config-dir"), "recordings"),
-						AuditDir:   filepath.Join(cmd.String("config-dir"), "audit"),
+					if err := os.Setenv("NOKKUD_DATA_DIR", cmd.String("config-dir")); err != nil {
+						return err
 					}
-					if err := hp.Verify(); err != nil {
+					if err := paths.Verify(); err != nil {
 						return err
 					}
 
-					cache := state.NewCache(hp)
+					cache := state.NewCache()
 					if err := cache.Load(); err != nil {
 						return err
 					}
 
-					opts := sshd.OptionsFrom(hp, cache, false)
+					opts := sshd.OptionsFrom(cache, false)
 					if nonRoot {
 						self, err := user.Current()
 						if err != nil {
@@ -203,15 +198,15 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					if err := util.IsRoot(); err != nil {
 						return err
 					}
-					cache := state.NewCache(p)
+					cache := state.NewCache()
 					if err := cache.Load(); err != nil {
 						return err
 					}
-					cfg := state.NewConfig(p)
+					cfg := state.NewConfig()
 					if err := cfg.Load(); err != nil {
 						return err
 					}
-					cl, err := newDaemonClient(ctx, cmd, p, cache, cfg, nil)
+					cl, err := newDaemonClient(ctx, cmd, cache, cfg, nil)
 					if err != nil {
 						return err
 					}
@@ -221,7 +216,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 							"error", err,
 						)
 					}
-					p.Cleanup()
+					paths.Cleanup()
 					return nil
 				},
 			},
@@ -234,7 +229,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			},
 			&cli.BoolFlag{
 				Name:  "insecure",
-				Usage: "Disable TLS verification (only use for local testing)",
+				Usage: "Disable TLS verification (only use for testing)",
 			},
 			&cli.BoolFlag{
 				Name:    "require-tpm",
@@ -274,12 +269,11 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 func newDaemonClient(
 	ctx context.Context,
 	cmd *cli.Command,
-	p paths.Paths,
 	cache *state.Cache,
 	cfg *state.Config,
 	sshSrv *sshd.Server,
 ) (*client.Client, error) {
-	cl, err := client.New(ctx, p, cache, cfg, client.Options{
+	cl, err := client.New(ctx, cache, cfg, client.Options{
 		Insecure:    cmd.Bool("insecure"),
 		RequireTPM:  cmd.Bool("require-tpm"),
 		EnrollToken: cmd.String("enroll"),

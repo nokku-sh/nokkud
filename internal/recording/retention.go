@@ -19,8 +19,9 @@ const (
 
 // EnforceRetention removes old recordings based on time and total space
 // constraints.
-func EnforceRetention(p paths.Paths) error {
-	entries, err := os.ReadDir(p.RecordsDir)
+func EnforceRetention() error {
+	recordsDir := paths.RecordsDir()
+	entries, err := os.ReadDir(recordsDir)
 	if err != nil {
 		if os.IsNotExist(err) || os.IsPermission(err) {
 			// The recordings dir is a sticky drop-box (no read bit)
@@ -44,7 +45,7 @@ func EnforceRetention(p paths.Paths) error {
 		files = append(files, info)
 	}
 
-	util.PruneOldest(p.RecordsDir, files, MaxAge, MaxTotalSpace)
+	util.PruneOldest(recordsDir, files, MaxAge, MaxTotalSpace)
 	return nil
 }
 

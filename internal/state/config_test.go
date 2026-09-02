@@ -8,15 +8,14 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-func newTestPaths(t *testing.T) paths.Paths {
+func newTestDataDir(t *testing.T) {
 	t.Helper()
-	return paths.Paths{ConfigDir: t.TempDir()}
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 }
 
 func TestConfigSaveLoadRoundTrip(t *testing.T) {
-	t.Parallel()
-	p := newTestPaths(t)
-	c := NewConfig(p)
+	newTestDataDir(t)
+	c := NewConfig()
 	c.WorkspaceID = "ws-1"
 	c.TargetID = "tgt-1"
 	c.DaemonID = "daemon-1"
@@ -27,7 +26,7 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	loaded := NewConfig(p)
+	loaded := NewConfig()
 	if err := loaded.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -39,41 +38,39 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestConfigLoadMissingFileIsNotAnError(t *testing.T) {
-	t.Parallel()
-	c := NewConfig(newTestPaths(t))
+	newTestDataDir(t)
+	c := NewConfig()
 	if err := c.Load(); err != nil {
 		t.Fatalf("Load on missing file: %v, want nil", err)
 	}
 }
 
 func TestConfigLoadCorruptedClearsAndRemoves(t *testing.T) {
-	t.Parallel()
-	p := newTestPaths(t)
-	c := NewConfig(p)
+	newTestDataDir(t)
+	c := NewConfig()
 	c.WorkspaceID = "ws-1"
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := os.WriteFile(p.ConfigFile(), []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(paths.ConfigFile(), []byte("{not json"), 0o600); err != nil {
 		t.Fatalf("corrupt config: %v", err)
 	}
 
-	loaded := NewConfig(p)
+	loaded := NewConfig()
 	if err := loaded.Load(); err != nil {
 		t.Fatalf("Load on corrupted config: %v, want nil (daemon must start unenrolled)", err)
 	}
 	if loaded.WorkspaceID != "" {
 		t.Fatalf("corrupted config left state behind: %+v", loaded)
 	}
-	if _, err := os.Stat(p.ConfigFile()); !os.IsNotExist(err) {
+	if _, err := os.Stat(paths.ConfigFile()); !os.IsNotExist(err) {
 		t.Fatalf("corrupted config file was not removed: %v", err)
 	}
 }
 
-func TestConfigClearKeepsPathsBinding(t *testing.T) {
-	t.Parallel()
-	p := newTestPaths(t)
-	c := NewConfig(p)
+func TestConfigClearKeepsSaveTarget(t *testing.T) {
+	newTestDataDir(t)
+	c := NewConfig()
 	c.WorkspaceID = "ws-1"
 	c.Clear()
 
@@ -81,29 +78,28 @@ func TestConfigClearKeepsPathsBinding(t *testing.T) {
 		t.Fatalf("Clear left fields set: %+v", c)
 	}
 	if err := c.Save(); err != nil {
-		t.Fatalf("Save after Clear must still target the bound paths: %v", err)
+		t.Fatalf("Save after Clear: %v", err)
 	}
-	if _, err := os.Stat(p.ConfigFile()); err != nil {
+	if _, err := os.Stat(paths.ConfigFile()); err != nil {
 		t.Fatalf("config file not written where expected: %v", err)
 	}
 }
 
 func TestConfigSaveSkipsUnchanged(t *testing.T) {
-	t.Parallel()
-	p := newTestPaths(t)
-	c := NewConfig(p)
+	newTestDataDir(t)
+	c := NewConfig()
 	c.WorkspaceID = "ws-1"
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	fi, err := os.Stat(p.ConfigFile())
+	fi, err := os.Stat(paths.ConfigFile())
 	if err != nil {
 		t.Fatalf("stat config: %v", err)
 	}
 	if err = c.Save(); err != nil {
 		t.Fatalf("second Save: %v", err)
 	}
-	fi2, err := os.Stat(p.ConfigFile())
+	fi2, err := os.Stat(paths.ConfigFile())
 	if err != nil {
 		t.Fatalf("stat config: %v", err)
 	}
@@ -113,14 +109,13 @@ func TestConfigSaveSkipsUnchanged(t *testing.T) {
 }
 
 func TestConfigSaveWritesWithPrivatePerms(t *testing.T) {
-	t.Parallel()
-	p := newTestPaths(t)
-	c := NewConfig(p)
+	newTestDataDir(t)
+	c := NewConfig()
 	c.WorkspaceID = "ws-1"
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	fi, err := os.Stat(p.ConfigFile())
+	fi, err := os.Stat(paths.ConfigFile())
 	if err != nil {
 		t.Fatalf("stat config: %v", err)
 	}
@@ -130,20 +125,20 @@ func TestConfigSaveWritesWithPrivatePerms(t *testing.T) {
 }
 
 func TestConfigFileNeverContainsPaths(t *testing.T) {
-	t.Parallel()
-	p := newTestPaths(t)
-	c := NewConfig(p)
+	newTestDataDir(t)
+	dataDir := os.Getenv("NOKKUD_DATA_DIR")
+	c := NewConfig()
 	c.WorkspaceID = "ws-1"
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	data, err := os.ReadFile(p.ConfigFile())
+	data, err := os.ReadFile(paths.ConfigFile())
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	// The ConfigDir must not leak into the serialized enrollment state,
+	// The data dir must not leak into the serialized enrollment state,
 	// which is shared with the control plane.
-	if strings.Contains(string(data), p.ConfigDir) {
-		t.Fatal("config file contains the config dir path")
+	if strings.Contains(string(data), dataDir) {
+		t.Fatal("config file contains the data dir path")
 	}
 }
