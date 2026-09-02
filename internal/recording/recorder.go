@@ -287,23 +287,15 @@ func (r *Recorder) emit(eventType string, data []byte) {
 
 // marshalEventData encodes a string as JSON without escaping <, >, and &,
 // matching the header encoder, so terminal output (pipes, redirects, Go
-// operators) and the redaction mask stay readable in the raw cast. Literal
-// backslash-u003c in the data is double-escaped by the marshaler, so these
-// unescapes can only ever map back to the real characters.
+// operators) stays readable in the raw cast.
 func marshalEventData(s string) []byte {
-	encoded, err := json.Marshal(s)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
 		return []byte(`""`)
 	}
-	// json.Marshal produces lowercase-hex escapes; unescape only the three
-	// HTML-significant ones.
-	return bytes.ReplaceAll(
-		bytes.ReplaceAll(
-			bytes.ReplaceAll(encoded, []byte(`\u003c`), []byte(`<`)),
-			[]byte(`\u003e`), []byte(`>`),
-		),
-		[]byte(`\u0026`), []byte(`&`),
-	)
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 }
 
 // roundInterval renders a gap as a millisecond-precision interval, carrying

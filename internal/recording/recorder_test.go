@@ -262,6 +262,31 @@ func TestRecorderNoHTMLEscape(t *testing.T) {
 	}
 }
 
+// TestRecorderEscapedUnicodeRoundTrips verifies event data containing a
+// literal `\u003c`-style sequence survives marshaling byte for byte. The
+// previous HTML-unescape pass corrupted these into invalid JSON, which broke
+// parsing of the whole cast.
+func TestRecorderEscapedUnicodeRoundTrips(t *testing.T) {
+	p := paths.Paths{ConfigDir: t.TempDir(), RecordsDir: t.TempDir()}
+	rec, err := New(p, Options{Width: 80, Height: 24, SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("new recorder: %v", err)
+	}
+	input := `echo '\u003c \u003e \u0026'`
+	rec.RecordOutput([]byte(input))
+	recRecordAndReadEvents(t, p, rec, func(events []eventLine) {
+		var found bool
+		for _, e := range events {
+			if string(e.Data) == input {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("event data %q did not round trip", input)
+		}
+	})
+}
+
 func mustReadAll(t *testing.T, r io.Reader) []byte {
 	t.Helper()
 	data, err := io.ReadAll(r)
