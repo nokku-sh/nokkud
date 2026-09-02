@@ -2,6 +2,7 @@ package recording
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -12,51 +13,47 @@ import (
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 )
 
-// Uploader is an [io.WriteCloser] that streams a recording's compressed
-// chunks to the backend on one UploadRecording stream. The backend encrypts
-// the stream at rest with its own key, so the daemon sends plaintext over the
-// authenticated channel and never seals or holds a recording key.
-//
-// The caller keeps writing after an upload failure. The uploader drops the
-// chunk but never errors the caller, because the local file must keep the
-// data either way. The backend marks the recording truncated when the stream
-// ends without a final message.
-type Uploader struct {
-	ctx    context.Context
-	client nokkuv1connect.RecordingServiceClient
+const (
+	maxBufferedChunks  = 64
+	uploadCloseTimeout = 30 * time.Second
+)
 
+type Uploader struct {
+	client    nokkuv1connect.RecordingServiceClient
 	sessionID string
 	username  string
 
+	chunks chan []byte
 	mu     sync.Mutex
-	stream *connect.ClientStreamForClientSimple[nokkuv1.UploadRecordingRequest, nokkuv1.UploadRecordingResponse]
 	failed bool
 	closed bool
+	done   chan struct{}
 }
 
-// UploaderOptions configures an Uploader.
 type UploaderOptions struct {
 	SessionID string
 	Username  string
 }
 
-// NewUploader builds an Uploader. The stream opens lazily on the first write,
-// so an unreachable backend never fails the session.
+// NewUploader builds an Uploader and starts its sender goroutine.
 func NewUploader(
 	ctx context.Context,
 	client nokkuv1connect.RecordingServiceClient,
 	opts UploaderOptions,
 ) *Uploader {
-	return &Uploader{
-		ctx:       ctx,
+	u := &Uploader{
 		client:    client,
 		sessionID: opts.SessionID,
 		username:  opts.Username,
+		chunks:    make(chan []byte, maxBufferedChunks),
+		done:      make(chan struct{}),
 	}
+	go u.sendLoop(ctx)
+	return u
 }
 
-// Write sends one batch. It always reports success so the local recording
-// never fails because of the backend.
+// Write queues one batch for upload. It always reports success so the local
+// recording never fails because of the backend.
 func (u *Uploader) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -68,33 +65,20 @@ func (u *Uploader) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 
-	if u.stream == nil {
-		if err := u.openLocked(); err != nil {
-			u.failLocked("open upload stream", err)
-			return len(p), nil
-		}
-	}
-
-	if err := u.stream.Send(&nokkuv1.UploadRecordingRequest{
-		Msg: &nokkuv1.UploadRecordingRequest_Chunk{Chunk: p},
-	}); err != nil {
-		u.failLocked("send recording chunk", err)
-		return len(p), nil
+	select {
+	case u.chunks <- append([]byte(nil), p...):
+	default:
+		// Dropping middle chunks would corrupt the gzip stream for
+		// everything after them, so the whole upload is abandoned
+		// instead. The backend marks the recording truncated.
+		u.failLocked("upload queue full", errors.New("queue full"))
 	}
 	return len(p), nil
 }
 
-// uploadCloseTimeout bounds how long Close waits for the backend to
-// acknowledge the final chunk. A black-holed connection must never stall
-// session teardown; the local file is complete either way, and the backend
-// marks the recording truncated when the stream ends without a final
-// message.
-const uploadCloseTimeout = 30 * time.Second
-
-// Close finalizes the recording and closes the upload stream. Safe to call
-// after a failure, the stream is still closed and the error logged. The wait
-// for the backend is bounded by uploadCloseTimeout; on timeout the stream is
-// abandoned and the recording marked truncated server-side.
+// Close finalizes the upload. Safe to call after a failure or twice. The
+// wait for the backend is bounded by uploadCloseTimeout; on timeout the
+// stream is abandoned and the recording marked truncated server-side.
 func (u *Uploader) Close() error {
 	u.mu.Lock()
 	if u.closed {
@@ -102,66 +86,99 @@ func (u *Uploader) Close() error {
 		return nil
 	}
 	u.closed = true
-	stream := u.stream
-	u.stream = nil
 	u.mu.Unlock()
-	if stream == nil {
-		return nil
-	}
-	_ = stream.Send(&nokkuv1.UploadRecordingRequest{
-		Msg: &nokkuv1.UploadRecordingRequest_Final{Final: &nokkuv1.RecordingFinal{}},
-	})
 
-	// CloseAndReceive has no context of its own: it lives on the stream's
-	// request context. Wait bounded, so session teardown never blocks on a
-	// dead backend. An abandoned receive drains on its own when the
-	// connection eventually fails or the process exits. The stream is
-	// released above so a concurrent Write no longer blocks behind this wait.
-	done := make(chan error, 1)
-	go func() {
-		_, err := stream.CloseAndReceive()
-		done <- err
-	}()
+	close(u.chunks)
+
+	// The sender drains the queue, sends the final message, and closes the
+	// stream. Waiting here keeps a session that exits immediately from
+	// being cut off mid-upload.
 	select {
-	case err := <-done:
-		if err != nil {
-			slog.Debug("recording upload closed", "session_id", u.sessionID, "error", err)
-			return nil
-		}
+	case <-u.done:
 	case <-time.After(uploadCloseTimeout):
 		slog.Warn(
 			"recording upload close timed out, the backend may mark the recording truncated",
 			"session_id", u.sessionID,
 			"timeout", uploadCloseTimeout,
 		)
-		return nil
 	}
-	slog.Debug("recording uploaded", "session_id", u.sessionID)
 	return nil
 }
 
-// openLocked opens the stream and sends the metadata message. Caller holds u.mu.
-func (u *Uploader) openLocked() error {
-	stream, err := u.client.UploadRecording(u.ctx)
-	if err != nil {
-		return err
+// sendLoop sends queued chunks until Close drains the queue, then finalizes
+// the stream. Once the upload fails, remaining chunks are discarded so
+// writers never block.
+func (u *Uploader) sendLoop(ctx context.Context) {
+	defer close(u.done)
+
+	var stream *connect.ClientStreamForClientSimple[nokkuv1.UploadRecordingRequest, nokkuv1.UploadRecordingResponse]
+	broken := false
+	for chunk := range u.chunks {
+		if broken {
+			continue
+		}
+		if stream == nil {
+			var err error
+			stream, err = u.open(ctx)
+			if err != nil {
+				u.fail("open upload stream", err)
+				broken = true
+				continue
+			}
+		}
+		if err := stream.Send(&nokkuv1.UploadRecordingRequest{
+			Msg: &nokkuv1.UploadRecordingRequest_Chunk{Chunk: chunk},
+		}); err != nil {
+			u.fail("send recording chunk", err)
+			broken = true
+		}
 	}
-	if sendErr := stream.Send(&nokkuv1.UploadRecordingRequest{
+
+	if stream == nil || broken {
+		return
+	}
+	// Best-effort final message: a failed send still surfaces through
+	// CloseAndReceive's error.
+	_ = stream.Send(&nokkuv1.UploadRecordingRequest{
+		Msg: &nokkuv1.UploadRecordingRequest_Final{Final: &nokkuv1.RecordingFinal{}},
+	})
+	if _, err := stream.CloseAndReceive(); err != nil {
+		slog.Debug("recording upload closed", "session_id", u.sessionID, "error", err)
+		return
+	}
+	slog.Debug("recording uploaded", "session_id", u.sessionID)
+}
+
+// open starts the upload stream and sends the metadata message.
+func (u *Uploader) open(ctx context.Context) (
+	*connect.ClientStreamForClientSimple[nokkuv1.UploadRecordingRequest, nokkuv1.UploadRecordingResponse],
+	error,
+) {
+	stream, err := u.client.UploadRecording(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = stream.Send(&nokkuv1.UploadRecordingRequest{
 		Msg: &nokkuv1.UploadRecordingRequest_Meta{
 			Meta: &nokkuv1.RecordingMeta{
 				RecordingId: &u.sessionID,
 				Username:    &u.username,
 			},
 		},
-	}); sendErr != nil {
-		return sendErr
+	}); err != nil {
+		return nil, err
 	}
-	u.stream = stream
-	return nil
+	return stream, nil
 }
 
-// failLocked records the failure. The stream is left open for Close to shut
-// down, the backend marks the recording truncated. Caller holds u.mu.
+// fail records the failure. The stream is left as is, the backend marks the
+// recording truncated.
+func (u *Uploader) fail(where string, err error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.failLocked(where, err)
+}
+
 func (u *Uploader) failLocked(where string, err error) {
 	u.failed = true
 	slog.Warn(
