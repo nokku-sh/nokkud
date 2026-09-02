@@ -46,14 +46,12 @@ type Client struct {
 	sessionWG    sync.WaitGroup
 	paths        paths.Paths
 
-	sshSrv  *sshd.Server
-	cache   *state.Cache
-	config  *state.Config
-	opts    Options
-	signer  tpm.Signer
-	proofer *dpop.Proofer
-	auth    *dpopAuth
-	httpc   *http.Client
+	sshSrv *sshd.Server
+	cache  *state.Cache
+	config *state.Config
+	opts   Options
+	auth   *dpopAuth
+	httpc  *http.Client
 
 	cc  nokkuv1connect.CertificateServiceClient
 	dc  nokkuv1connect.DaemonServiceClient
@@ -93,14 +91,12 @@ func New(
 		cache:        cache,
 		config:       config,
 		opts:         opts,
-		signer:       signer,
-		proofer:      proofer,
 		sshSrv:       sshSrv,
 		paths:        p,
 		sessionSlots: make(chan struct{}, maxConcurrentSessions),
 	}
 
-	if err = c.setupClients(ctx, config.APIURL, opts.Insecure); err != nil {
+	if err = c.setupClients(config.APIURL, opts.Insecure, proofer); err != nil {
 		return nil, err
 	}
 

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -16,7 +18,10 @@ import (
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
-const urlHeader = "Nokku-Api-Url"
+const (
+	urlHeader         = "Nokku-Api-Url"
+	nonceRefreshAfter = 5 * time.Minute
+)
 
 // dpopAuth authenticates the daemon's control-plane RPCs: it sends the
 // persisted session token with the "DPoP" scheme and binds every request to
@@ -27,14 +32,17 @@ const urlHeader = "Nokku-Api-Url"
 type dpopAuth struct {
 	config  *state.Config
 	proofer *dpop.Proofer
+	httpc   *http.Client
 
 	mu        sync.Mutex
 	nonce     string
+	learnedAt time.Time
 	serverURL string
 }
 
 func (a *dpopAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		a.refreshNonce(ctx)
 		if err := a.sign(req.Header(), req.Spec().Procedure); err != nil {
 			return nil, err
 		}
@@ -56,9 +64,39 @@ func (a *dpopAuth) WrapStreamingClient(
 	next connect.StreamingClientFunc,
 ) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		// A streaming request signs once and cannot retry: a stale-nonce
+		// rejection tears down the stream before the first message lands,
+		// surfacing as an opaque write failure.
+		a.refreshNonce(ctx)
 		conn := next(ctx, spec)
 		_ = a.sign(conn.RequestHeader(), spec.Procedure)
 		return conn
+	}
+}
+
+// refreshNonce re-fetches the server nonce when the cached one is old
+// enough to risk rejection. Best effort: on failure the cached nonce is
+// kept, matching the pre-existing behavior.
+func (a *dpopAuth) refreshNonce(ctx context.Context) {
+	a.mu.Lock()
+	learnedAt := a.learnedAt
+	a.mu.Unlock()
+	if time.Since(learnedAt) <= nonceRefreshAfter {
+		return
+	}
+	nonce, serverURL, err := FetchNonce(ctx, a.httpc, a.config.APIURL)
+	if err != nil {
+		slog.Debug("dpop nonce prefetch failed, using cached nonce", "error", err)
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if nonce != "" {
+		a.nonce = nonce
+		a.learnedAt = time.Now()
+	}
+	if serverURL != "" {
+		a.serverURL = serverURL
 	}
 }
 
@@ -130,6 +168,7 @@ func (a *dpopAuth) LearnNonce(err error) bool {
 	learned := false
 	if n := cerr.Meta().Get("DPoP-Nonce"); n != "" {
 		a.nonce = n
+		a.learnedAt = time.Now()
 		learned = true
 	}
 	if u := cerr.Meta().Get(urlHeader); u != "" {

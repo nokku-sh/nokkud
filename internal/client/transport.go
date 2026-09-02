@@ -1,7 +1,6 @@
 package client
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -10,6 +9,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+
+	"github.com/nokku-sh/mon/dpop"
 
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
 )
@@ -41,7 +42,9 @@ func newHTTPClient(insecure bool) (*http.Client, error) {
 	return &http.Client{Transport: t}, nil
 }
 
-func (c *Client) setupClients(ctx context.Context, apiURL string, insecure bool) error {
+// setupClients builds the shared HTTP client and the connect service
+// clients. The proofer comes from NewClient because it needs the TPM signer.
+func (c *Client) setupClients(apiURL string, insecure bool, proofer *dpop.Proofer) error {
 	httpc, err := newHTTPClient(insecure)
 	if err != nil {
 		return fmt.Errorf("http client: %w", err)
@@ -49,13 +52,12 @@ func (c *Client) setupClients(ctx context.Context, apiURL string, insecure bool)
 	c.httpc = httpc
 
 	interceptors := []connect.Interceptor{withUA()}
-	if c.proofer != nil {
-		nonce, serverURL, _ := FetchNonce(ctx, httpc, c.config.APIURL)
+	if proofer != nil {
+		// The nonce starts empty and is fetched on the first request.
 		c.auth = &dpopAuth{
-			config:    c.config,
-			proofer:   c.proofer,
-			nonce:     nonce,
-			serverURL: serverURL,
+			config:  c.config,
+			proofer: proofer,
+			httpc:   httpc,
 		}
 		interceptors = append(interceptors, c.auth)
 	}

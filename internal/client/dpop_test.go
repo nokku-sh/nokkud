@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,10 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+
+	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 
 	"github.com/nokku-sh/mon/dpop"
 
@@ -168,5 +173,86 @@ func TestDPoPAuthLearnNonceLearnsServerURL(t *testing.T) {
 	want := "https://app.example.com" + nokkuv1connect.DaemonServiceEnrollDaemonProcedure
 	if got := claims["htu"]; got != want {
 		t.Errorf("proof htu = %v, want %v", got, want)
+	}
+}
+
+// TestDPoPAuthRefreshesStaleNonceForStreams verifies streaming requests
+// re-fetch the nonce when the cached one is old enough to have rotated out
+// of the server's two-bucket acceptance window, and skip the fetch while it
+// is fresh.
+func TestDPoPAuthRefreshesStaleNonceForStreams(t *testing.T) {
+	t.Parallel()
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("DPoP-Nonce", "fresh-nonce")
+		w.Header().Set(urlHeader, "https://canonical.example.com")
+	}))
+	t.Cleanup(srv.Close)
+
+	st := &state.Config{SessionToken: "sess-token", APIURL: srv.URL}
+	a := &dpopAuth{
+		config:    st,
+		proofer:   newTestProofer(t),
+		httpc:     srv.Client(),
+		nonce:     "stale-nonce",
+		learnedAt: time.Now().Add(-2 * nonceRefreshAfter),
+	}
+
+	a.refreshNonce(context.Background())
+	a.mu.Lock()
+	got := a.nonce
+	a.mu.Unlock()
+	if got != "fresh-nonce" {
+		t.Fatalf("nonce = %q, want fresh-nonce", got)
+	}
+	if hits != 1 {
+		t.Fatalf("nonce endpoint hit %d times, want 1", hits)
+	}
+
+	a.refreshNonce(context.Background())
+	if hits != 1 {
+		t.Fatalf("nonce endpoint hit %d times after refresh, want 1", hits)
+	}
+}
+
+// TestDPoPAuthUnaryRefreshesStaleNonce verifies unary requests also prefetch
+// a fresh nonce when the cached one is stale, so the request succeeds on the
+// first attempt instead of burning the deliberate 401 round trip.
+func TestDPoPAuthUnaryRefreshesStaleNonce(t *testing.T) {
+	t.Parallel()
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("DPoP-Nonce", "fresh-nonce")
+	}))
+	t.Cleanup(srv.Close)
+
+	st := &state.Config{SessionToken: "sess-token", APIURL: srv.URL}
+	a := &dpopAuth{
+		config:    st,
+		proofer:   newTestProofer(t),
+		httpc:     srv.Client(),
+		nonce:     "stale-nonce",
+		learnedAt: time.Now().Add(-2 * nonceRefreshAfter),
+	}
+
+	var proof string
+	unary := a.WrapUnary(func(_ context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		proof = req.Header().Get("DPoP")
+		return connect.NewResponse(&nokkuv1.GetVersionResponse{}), nil
+	})
+	resp, err := unary(context.Background(), connect.NewRequest(&nokkuv1.GetVersionRequest{}))
+	if err != nil {
+		t.Fatalf("unary: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected a response")
+	}
+	if hits != 1 {
+		t.Fatalf("nonce endpoint hit %d times, want 1", hits)
+	}
+	if got := proofClaims(t, proof)["nonce"]; got != "fresh-nonce" {
+		t.Fatalf("proof nonce = %v, want fresh-nonce", got)
 	}
 }
