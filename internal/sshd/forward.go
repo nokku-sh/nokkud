@@ -14,9 +14,9 @@ import (
 	"github.com/nokku-sh/nokkud/internal/audit"
 )
 
-// directTCPIPData is the payload of a direct-tcpip channel open
-// (RFC 4254 section 7.2).
-type directTCPIPData struct {
+// tcpipChannelData is the payload of a direct-tcpip (RFC 4254 section 7.2)
+// or forwarded-tcpip (section 7.3) channel open. Both have the same layout.
+type tcpipChannelData struct {
 	DestAddr   string
 	DestPort   uint32
 	OriginAddr string
@@ -76,7 +76,7 @@ func (s *Server) serveDirectTCPIP(
 	newCh ssh.NewChannel,
 	ch *ssh.Channel,
 ) {
-	var d directTCPIPData
+	var d tcpipChannelData
 	if err := ssh.Unmarshal(newCh.ExtraData(), &d); err != nil {
 		_ = newCh.Reject(ssh.ConnectionFailed, "bad direct-tcpip request")
 		return
@@ -208,13 +208,6 @@ func (s *Server) cancelTCPIPForward(st *connState, req *ssh.Request) {
 	_ = req.Reply(ok, nil)
 }
 
-type forwardedTCPIPData struct {
-	DestAddr   string
-	DestPort   uint32
-	OriginAddr string
-	OriginPort uint32
-}
-
 // acceptForwarded sends listener connections to the client as
 // forwarded-tcpip channels. destAddr is the requested address, reported
 // verbatim so the client can match its registered -R forward.
@@ -228,7 +221,7 @@ func (s *Server) acceptForwarded(st *connState, ln net.Listener, destAddr string
 			defer s.recoverAndLog("forwarded-tcpip accept", func() { _ = c.Close() })
 			originAddr, originPortStr, _ := net.SplitHostPort(c.RemoteAddr().String())
 			originPort, _ := strconv.ParseUint(originPortStr, 10, 32)
-			payload := ssh.Marshal(forwardedTCPIPData{
+			payload := ssh.Marshal(tcpipChannelData{
 				DestAddr:   destAddr,
 				DestPort:   portOfListener(ln),
 				OriginAddr: originAddr,
