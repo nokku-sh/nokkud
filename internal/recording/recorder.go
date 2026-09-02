@@ -342,8 +342,7 @@ func (r *Recorder) RecordExit(status int) {
 	if r.closed {
 		return
 	}
-	code := status
-	r.exitCode = &code
+	r.exitCode = new(status)
 }
 
 func (r *Recorder) closeLocked() {

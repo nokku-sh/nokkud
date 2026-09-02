@@ -65,8 +65,5 @@ func recordingFilename(now time.Time, safeLabel, sessionID string) string {
 // shortSessionID trims a session ID to 8 characters for the filename. The
 // full ID always lives in the asciicast header.
 func shortSessionID(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
+	return id[:min(len(id), 8)]
 }
