@@ -43,35 +43,6 @@ func NewCache(p paths.Paths) *Cache {
 	}
 }
 
-// SetUUIDs replaces the entire list of UUIDs for a given principal.
-func (c *Cache) SetUUIDs(principal string, uuids []string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.preparePrincipal(principal) {
-		return
-	}
-
-	cacheCopy := make([]string, len(uuids))
-	copy(cacheCopy, uuids)
-
-	c.principals[principal] = cacheCopy
-}
-
-// preparePrincipal ensures the principal map is non-nil and that principal is
-// a safe username, reporting whether a write for it should proceed. The
-// caller must hold the write lock.
-func (c *Cache) preparePrincipal(principal string) bool {
-	if c.principals == nil {
-		c.principals = make(map[string][]string)
-	}
-	if err := util.ValidatePrincipal(principal); err != nil {
-		slog.Debug("skipping invalid principal", "principal", principal)
-		return false
-	}
-	return true
-}
-
 // GetUUIDs safely retrieves a copy of the UUIDs for a principal.
 func (c *Cache) GetUUIDs(principal string) []string {
 	c.mu.RLock()

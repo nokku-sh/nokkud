@@ -402,7 +402,7 @@ func TestServerLivePrincipals(t *testing.T) {
 	}
 
 	// Backend push lands in the shared cache: now allowed.
-	cache.SetUUIDs(cur.Username, []string{testPrincipal})
+	cache.Replace(map[string][]string{cur.Username: {testPrincipal}}, nil, 0)
 	client, err := dial(t, l.Addr().String(), cur.Username, userCert(t, ca, testPrincipal))
 	if err != nil {
 		t.Fatalf("dial after cache update: %v", err)

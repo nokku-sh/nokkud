@@ -11,39 +11,41 @@ import (
 func TestCacheRejectsInvalidPrincipals(t *testing.T) {
 	t.Parallel()
 	c := NewCache(newTestPaths(t))
-	c.SetUUIDs("../../etc", []string{"uuid-1"})
-	c.SetUUIDs("0start", []string{"uuid-1"})
-	c.SetUUIDs("", []string{"uuid-1"})
+	c.Replace(map[string][]string{
+		"../../etc": {"uuid-1"},
+		"0start":    {"uuid-1"},
+		"":          {"uuid-1"},
+	}, nil, 0)
 
 	if c.HasUUID("../../etc", "uuid-1") {
-		t.Fatal("invalid principal added via SetUUIDs")
+		t.Fatal("invalid principal added via Replace")
 	}
 	if c.HasUUID("0start", "uuid-1") {
-		t.Fatal("invalid principal added via SetUUIDs")
+		t.Fatal("invalid principal added via Replace")
 	}
 	if c.HasUUID("", "uuid-1") {
 		t.Fatal("empty principal added")
 	}
 }
 
-func TestCacheSetUUIDsCopiesInput(t *testing.T) {
+func TestCacheReplaceCopiesInput(t *testing.T) {
 	t.Parallel()
 	c := NewCache(newTestPaths(t))
 
 	uuids := []string{"uuid-1", "uuid-2"}
-	c.SetUUIDs("alice", uuids)
+	c.Replace(map[string][]string{"alice": uuids}, nil, 0)
 	uuids[0] = "mutated"
 
 	got := c.GetUUIDs("alice")
 	if len(got) != 2 || got[0] != "uuid-1" {
-		t.Fatalf("SetUUIDs aliased its input: %v", got)
+		t.Fatalf("Replace aliased its input: %v", got)
 	}
 }
 
 func TestCacheGetUUIDsReturnsCopy(t *testing.T) {
 	t.Parallel()
 	c := NewCache(newTestPaths(t))
-	c.SetUUIDs("alice", []string{"uuid-1", "uuid-2"})
+	c.Replace(map[string][]string{"alice": {"uuid-1", "uuid-2"}}, nil, 0)
 
 	got := c.GetUUIDs("alice")
 	got[0] = "mutated"
@@ -59,7 +61,7 @@ func TestCacheGetUUIDsReturnsCopy(t *testing.T) {
 func TestCacheHasUUID(t *testing.T) {
 	t.Parallel()
 	c := NewCache(newTestPaths(t))
-	c.SetUUIDs("alice", []string{"uuid-1"})
+	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, 0)
 
 	if !c.HasUUID("alice", "uuid-1") {
 		t.Fatal("HasUUID = false for stored uuid")
@@ -76,8 +78,10 @@ func TestCacheSaveLoadRoundTrip(t *testing.T) {
 	t.Parallel()
 	p := newTestPaths(t)
 	c := NewCache(p)
-	c.SetUUIDs("alice", []string{"uuid-1", "uuid-2"})
-	c.SetUUIDs("bob", []string{"uuid-3"})
+	c.Replace(map[string][]string{
+		"alice": {"uuid-1", "uuid-2"},
+		"bob":   {"uuid-3"},
+	}, nil, 0)
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -105,10 +109,10 @@ func TestCacheDaemonConfigRoundTrip(t *testing.T) {
 	p := newTestPaths(t)
 	c := NewCache(p)
 	record := true
+	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, 0)
 	c.SetDaemonConfig(&nokkuv1.DaemonConfig{
 		RecordSessions: &record,
 	})
-	c.SetUUIDs("alice", []string{"uuid-1"})
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -143,7 +147,7 @@ func TestCacheLoadCorruptedClearsAndRemoves(t *testing.T) {
 	t.Parallel()
 	p := newTestPaths(t)
 	c := NewCache(p)
-	c.SetUUIDs("alice", []string{"uuid-1"})
+	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, 0)
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -166,14 +170,14 @@ func TestCacheLoadCorruptedClearsAndRemoves(t *testing.T) {
 func TestCacheClear(t *testing.T) {
 	t.Parallel()
 	c := NewCache(newTestPaths(t))
-	c.SetUUIDs("alice", []string{"uuid-1"})
+	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, 0)
 	c.Clear()
 
 	if c.HasUUID("alice", "uuid-1") {
 		t.Fatal("Clear left auth data behind")
 	}
 	// Clearing must not leave a nil map behind. Subsequent writes must work.
-	c.SetUUIDs("bob", []string{"uuid-2"})
+	c.Replace(map[string][]string{"bob": {"uuid-2"}}, nil, 0)
 	if !c.HasUUID("bob", "uuid-2") {
 		t.Fatal("write after Clear failed")
 	}
@@ -193,8 +197,10 @@ func TestCacheConcurrentAccess(t *testing.T) {
 				if n%2 == 0 {
 					principal = "user2"
 				}
-				c.SetUUIDs(principal, []string{"uuid-1", "uuid-2"})
-				c.SetUUIDs("other", []string{"uuid-3"})
+				c.Replace(map[string][]string{
+					principal: {"uuid-1", "uuid-2"},
+					"other":   {"uuid-3"},
+				}, nil, 0)
 				_ = c.HasUUID(principal, "uuid-1")
 				_ = c.GetUUIDs("other")
 			}
@@ -213,7 +219,7 @@ func TestCacheReplace(t *testing.T) {
 	c := NewCache(newTestPaths(t))
 
 	// Pre-existing state must be fully replaced, not merged.
-	c.SetUUIDs("stale", []string{"uuid-old"})
+	c.Replace(map[string][]string{"stale": {"uuid-old"}}, nil, 0)
 
 	c.Replace(
 		map[string][]string{
