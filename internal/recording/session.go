@@ -8,9 +8,10 @@ import (
 
 // NewSessionRecorder builds a recorder for one session. With a non-nil
 // client, flushed batches are streamed to the backend for encryption at rest,
-// otherwise the session is only recorded locally. The upload stream is bound
-// to ctx, so cancelling ctx (e.g. on daemon shutdown) discards an in-flight
-// upload instead of blocking on it.
+// otherwise the session is only recorded locally. Callers typically pass a
+// context detached from the session's lifetime (context.WithoutCancel): the
+// upload stream must survive session teardown so Close can drain the queue
+// even after the session context is cancelled.
 func NewSessionRecorder(
 	ctx context.Context,
 	client nokkuv1connect.RecordingServiceClient,

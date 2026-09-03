@@ -96,8 +96,9 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) 
 	var rec *recording.Recorder
 	if c.cache.RecordSessions() {
 		shortID := sessionID[:min(len(sessionID), 8)]
+		// WithoutCancel: the upload stream must outlive the session context.
 		rec, err = recording.NewSessionRecorder(
-			ctx,
+			context.WithoutCancel(ctx),
 			c.rc,
 			recording.Options{
 				Width:     80,
@@ -116,18 +117,21 @@ func (c *Client) runPTYSession(ctx context.Context, req *nokkuv1.DaemonSession) 
 	var cleanupOnce sync.Once
 	cleanup := func() {
 		cleanupOnce.Do(func() {
-			cancel()
-			_ = ptmx.Close()
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			_ = cmd.Wait()
+			// Drain the recorder while the stream context is still alive: the
+			// upload is bound to ctx's lifetime for daemon shutdown, and Close
+			// sends remaining chunks plus the final message before cancel.
 			if rec != nil {
 				if cmd.ProcessState != nil {
 					rec.RecordExit(cmd.ProcessState.ExitCode())
 				}
 				rec.Close()
 			}
+			cancel()
+			_ = ptmx.Close()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			_ = cmd.Wait()
 		})
 	}
 	defer cleanup()
