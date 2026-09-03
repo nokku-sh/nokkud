@@ -227,9 +227,35 @@ func TestNextRenewal(t *testing.T) {
 		t.Setenv("NOKKUD_DATA_DIR", dir)
 		got := NextRenewal("target-1")
 
-		want := now.Add(30*24*time.Hour - renewBeforeExpiry)
+		want := now.Add(30*24*time.Hour - renewWindowCap)
 		if got.Sub(want) > time.Minute || want.Sub(got) > time.Minute {
 			t.Fatalf("NextRenewal = %v, want ~%v", got, want)
+		}
+	})
+
+	t.Run("short certificates renew late in life, never immediately", func(t *testing.T) {
+		dir := t.TempDir()
+		ca := newTestCA(t)
+		hostPub := writeHostKey(t, dir)
+
+		// 7-day TTL (the backend's new host cap) issued one minute ago.
+		after := uint64(now.Add(-time.Minute).Unix())
+		before := uint64(now.Add(7 * 24 * time.Hour).Unix())
+		certText, _ := signHostCert(t, ca, hostPub, "target-1", after, before)
+		writeCert(t, dir, certText)
+
+		t.Setenv("NOKKUD_DATA_DIR", dir)
+		got := NextRenewal("target-1")
+
+		// 15% of 7 days is ~25.2h, so the deadline sits ~5.95 days out. It
+		// must be well after issuance (renew-loop guard) but before the
+		// expiry minus one day.
+		want := time.Unix(int64(before), 0).Add(-time.Duration(0.15 * float64(7*24*time.Hour)))
+		if got.Sub(want) > time.Minute || want.Sub(got) > time.Minute {
+			t.Fatalf("NextRenewal = %v, want ~%v", got, want)
+		}
+		if !got.After(now.Add(5 * 24 * time.Hour)) {
+			t.Fatalf("NextRenewal = %v, want more than 5 days out", got)
 		}
 	})
 

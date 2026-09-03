@@ -21,7 +21,24 @@ import (
 	"github.com/nokku-sh/nokkud/internal/util"
 )
 
-const renewBeforeExpiry = 7 * 24 * time.Hour
+// renewFraction and renewWindowCap define the renewal window as a share of
+// the certificate's validity, capped at the historical fixed offset. A
+// fraction instead of a fixed window so short-lived certificates (the
+// backend now caps host TTLs at 7 days) never sit inside the window from
+// the moment they are issued, which would turn the renewal watcher into a
+// loop.
+const (
+	renewFraction  = 0.15
+	renewWindowCap = 7 * 24 * time.Hour
+)
+
+// renewalDeadline returns the moment cert enters its renewal window.
+func renewalDeadline(cert *ssh.Certificate) time.Time {
+	validAfter := uint64ToUnixTime(cert.ValidAfter)
+	validBefore := uint64ToUnixTime(cert.ValidBefore)
+	window := min(time.Duration(float64(validBefore.Sub(validAfter))*renewFraction), renewWindowCap)
+	return validBefore.Add(-window)
+}
 
 // KeyPair is a host public key paired with the certificate path that backs it.
 type KeyPair struct {
@@ -52,8 +69,8 @@ func hostKeyPair() (KeyPair, bool) {
 }
 
 // OutdatedHostCerts returns the host key when its certificate is missing,
-// signed for another principal, signed for another key, or within
-// renewBeforeExpiry of expiring.
+// signed for another principal, signed for another key, or inside its
+// renewal window.
 func OutdatedHostCerts(targetID string) ([]KeyPair, error) {
 	kp, ok := hostKeyPair()
 	if !ok {
@@ -126,8 +143,9 @@ func RenewHostCerts(
 	return renewed, firstErr
 }
 
-// NextRenewal returns the renewal deadline for the host certificate. Now, if
-// it is already out of date or none exists yet.
+// NextRenewal returns the renewal deadline for the host certificate: 85%
+// through its validity (capped at 7 days before expiry). Now, if it is
+// already out of date or none exists yet.
 func NextRenewal(targetID string) time.Time {
 	now := time.Now()
 
@@ -147,7 +165,10 @@ func NextRenewal(targetID string) time.Time {
 		return now
 	}
 
-	renewalTime := uint64ToUnixTime(cert.ValidBefore).Add(-renewBeforeExpiry)
+	renewalTime := renewalDeadline(cert)
+	if renewalTime.Before(now) {
+		return now
+	}
 	slog.Debug(
 		"certificate renewal scheduled",
 		"next_renewal",
@@ -204,8 +225,8 @@ func saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path string) error
 	return nil
 }
 
-// isValid reports whether cert is acceptable for targetID and not within
-// renewBeforeExpiry of expiring.
+// isValid reports whether cert is acceptable for targetID and not yet due
+// for renewal.
 func isValid(cert *ssh.Certificate, targetID string) bool {
 	now := time.Now()
 
@@ -220,8 +241,7 @@ func isValid(cert *ssh.Certificate, targetID string) bool {
 	if cert.ValidBefore == ssh.CertTimeInfinity {
 		return true
 	}
-	expiresAt := uint64ToUnixTime(cert.ValidBefore)
-	return now.Before(expiresAt.Add(-renewBeforeExpiry))
+	return now.Before(renewalDeadline(cert))
 }
 
 func parseCertificateBytes(data []byte) (*ssh.Certificate, error) {
