@@ -359,30 +359,7 @@ func (sess *session) ptyReq(req *ssh.Request) {
 	sess.ptmx = ptmx
 	sess.setEnv("TERM", r.Term)
 
-	if sess.server.tun.Load().Record {
-		var sink io.WriteCloser
-		if sess.server.recordingSinkFactory != nil {
-			// WithoutCancel: the upload stream must outlive the session
-			// context, which is canceled while the session tears down.
-			sink = sess.server.recordingSinkFactory(
-				context.WithoutCancel(sess.ctx),
-				sess.sessionID,
-				sess.sysUser.Username,
-			)
-		}
-		var rec *recording.Recorder
-		rec, err = recording.New(recording.Options{
-			Width:     int(r.Width),
-			Height:    int(r.Height),
-			Title:     fmt.Sprintf("ssh-%s", sess.sysUser.Username),
-			Label:     sess.sysUser.Username,
-			SessionID: sess.sessionID,
-			Sink:      sink,
-		})
-		if err == nil && rec != nil {
-			sess.rec = rec
-		}
-	}
+	sess.startRecorder(int(r.Width), int(r.Height))
 	_ = req.Reply(true, nil)
 }
 
@@ -569,10 +546,63 @@ func (sess *session) runPlain() {
 	}
 	cmd.SysProcAttr = attr
 
+	// Plain sessions record too: non-interactive exec is exactly where
+	// sensitive output (cat, curl, git) leaves the machine.
+	sess.startRecorder(80, 24)
+
 	// Stderr goes to the channel's extended data stream (like sshd), not
 	// the regular data stream. Binary protocols (rsync, git, scp -s) are
 	// length-prefixed and break if stderr bytes are interleaved.
 	sess.runProcess(cmd, sess.Stderr())
+}
+
+// startRecorder builds the session's recorder when recording is enabled.
+// Does nothing when recording is off, setup failed, or one already exists
+// (the pty-req path creates it earlier). Dimensions are the terminal size;
+// plain sessions without a pty use a fixed 80x24 header.
+func (sess *session) startRecorder(width, height int) {
+	if sess.rec != nil || !sess.server.tun.Load().Record {
+		return
+	}
+	var sink io.WriteCloser
+	if sess.server.recordingSinkFactory != nil {
+		// WithoutCancel: the upload stream must outlive the session
+		// context, which is canceled while the session tears down.
+		sink = sess.server.recordingSinkFactory(
+			context.WithoutCancel(sess.ctx),
+			sess.sessionID,
+			sess.sysUser.Username,
+		)
+	}
+	rec, err := recording.New(recording.Options{
+		Width:     width,
+		Height:    height,
+		Title:     fmt.Sprintf("ssh-%s", sess.sysUser.Username),
+		Label:     sess.sysUser.Username,
+		SessionID: sess.sessionID,
+		Sink:      sink,
+	})
+	if err == nil && rec != nil {
+		sess.rec = rec
+	}
+}
+
+// recTee feeds written bytes to the session recorder as input or output
+// events before passing them on. Recorder methods swallow their own errors,
+// so a failing recording never disturbs the stream.
+type recTee struct {
+	w      io.Writer
+	rec    *recording.Recorder
+	output bool
+}
+
+func (t recTee) Write(p []byte) (int, error) {
+	if t.output {
+		t.rec.RecordOutput(p)
+	} else {
+		t.rec.RecordInput(p)
+	}
+	return t.w.Write(p)
 }
 
 // runProcess starts cmd and relays the session channel to its stdin/stdout
@@ -610,10 +640,18 @@ func (sess *session) runProcess(cmd *exec.Cmd, errW io.Writer) *os.ProcessState 
 
 	var relay sync.WaitGroup
 
+	// The relay targets pass through the recorder when one is active, so
+	// both directions of a plain session are recorded.
+	var inW, outW io.Writer = stdin, io.Writer(sess)
+	if sess.rec != nil {
+		inW = recTee{w: stdin, rec: sess.rec}
+		outW = recTee{w: sess, rec: sess.rec, output: true}
+	}
+
 	// client -> process
 	relay.Go(func() {
 		defer stdin.Close()
-		_, _ = io.Copy(stdin, sess)
+		_, _ = io.Copy(inW, sess)
 	})
 
 	// process -> client. A length-prefixed protocol (rsync) reads stderr
@@ -621,7 +659,7 @@ func (sess *session) runProcess(cmd *exec.Cmd, errW io.Writer) *os.ProcessState 
 	stdoutDone := make(chan struct{})
 	relay.Go(func() {
 		defer close(stdoutDone)
-		_, _ = io.Copy(sess, stdout)
+		_, _ = io.Copy(outW, stdout)
 	})
 
 	// Drain stdout before reaping. cmd.Wait() closes the stdout pipe,

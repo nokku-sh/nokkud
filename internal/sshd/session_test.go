@@ -1,13 +1,20 @@
 package sshd
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
 // TestRecoverAndLog verifies a panic in a handler goroutine is contained and
@@ -258,4 +265,105 @@ func (w *syncedBuffer) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.b.String()
+}
+
+// captureSink collects recorder sink writes and signals Close, so tests can
+// assert what the daemon would have uploaded.
+type captureSink struct {
+	mu      sync.Mutex
+	data    bytes.Buffer
+	closed  chan struct{}
+	closeDo sync.Once
+}
+
+func (s *captureSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.data.Write(p)
+}
+
+func (s *captureSink) Close() error {
+	s.closeDo.Do(func() { close(s.closed) })
+	return nil
+}
+
+// TestPlainSessionRecorded verifies a non-pty exec session is recorded and
+// streamed to the sink, so commands that bypass a terminal are still
+// captured.
+func TestPlainSessionRecorded(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("NOKKUD_DATA_DIR", dir)
+	if err := paths.Verify(); err != nil {
+		t.Fatalf("verify paths: %v", err)
+	}
+
+	sink := &captureSink{closed: make(chan struct{})}
+	factory := func(context.Context, string, string) io.WriteCloser { return sink }
+
+	cur := currentUser(t)
+	ca := newTestCA(t)
+	principals := func(username string) []string {
+		if username == cur {
+			return []string{testPrincipal}
+		}
+		return nil
+	}
+	srv, err := New(Options{
+		Principals: principals,
+		TrustedCAs: []ssh.PublicKey{ca.pub},
+		Tunables:   Tunables{Record: true},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.SetRecordingSinkFactory(factory)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	go func() { _ = srv.Serve(l) }()
+
+	client, err := dial(t, l.Addr().String(), cur, userCert(t, ca, testPrincipal))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	defer sess.Close()
+
+	out, err := sess.Output("printf hello-recorded")
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if string(out) != "hello-recorded" {
+		t.Fatalf("output = %q, want %q", out, "hello-recorded")
+	}
+
+	// finish() closes the recorder before the exit status is sent, so the
+	// sink is complete by the time Output returns.
+	select {
+	case <-sink.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recording sink was never closed")
+	}
+
+	gr, err := gzip.NewReader(&sink.data)
+	if err != nil {
+		t.Fatalf("sink data is not gzip: %v", err)
+	}
+	cast, err := io.ReadAll(gr)
+	if err != nil {
+		t.Fatalf("read recording: %v", err)
+	}
+	if !strings.Contains(string(cast), `"o"`) {
+		t.Fatalf("recording has no output event, got: %s", cast)
+	}
+	if !strings.Contains(string(cast), "hello-recorded") {
+		t.Fatalf("recorded output missing command output, got: %s", cast)
+	}
 }
