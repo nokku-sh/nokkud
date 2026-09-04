@@ -21,43 +21,21 @@ import (
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
-// channelHandler serves one accepted SSH channel type.
-type channelHandler func(*Server, *ssh.ServerConn, *connState, ssh.NewChannel, *ssh.Channel)
-
-// channelHandlers maps SSH channel types to handlers so new types slot in
-// without touching the accept loop.
-var channelHandlers = map[string]channelHandler{
-	"session":      (*Server).handleSession,
-	"direct-tcpip": (*Server).serveDirectTCPIP,
-}
-
-// handleSession accepts a "session" channel and serves its request stream,
-// enforcing the per-connection session cap and the per-principal session cap.
-func (s *Server) handleSession(
+// serveSessionChannel accepts a "session" channel and serves its request
+// stream to completion.
+func serveSessionChannel(
+	s *Server,
 	conn *ssh.ServerConn,
-	st *connState,
+	_ *connState,
 	newCh ssh.NewChannel,
-	ch *ssh.Channel,
-) {
-	if !st.acquireSession(s.tun.Load().MaxSessions) {
-		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions")
-		return
-	}
-	defer st.releaseSession()
-
-	if !s.acquirePrincipalSession(conn.User(), s.tun.Load().MaxSessionsPerUser) {
-		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions for user")
-		return
-	}
-	defer s.releasePrincipalSession(conn.User())
-
+) ssh.Channel {
 	c, reqs, err := newCh.Accept()
 	if err != nil {
 		s.logger.Debug("sshd: accept session channel", "error", err)
-		return
+		return nil
 	}
-	*ch = c
 	s.serveSession(conn, c, reqs)
+	return c
 }
 
 // session handles a single "session" channel. It embeds the SSH channel so
@@ -332,6 +310,10 @@ func (sess *session) runSubsystem(name string) uint32 {
 // pty-req: string TERM, uint32 width, uint32 height, uint32 width_px,
 // uint32 height_px, string modes.
 func (sess *session) ptyReq(req *ssh.Request) {
+	if !certExt(sess.conn, "permit-pty") {
+		_ = req.Reply(false, nil)
+		return
+	}
 	var r struct {
 		Term     string
 		Width    uint32

@@ -7,6 +7,7 @@ require (
 	connectrpc.com/connect v1.20.0
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/cenkalti/backoff/v7 v7.0.0
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/mizuchilabs/kata v0.1.3
 	github.com/nokku-sh/mon v0.1.0
 	github.com/pkg/sftp v1.13.11

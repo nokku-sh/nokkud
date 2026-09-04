@@ -70,21 +70,21 @@ func (st *connState) close() {
 
 // serveDirectTCPIP handles a direct-tcpip channel (-L/-D) by relaying
 // bytes between the client and the requested destination.
-func (s *Server) serveDirectTCPIP(
-	_ *ssh.ServerConn,
+func serveDirectTCPIP(
+	s *Server,
+	conn *ssh.ServerConn,
 	st *connState,
 	newCh ssh.NewChannel,
-	ch *ssh.Channel,
-) {
+) ssh.Channel {
 	var d tcpipChannelData
 	if err := ssh.Unmarshal(newCh.ExtraData(), &d); err != nil {
 		_ = newCh.Reject(ssh.ConnectionFailed, "bad direct-tcpip request")
-		return
+		return nil
 	}
 
-	if !s.tun.Load().AllowForwarding {
+	if !s.tun.Load().AllowForwarding || !certExt(conn, "permit-port-forwarding") {
 		_ = newCh.Reject(ssh.Prohibited, "port forwarding is disabled")
-		return
+		return nil
 	}
 
 	dest := net.JoinHostPort(d.DestAddr, strconv.FormatUint(uint64(d.DestPort), 10))
@@ -94,7 +94,7 @@ func (s *Server) serveDirectTCPIP(
 	if err != nil {
 		s.logger.Debug("sshd: direct-tcpip dial", "dest", dest, "error", err)
 		_ = newCh.Reject(ssh.ConnectionFailed, err.Error())
-		return
+		return nil
 	}
 
 	ev := eventWith(connEvent(st.conn), audit.EventForward, "", "")
@@ -104,12 +104,12 @@ func (s *Server) serveDirectTCPIP(
 	c, reqs, err := newCh.Accept()
 	if err != nil {
 		_ = dconn.Close()
-		return
+		return nil
 	}
-	*ch = c
 	go ssh.DiscardRequests(reqs)
 
 	go proxyForward(s, c, dconn)
+	return c
 }
 
 // handleGlobalRequests processes global requests, meaning remote -R
@@ -141,7 +141,7 @@ type tcpipForwardSuccess struct {
 // tcpipForward binds a listener for the client's -R request and accepts
 // connections into forwarded-tcpip channels back to the client.
 func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
-	if !s.tun.Load().AllowForwarding {
+	if !s.tun.Load().AllowForwarding || !certExt(st.conn, "permit-port-forwarding") {
 		_ = req.Reply(false, []byte("port forwarding is disabled"))
 		return
 	}

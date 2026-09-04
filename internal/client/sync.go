@@ -120,6 +120,9 @@ func (c *Client) applyConfig() {
 	t.MaxSessions = intField(cfg.MaxSessions, t.MaxSessions)
 	t.MaxConnections = intField(cfg.MaxConnections, t.MaxConnections)
 	t.MaxSessionsPerUser = intField(cfg.MaxSessionsPerUser, t.MaxSessionsPerUser)
+	t.ConnRate = intField(cfg.ConnRate, t.ConnRate)
+	t.ConnRateBurst = intField(cfg.ConnRateBurst, t.ConnRateBurst)
+	t.Banner = boolField(cfg.Banner, t.Banner)
 	if d := cfg.GetClientAliveInterval(); d != nil {
 		t.ClientAliveInterval = d.AsDuration()
 	}

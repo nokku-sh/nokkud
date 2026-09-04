@@ -171,3 +171,57 @@ func TestServerReloadRefreshesHostCerts(t *testing.T) {
 	}
 	is.True(hasCert, "reload did not adopt the host certificate")
 }
+
+// TestParseCAFileSkipsComments verifies blank lines and comments in the CA
+// file are tolerated, matching the authorized_keys format it mirrors.
+func TestParseCAFileSkipsComments(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
+	ca := newTestCA(t)
+	path := filepath.Join(t.TempDir(), "ca.pub")
+
+	content := "# trusted CAs\n\n" + string(ssh.MarshalAuthorizedKey(ca.pub)) + "\n# trailing comment\n"
+	must.NoError(os.WriteFile(path, []byte(content), 0o644))
+
+	keys, err := parseCAFile(path)
+	must.NoError(err, "comments must not fail the parse")
+	is.Len(keys, 1, "expected exactly one CA key")
+	is.True(bytes.Equal(keys[0].Marshal(), ca.pub.Marshal()))
+}
+
+// TestServerReloadKeepsPreviousCAOnError verifies a CA file that becomes
+// unreadable between reloads does not blank the trust set: logins keep
+// working with the last known good CAs until the next successful sync.
+func TestServerReloadKeepsPreviousCAOnError(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
+	ca := newTestCA(t)
+	configDir := t.TempDir()
+	t.Setenv("NOKKUD_DATA_DIR", configDir)
+
+	srv, err := New(Options{
+		Principals: func(username string) []string {
+			if username == currentUser(t) {
+				return []string{testPrincipal}
+			}
+			return nil
+		},
+		TrustedCAs: []ssh.PublicKey{ca.pub},
+		HostKeys:   softwareHostKeys(),
+	})
+	must.NoError(err, "new server")
+	defer func() { _ = srv.Close() }()
+
+	must.NoError(os.WriteFile(
+		filepath.Join(configDir, "nokku_ca.pub"),
+		ssh.MarshalAuthorizedKey(ca.pub),
+		0o644,
+	))
+	must.NoError(srv.Reload())
+
+	// A corrupt CA file (sync raced by an editor, disk glitch, ...) must
+	// leave the previous trust set in place so logins keep working.
+	must.NoError(os.WriteFile(filepath.Join(configDir, "nokku_ca.pub"), []byte("garbage"), 0o644))
+	_ = srv.Reload()
+	is.True(srv.trustedCA(ca.pub), "previous trust set was dropped on reload error")
+}

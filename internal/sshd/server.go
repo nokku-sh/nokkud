@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/time/rate"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/state"
@@ -79,6 +82,11 @@ type Server struct {
 	principalMu       sync.Mutex
 	principalSessions map[string]int
 
+	// limiters is a bounded per-source-IP cache of connection rate limiters.
+	// Rate and burst come from the live tunables so SetTunables applies
+	// without rebuilding the cache.
+	limiters *lru.Cache[string, *rate.Limiter]
+
 	// mu guards the listener installed by ListenAndServe so Close can stop it.
 	mu       sync.Mutex
 	listener net.Listener
@@ -138,6 +146,15 @@ type Tunables struct {
 	// an idle client. A client that fails to respond for 3 intervals is
 	// disconnected (OpenSSH's ClientAliveInterval). Zero disables probing.
 	ClientAliveInterval time.Duration
+	// ConnRate caps new connections per second per source IP, with
+	// ConnRateBurst allowing short bursts above the steady rate. Together
+	// they stop a slow-drip brute force that stays under MaxStartups. Zero
+	// disables rate limiting.
+	ConnRate int
+	// ConnRateBurst allows short bursts above ConnRate.
+	ConnRateBurst int
+	// Banner enables the pre-auth banner describing session policy.
+	Banner bool
 }
 
 // Options configures a Server.
@@ -187,6 +204,9 @@ func OptionsFrom(cache *state.Cache, record bool) Options {
 			MaxConnections:       100,
 			MaxStartups:          10,
 			ClientAliveInterval:  60 * time.Second,
+			ConnRate:             5,
+			ConnRateBurst:        20,
+			Banner:               true,
 		},
 		Audit: newAuditSink(),
 	}
@@ -222,6 +242,7 @@ func New(opts Options) (*Server, error) {
 		audit:           opts.Audit,
 		trustedCAs:      trusted,
 		hostKeyProvider: opts.HostKeys,
+		limiters:        newLimiters(),
 		subsystemHandlers: map[string]SubsystemHandler{
 			sftpSubsystem: func(sess *session) uint32 { return sess.runSFTP() },
 		},
@@ -263,11 +284,13 @@ func (s *Server) loadHostIdentity() ([]ssh.Signer, []io.Closer, error) {
 // Called after a certificate sync so a renewed host cert or rotated CA
 // applies without a restart.
 func (s *Server) Reload() error {
-	trusted, err := loadTrustedCAs()
-	if err != nil {
-		// Fail closed. A CA that can no longer be read must not keep
-		// granting logins from a stale in-memory list.
-		s.logger.Warn("sshd: reload trusted CAs", "error", err)
+	trusted, caErr := loadTrustedCAs()
+	if caErr != nil {
+		// Keep the last known good set. A transient read error or a stray
+		// unparseable line must not lock out every login until the next sync.
+		// A genuinely rotated-out CA stops working because its certificates
+		// expire, not because reload failed.
+		s.logger.Warn("sshd: reload trusted CAs, keeping previous set", "error", caErr)
 	}
 
 	hostKeys, hostClosers, err := s.loadHostIdentity()
@@ -277,7 +300,9 @@ func (s *Server) Reload() error {
 
 	s.certsMu.Lock()
 	oldClosers := s.hostKeyClosers
-	s.trustedCAs = trusted
+	if caErr == nil {
+		s.trustedCAs = trusted
+	}
 	s.hostKeys = hostKeys
 	s.hostKeyClosers = hostClosers
 	s.cfg = s.serverConfig(hostKeys)
@@ -502,7 +527,10 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) (net.Addr, err
 func (s *Server) serverConfig(hostKeys []ssh.Signer) *ssh.ServerConfig {
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback: s.publicKeyCallback,
-		ServerVersion:     "SSH-2.0-nokkud",
+		BannerCallback: func(ssh.ConnMetadata) string {
+			return s.banner()
+		},
+		ServerVersion: "SSH-2.0-nokkud",
 	}
 	for _, k := range hostKeys {
 		cfg.AddHostKey(k)
@@ -528,6 +556,17 @@ func (s *Server) HandleConn(nc net.Conn) {
 
 func (s *Server) handleConn(nc net.Conn) {
 	defer nc.Close()
+
+	// Cap the connection rate per source IP before anything else. A
+	// slow-drip brute force never reaches the concurrency caps.
+	if !s.allowConn(remoteIP(nc.RemoteAddr())) {
+		s.logger.Warn(
+			"sshd: dropping connection, rate limit exceeded",
+			"remote",
+			nc.RemoteAddr(),
+		)
+		return
+	}
 
 	// Cap concurrent pre-auth connections (MaxStartups). The slot is released
 	// as soon as the handshake finishes, success or not.
@@ -604,18 +643,7 @@ func (s *Server) handleConn(nc net.Conn) {
 			continue
 		}
 		wg.Go(func() {
-			// A handler may reject the channel without accepting it, so
-			// there may be no channel to close on panic. A late Reject
-			// is a no-op and closes the pending channel.
-			var ch ssh.Channel
-			defer s.recoverAndLog("channel "+newCh.ChannelType(), func() {
-				if ch != nil {
-					_ = ch.Close()
-					return
-				}
-				_ = newCh.Reject(ssh.ConnectionFailed, "channel handler failed")
-			})
-			handler(s, conn, st, newCh, &ch)
+			_ = handler(s, conn, st, newCh)
 		})
 	}
 }
