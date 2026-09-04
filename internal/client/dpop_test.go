@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,9 +152,9 @@ func TestDPoPAuthLearnNonceLearnsServerURL(t *testing.T) {
 func TestDPoPAuthRefreshesStaleNonceForStreams(t *testing.T) {
 	t.Parallel()
 	is := assert.New(t)
-	var hits int
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits++
+		hits.Add(1)
 		w.Header().Set("DPoP-Nonce", "fresh-nonce")
 		w.Header().Set(urlHeader, "https://canonical.example.com")
 	}))
@@ -173,10 +174,10 @@ func TestDPoPAuthRefreshesStaleNonceForStreams(t *testing.T) {
 	got := a.nonce
 	a.mu.Unlock()
 	is.Equal("fresh-nonce", got)
-	is.Equal(1, hits)
+	is.EqualValues(1, hits.Load())
 
 	a.refreshNonce(context.Background())
-	is.Equal(1, hits, "nonce endpoint hit again while the cached nonce was fresh")
+	is.EqualValues(1, hits.Load(), "nonce endpoint hit again while the cached nonce was fresh")
 }
 
 // TestDPoPAuthUnaryRefreshesStaleNonce verifies unary requests also prefetch
@@ -186,9 +187,9 @@ func TestDPoPAuthUnaryRefreshesStaleNonce(t *testing.T) {
 	t.Parallel()
 	is := assert.New(t)
 	must := require.New(t)
-	var hits int
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits++
+		hits.Add(1)
 		w.Header().Set("DPoP-Nonce", "fresh-nonce")
 	}))
 	t.Cleanup(srv.Close)
@@ -210,6 +211,6 @@ func TestDPoPAuthUnaryRefreshesStaleNonce(t *testing.T) {
 	resp, err := unary(context.Background(), connect.NewRequest(&nokkuv1.GetVersionRequest{}))
 	must.NoError(err, "unary")
 	is.NotNil(resp)
-	is.Equal(1, hits)
+	is.EqualValues(1, hits.Load())
 	is.Equal("fresh-nonce", proofClaims(t, proof)["nonce"])
 }

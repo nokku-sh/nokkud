@@ -267,8 +267,7 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	// the client's -R end and echoed.
 	sconn, err := net.Dial("tcp", "127.0.0.1:"+boundPortStr)
 	if err != nil {
-		// slurp lazily: reading the pipe blocks until the ssh process exits
-		must.NoError(err, "dial server-side forward\n%s", slurp(stderr))
+		must.NoError(err, "dial server-side forward\n%s", slurpAfterKill(cmd, stderr))
 	}
 	defer sconn.Close()
 
@@ -278,14 +277,18 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	buf := make([]byte, 7)
 	_, err = io.ReadFull(sconn, buf)
 	if err != nil {
-		// slurp lazily: reading the pipe blocks until the ssh process exits
-		must.NoError(err, "read\n%s", slurp(stderr))
+		must.NoError(err, "read\n%s", slurpAfterKill(cmd, stderr))
 	}
 	is.Equal("interop", string(buf))
 }
 
-func slurp(r io.Reader) string {
-	b, _ := io.ReadAll(r)
+// slurpAfterKill drains ssh's stderr for the failure message. ssh -N never
+// exits on its own, so reading the pipe blocks forever unless the process is
+// killed first.
+func slurpAfterKill(cmd *exec.Cmd, stderr io.Reader) string {
+	_ = cmd.Process.Kill()
+	b, _ := io.ReadAll(stderr)
+	_, _ = cmd.Process.Wait()
 	return string(b)
 }
 
