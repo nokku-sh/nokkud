@@ -5,13 +5,12 @@
 package nokkuv1connect
 
 import (
+	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
+	v1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	http "net/http"
 	strings "strings"
-
-	connect "connectrpc.com/connect"
-	v1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 )
 
 // This is a compile-time assertion to ensure that this generated file and the connect package are
@@ -51,6 +50,9 @@ const (
 	// TargetServiceGetSubjectAccessProcedure is the fully-qualified name of the TargetService's
 	// GetSubjectAccess RPC.
 	TargetServiceGetSubjectAccessProcedure = "/nokku.v1.TargetService/GetSubjectAccess"
+	// TargetServiceGetMyAccessProcedure is the fully-qualified name of the TargetService's GetMyAccess
+	// RPC.
+	TargetServiceGetMyAccessProcedure = "/nokku.v1.TargetService/GetMyAccess"
 	// TargetServiceGetTargetFiltersProcedure is the fully-qualified name of the TargetService's
 	// GetTargetFilters RPC.
 	TargetServiceGetTargetFiltersProcedure = "/nokku.v1.TargetService/GetTargetFilters"
@@ -64,6 +66,7 @@ type TargetServiceClient interface {
 	UpdateTarget(context.Context, *v1.UpdateTargetRequest) (*v1.UpdateTargetResponse, error)
 	DeleteTarget(context.Context, *v1.DeleteTargetRequest) (*v1.DeleteTargetResponse, error)
 	GetSubjectAccess(context.Context, *v1.GetSubjectAccessRequest) (*v1.GetSubjectAccessResponse, error)
+	GetMyAccess(context.Context, *v1.GetMyAccessRequest) (*v1.GetMyAccessResponse, error)
 	GetTargetFilters(context.Context, *v1.GetTargetFiltersRequest) (*v1.GetTargetFiltersResponse, error)
 }
 
@@ -117,6 +120,13 @@ func NewTargetServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 			connect.WithClientOptions(opts...),
 		),
+		getMyAccess: connect.NewClient[v1.GetMyAccessRequest, v1.GetMyAccessResponse](
+			httpClient,
+			baseURL+TargetServiceGetMyAccessProcedure,
+			connect.WithSchema(targetServiceMethods.ByName("GetMyAccess")),
+			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
+			connect.WithClientOptions(opts...),
+		),
 		getTargetFilters: connect.NewClient[v1.GetTargetFiltersRequest, v1.GetTargetFiltersResponse](
 			httpClient,
 			baseURL+TargetServiceGetTargetFiltersProcedure,
@@ -135,6 +145,7 @@ type targetServiceClient struct {
 	updateTarget     *connect.Client[v1.UpdateTargetRequest, v1.UpdateTargetResponse]
 	deleteTarget     *connect.Client[v1.DeleteTargetRequest, v1.DeleteTargetResponse]
 	getSubjectAccess *connect.Client[v1.GetSubjectAccessRequest, v1.GetSubjectAccessResponse]
+	getMyAccess      *connect.Client[v1.GetMyAccessRequest, v1.GetMyAccessResponse]
 	getTargetFilters *connect.Client[v1.GetTargetFiltersRequest, v1.GetTargetFiltersResponse]
 }
 
@@ -192,6 +203,15 @@ func (c *targetServiceClient) GetSubjectAccess(ctx context.Context, req *v1.GetS
 	return nil, err
 }
 
+// GetMyAccess calls nokku.v1.TargetService.GetMyAccess.
+func (c *targetServiceClient) GetMyAccess(ctx context.Context, req *v1.GetMyAccessRequest) (*v1.GetMyAccessResponse, error) {
+	response, err := c.getMyAccess.CallUnary(ctx, connect.NewRequest(req))
+	if response != nil {
+		return response.Msg, err
+	}
+	return nil, err
+}
+
 // GetTargetFilters calls nokku.v1.TargetService.GetTargetFilters.
 func (c *targetServiceClient) GetTargetFilters(ctx context.Context, req *v1.GetTargetFiltersRequest) (*v1.GetTargetFiltersResponse, error) {
 	response, err := c.getTargetFilters.CallUnary(ctx, connect.NewRequest(req))
@@ -209,6 +229,7 @@ type TargetServiceHandler interface {
 	UpdateTarget(context.Context, *v1.UpdateTargetRequest) (*v1.UpdateTargetResponse, error)
 	DeleteTarget(context.Context, *v1.DeleteTargetRequest) (*v1.DeleteTargetResponse, error)
 	GetSubjectAccess(context.Context, *v1.GetSubjectAccessRequest) (*v1.GetSubjectAccessResponse, error)
+	GetMyAccess(context.Context, *v1.GetMyAccessRequest) (*v1.GetMyAccessResponse, error)
 	GetTargetFilters(context.Context, *v1.GetTargetFiltersRequest) (*v1.GetTargetFiltersResponse, error)
 }
 
@@ -258,6 +279,13 @@ func NewTargetServiceHandler(svc TargetServiceHandler, opts ...connect.HandlerOp
 		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 		connect.WithHandlerOptions(opts...),
 	)
+	targetServiceGetMyAccessHandler := connect.NewUnaryHandlerSimple(
+		TargetServiceGetMyAccessProcedure,
+		svc.GetMyAccess,
+		connect.WithSchema(targetServiceMethods.ByName("GetMyAccess")),
+		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
+		connect.WithHandlerOptions(opts...),
+	)
 	targetServiceGetTargetFiltersHandler := connect.NewUnaryHandlerSimple(
 		TargetServiceGetTargetFiltersProcedure,
 		svc.GetTargetFilters,
@@ -279,6 +307,8 @@ func NewTargetServiceHandler(svc TargetServiceHandler, opts ...connect.HandlerOp
 			targetServiceDeleteTargetHandler.ServeHTTP(w, r)
 		case TargetServiceGetSubjectAccessProcedure:
 			targetServiceGetSubjectAccessHandler.ServeHTTP(w, r)
+		case TargetServiceGetMyAccessProcedure:
+			targetServiceGetMyAccessHandler.ServeHTTP(w, r)
 		case TargetServiceGetTargetFiltersProcedure:
 			targetServiceGetTargetFiltersHandler.ServeHTTP(w, r)
 		default:
@@ -312,6 +342,10 @@ func (UnimplementedTargetServiceHandler) DeleteTarget(context.Context, *v1.Delet
 
 func (UnimplementedTargetServiceHandler) GetSubjectAccess(context.Context, *v1.GetSubjectAccessRequest) (*v1.GetSubjectAccessResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.TargetService.GetSubjectAccess is not implemented"))
+}
+
+func (UnimplementedTargetServiceHandler) GetMyAccess(context.Context, *v1.GetMyAccessRequest) (*v1.GetMyAccessResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nokku.v1.TargetService.GetMyAccess is not implemented"))
 }
 
 func (UnimplementedTargetServiceHandler) GetTargetFilters(context.Context, *v1.GetTargetFiltersRequest) (*v1.GetTargetFiltersResponse, error) {
