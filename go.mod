@@ -16,7 +16,7 @@ require (
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/time v0.15.0
-	google.golang.org/genproto/googleapis/api v0.0.0-20260831171406-18b4a7587f8a
+	google.golang.org/genproto/googleapis/api v0.0.0-20260904163448-b1c236e22ff4
 	google.golang.org/protobuf v1.36.12
 )
 
