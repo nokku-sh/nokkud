@@ -1,9 +1,11 @@
 package sshd
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"time"
@@ -46,21 +48,30 @@ func loadTrustedCAs() ([]ssh.PublicKey, error) {
 	return keys, nil
 }
 
-// parseCAFile parses every authorized-key line from path.
+// parseCAFile parses every authorized-key line from path. Blank lines and
+// comments are skipped, matching the authorized_keys format the file mirrors.
 func parseCAFile(path string) ([]ssh.PublicKey, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("sshd: read CA public key: %w", err)
 	}
+	defer f.Close()
 
 	var keys []ssh.PublicKey
-	for len(data) > 0 {
-		pub, _, _, rest, parseErr := ssh.ParseAuthorizedKey(data)
+	scan := bufio.NewScanner(f)
+	for scan.Scan() {
+		line := bytes.TrimSpace(scan.Bytes())
+		if len(line) == 0 || bytes.HasPrefix(line, []byte("#")) {
+			continue
+		}
+		pub, _, _, _, parseErr := ssh.ParseAuthorizedKey(line)
 		if parseErr != nil {
 			return nil, fmt.Errorf("sshd: parse CA public key: %w", parseErr)
 		}
 		keys = append(keys, pub)
-		data = rest
+	}
+	if scanErr := scan.Err(); scanErr != nil {
+		return nil, fmt.Errorf("sshd: read CA public key: %w", scanErr)
 	}
 	return keys, nil
 }
@@ -89,6 +100,12 @@ func (s *Server) publicKeyCallback(
 	if !ok {
 		return nil, s.deny(conn, errNoCertificates)
 	}
+	// CheckCert does not validate the cert type (only CertChecker.Authenticate
+	// does), so a host certificate from a shared or misconfigured CA would
+	// otherwise authenticate a user.
+	if cert.CertType != ssh.UserCert {
+		return nil, s.deny(conn, fmt.Errorf("sshd: certificate has type %d, want user certificate", cert.CertType))
+	}
 
 	if !s.trustedCA(cert.SignatureKey) {
 		return nil, s.deny(conn, errors.New("sshd: certificate signed by unrecognized authority"))
@@ -114,12 +131,12 @@ func (s *Server) publicKeyCallback(
 	}
 
 	// Reuses x/crypto/ssh's validation for critical options, the validity
-	// window, and the CA signature. The source-address critical option is
-	// enforced by the SSH stack itself. The checker is built per-auth so CA
-	// reloads apply to new connections immediately.
+	// window, and the CA signature. source-address is enforced by the stack
+	// against the CriticalOptions this callback returns below. The checker is
+	// built per-auth so CA reloads apply to new connections immediately.
 	checker := ssh.CertChecker{
 		IsUserAuthority:          s.trustedCA,
-		SupportedCriticalOptions: []string{"force-command"},
+		SupportedCriticalOptions: []string{"force-command", "source-address"},
 	}
 	if err := checker.CheckCert(matched, cert); err != nil {
 		return nil, s.deny(conn, err)
@@ -133,20 +150,35 @@ func (s *Server) publicKeyCallback(
 		}
 	}
 
+	// CriticalOptions flow to the stack, which enforces source-address and
+	// exposes force-command to the session. Extensions flow to the session so
+	// it can enforce the permit-* options (absent means deny, matching sshd).
+	// Wire-parsed certs always carry an Extensions map; hand-built ones may
+	// not, and writing into a nil map would panic inside the auth callback.
 	perms := &ssh.Permissions{
-		Extensions: map[string]string{
-			"nokku-principal": matched,
-		},
+		CriticalOptions: maps.Clone(cert.CriticalOptions),
+		Extensions:      maps.Clone(cert.Extensions),
 	}
-
-	// Carry the certificate's force-command critical option into the session
-	// so the exec path can enforce it (listed as supported above).
+	if perms.Extensions == nil {
+		perms.Extensions = make(map[string]string, 2)
+	}
+	perms.Extensions["nokku-principal"] = matched
 	if fc := cert.CriticalOptions["force-command"]; fc != "" {
 		perms.Extensions["force-command"] = fc
 	}
 
 	s.emit(eventWith(connEvent(conn), audit.EventAuthSuccess, matched, ""))
 	return perms, nil
+}
+
+// certExt reports whether the authenticated certificate carries the named
+// extension. Absent means deny, matching sshd's permit-* semantics.
+func certExt(conn *ssh.ServerConn, name string) bool {
+	if conn == nil || conn.Permissions == nil {
+		return false
+	}
+	_, ok := conn.Permissions.Extensions[name]
+	return ok
 }
 
 // deny logs a rejected auth attempt and returns err to the caller. Every

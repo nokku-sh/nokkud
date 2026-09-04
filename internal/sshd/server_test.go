@@ -3,6 +3,7 @@ package sshd
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"maps"
 	"net"
 	"os/user"
 	"runtime"
@@ -41,6 +42,15 @@ func userCert(t *testing.T, ca testCA, principals ...string) ssh.AuthMethod {
 	return userCertOpts(t, ca, nil, principals...)
 }
 
+// defaultExtensions mirrors the backend's default cert template. The daemon
+// enforces permit-* semantics, so tests need them granted explicitly.
+var defaultExtensions = map[string]string{
+	"permit-pty":              "",
+	"permit-user-rc":          "",
+	"permit-port-forwarding":  "",
+	"permit-agent-forwarding": "",
+}
+
 // userCertOpts is userCert with certificate options applied before signing
 // (critical options or extensions).
 func userCertOpts(
@@ -63,6 +73,7 @@ func userCertOpts(
 		ValidPrincipals: principals,
 		ValidAfter:      0,
 		ValidBefore:     ssh.CertTimeInfinity,
+		Extensions:      maps.Clone(defaultExtensions),
 	}
 	if opts != nil {
 		opts(cert)

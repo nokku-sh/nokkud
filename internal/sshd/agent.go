@@ -26,7 +26,7 @@ func (sess *session) agentRequest(req *ssh.Request) bool {
 		_ = req.Reply(false, nil)
 		return false
 	}
-	if !sess.server.tun.Load().AllowAgentForwarding {
+	if !sess.server.tun.Load().AllowAgentForwarding || !certExt(sess.conn, "permit-agent-forwarding") {
 		_ = req.Reply(false, nil)
 		return false
 	}

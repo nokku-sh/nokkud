@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -369,6 +370,7 @@ func userCertFile(t *testing.T, ca testCA) string {
 		ValidPrincipals: []string{testPrincipal},
 		ValidAfter:      0,
 		ValidBefore:     ssh.CertTimeInfinity,
+		Extensions:      maps.Clone(defaultExtensions),
 	}
 	must.NoError(cert.SignCert(rand.Reader, ca.signer))
 
