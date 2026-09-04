@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
@@ -24,18 +26,13 @@ type testCA struct {
 
 func newTestCA(t testing.TB) testCA {
 	t.Helper()
+	must := require.New(t)
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate CA key: %v", err)
-	}
+	must.NoError(err, "generate CA key")
 	signer, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatalf("CA signer: %v", err)
-	}
+	must.NoError(err, "CA signer")
 	pub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatalf("CA public key: %v", err)
-	}
+	must.NoError(err, "CA public key")
 	return testCA{pub: pub, signer: signer}
 }
 
@@ -49,6 +46,7 @@ func signHostCert(
 	validAfter, validBefore uint64,
 ) (certText, caText []byte) {
 	t.Helper()
+	must := require.New(t)
 	cert := &ssh.Certificate{
 		Key:             hostPub,
 		CertType:        ssh.HostCert,
@@ -57,9 +55,7 @@ func signHostCert(
 		ValidAfter:      validAfter,
 		ValidBefore:     validBefore,
 	}
-	if err := cert.SignCert(rand.Reader, ca.signer); err != nil {
-		t.Fatalf("sign cert: %v", err)
-	}
+	must.NoError(cert.SignCert(rand.Reader, ca.signer), "sign cert")
 	return ssh.MarshalAuthorizedKey(cert), ssh.MarshalAuthorizedKey(ca.pub)
 }
 
@@ -68,42 +64,32 @@ func signHostCert(
 // is read by the certificate logic.
 func writeHostKey(t testing.TB, dir string) ssh.PublicKey {
 	t.Helper()
+	must := require.New(t)
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate host key: %v", err)
-	}
+	must.NoError(err, "generate host key")
 	pub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatalf("host public key: %v", err)
-	}
-	if err = os.WriteFile(
+	must.NoError(err, "host public key")
+	must.NoError(os.WriteFile(
 		filepath.Join(dir, "ssh_host_ed25519_key.pub"),
 		ssh.MarshalAuthorizedKey(pub),
 		0o644,
-	); err != nil {
-		t.Fatalf("write host pub: %v", err)
-	}
-	if err = os.WriteFile(
+	), "write host pub")
+	must.NoError(os.WriteFile(
 		filepath.Join(dir, "ssh_host_ed25519_key"),
 		[]byte("unused"),
 		0o600,
-	); err != nil {
-		t.Fatalf("write host key: %v", err)
-	}
+	), "write host key")
 	return pub
 }
 
 // newHostPub returns a fresh host public key for signing test certificates.
 func newHostPub(t testing.TB) ssh.PublicKey {
 	t.Helper()
+	must := require.New(t)
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate host key: %v", err)
-	}
+	must.NoError(err, "generate host key")
 	pub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatalf("host public key: %v", err)
-	}
+	must.NoError(err, "host public key")
 	return pub
 }
 
@@ -185,17 +171,15 @@ func TestOutdatedHostCerts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			must := require.New(t)
 			dir := t.TempDir()
 			tt.setup(t, dir, newTestCA(t))
 
 			t.Setenv("NOKKUD_DATA_DIR", dir)
 			pairs, err := OutdatedHostCerts(tt.targetID)
-			if err != nil {
-				t.Fatalf("OutdatedHostCerts: %v", err)
-			}
-			if len(pairs) != tt.want {
-				t.Fatalf("OutdatedHostCerts returned %d pairs, want %d", len(pairs), tt.want)
-			}
+			must.NoError(err, "OutdatedHostCerts")
+			is.Len(pairs, tt.want)
 		})
 	}
 }
@@ -204,18 +188,16 @@ func TestNextRenewal(t *testing.T) {
 	now := time.Now()
 
 	t.Run("no certificates schedules immediately", func(t *testing.T) {
+		is := assert.New(t)
 		dir := t.TempDir()
 		t.Setenv("NOKKUD_DATA_DIR", dir)
 		got := NextRenewal("target-1")
-		if got.IsZero() {
-			t.Fatal("NextRenewal returned zero time with no certificates")
-		}
-		if got.After(now.Add(time.Minute)) {
-			t.Fatalf("NextRenewal = %v, want ~now", got)
-		}
+		is.False(got.IsZero(), "NextRenewal returned zero time with no certificates")
+		is.False(got.After(now.Add(time.Minute)), "NextRenewal = %v, want ~now", got)
 	})
 
 	t.Run("expiry drives the schedule", func(t *testing.T) {
+		is := assert.New(t)
 		dir := t.TempDir()
 		ca := newTestCA(t)
 		hostPub := writeHostKey(t, dir)
@@ -228,12 +210,14 @@ func TestNextRenewal(t *testing.T) {
 		got := NextRenewal("target-1")
 
 		want := now.Add(30*24*time.Hour - renewWindowCap)
-		if got.Sub(want) > time.Minute || want.Sub(got) > time.Minute {
-			t.Fatalf("NextRenewal = %v, want ~%v", got, want)
-		}
+		is.InDelta(
+			float64(want.UnixNano()), float64(got.UnixNano()), float64(time.Minute),
+			"NextRenewal = %v, want ~%v", got, want,
+		)
 	})
 
 	t.Run("short certificates renew late in life, never immediately", func(t *testing.T) {
+		is := assert.New(t)
 		dir := t.TempDir()
 		ca := newTestCA(t)
 		hostPub := writeHostKey(t, dir)
@@ -251,15 +235,15 @@ func TestNextRenewal(t *testing.T) {
 		// must be well after issuance (renew-loop guard) but before the
 		// expiry minus one day.
 		want := time.Unix(int64(before), 0).Add(-time.Duration(0.15 * float64(7*24*time.Hour)))
-		if got.Sub(want) > time.Minute || want.Sub(got) > time.Minute {
-			t.Fatalf("NextRenewal = %v, want ~%v", got, want)
-		}
-		if !got.After(now.Add(5 * 24 * time.Hour)) {
-			t.Fatalf("NextRenewal = %v, want more than 5 days out", got)
-		}
+		is.InDelta(
+			float64(want.UnixNano()), float64(got.UnixNano()), float64(time.Minute),
+			"NextRenewal = %v, want ~%v", got, want,
+		)
+		is.True(got.After(now.Add(5*24*time.Hour)), "NextRenewal = %v, want more than 5 days out", got)
 	})
 
 	t.Run("infinity certificate is ignored", func(t *testing.T) {
+		is := assert.New(t)
 		dir := t.TempDir()
 		ca := newTestCA(t)
 		hostPub := writeHostKey(t, dir)
@@ -268,12 +252,11 @@ func TestNextRenewal(t *testing.T) {
 
 		t.Setenv("NOKKUD_DATA_DIR", dir)
 		got := NextRenewal("target-1")
-		if got.After(now.Add(time.Minute)) {
-			t.Fatalf("NextRenewal with only an infinity cert = %v, want ~now", got)
-		}
+		is.False(got.After(now.Add(time.Minute)), "NextRenewal with only an infinity cert = %v, want ~now", got)
 	})
 
 	t.Run("outdated certificate schedules immediately", func(t *testing.T) {
+		is := assert.New(t)
 		dir := t.TempDir()
 		ca := newTestCA(t)
 		hostPub := writeHostKey(t, dir)
@@ -282,13 +265,13 @@ func TestNextRenewal(t *testing.T) {
 
 		t.Setenv("NOKKUD_DATA_DIR", dir)
 		got := NextRenewal("target-1")
-		if got.After(now.Add(time.Minute)) {
-			t.Fatalf("NextRenewal with outdated cert = %v, want ~now", got)
-		}
+		is.False(got.After(now.Add(time.Minute)), "NextRenewal with outdated cert = %v, want ~now", got)
 	})
 }
 
 func TestRenewHostCertsSignFailure(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	writeHostKey(t, dir)
 
@@ -301,26 +284,20 @@ func TestRenewHostCertsSignFailure(t *testing.T) {
 	}
 
 	renewed, err := RenewHostCerts(context.Background(), "target-1", sign, false)
-	if err == nil {
-		t.Fatal("expected the sign error to be returned")
-	}
-	if renewed != 0 {
-		t.Fatalf("renewed = %d, want 0", renewed)
-	}
-	if calls != 1 {
-		t.Fatalf("sign called %d times, want 1", calls)
-	}
+	must.Error(err, "expected the sign error to be returned")
+	is.Equal(0, renewed)
+	is.Equal(1, calls)
 
 	// Nothing must have landed on disk.
-	if _, statErr := os.Stat(paths.SoftwareHostKeyCert()); !os.IsNotExist(statErr) {
-		t.Fatalf("failed renewal must not write a certificate: %v", statErr)
-	}
-	if _, statErr := os.Stat(paths.UserCAFile()); !os.IsNotExist(statErr) {
-		t.Fatalf("failed renewal must not write the CA file: %v", statErr)
-	}
+	_, statErr := os.Stat(paths.SoftwareHostKeyCert())
+	must.ErrorIs(statErr, os.ErrNotExist, "failed renewal must not write a certificate")
+	_, statErr = os.Stat(paths.UserCAFile())
+	must.ErrorIs(statErr, os.ErrNotExist, "failed renewal must not write the CA file")
 }
 
 func TestRenewHostCertsForce(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	ca := newTestCA(t)
 	hostPub := writeHostKey(t, dir)
@@ -346,24 +323,17 @@ func TestRenewHostCertsForce(t *testing.T) {
 
 	// A valid cert is not outdated, so a normal renew leaves it alone.
 	renewed, err := RenewHostCerts(context.Background(), "target-1", sign, false)
-	if err != nil {
-		t.Fatalf("renew (non-force): %v", err)
-	}
-	if renewed != 0 {
-		t.Fatalf("non-force renewed %d certs, want 0", renewed)
-	}
+	must.NoError(err, "renew (non-force)")
+	is.Equal(0, renewed, "non-force renewed %d certs, want 0", renewed)
 
 	// Force re-signs even the valid cert, refetching the CA.
 	renewed, err = RenewHostCerts(context.Background(), "target-1", sign, true)
-	if err != nil {
-		t.Fatalf("renew (force): %v", err)
-	}
-	if renewed != 1 {
-		t.Fatalf("force renewed %d certs, want 1", renewed)
-	}
+	must.NoError(err, "renew (force)")
+	is.Equal(1, renewed, "force renewed %d certs, want 1", renewed)
 }
 
 func TestSaveCertificateRejectsMismatchedCA(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	t.Setenv("NOKKUD_DATA_DIR", dir)
 
@@ -379,18 +349,17 @@ func TestSaveCertificateRejectsMismatchedCA(t *testing.T) {
 		CaPublicKey:       &caStr,
 	}
 	err := saveCertificate(res, filepath.Join(dir, "ssh_host_ed25519_key-cert.pub"))
-	if err == nil {
-		t.Fatal("saveCertificate accepted a cert signed by a different CA")
-	}
-	if _, statErr := os.Stat(paths.UserCAFile()); !os.IsNotExist(statErr) {
-		t.Fatal("mismatched CA must not write the CA file")
-	}
+	must.Error(err, "saveCertificate accepted a cert signed by a different CA")
+	_, statErr := os.Stat(paths.UserCAFile())
+	must.ErrorIs(statErr, os.ErrNotExist, "mismatched CA must not write the CA file")
 }
 
 // TestSaveCertificateRetiresPreviousCA verifies that switching to a new
 // signing CA parks the previous one in the retired file (so the SSH server
 // keeps trusting its certificates during the rollover grace window).
 func TestSaveCertificateRetiresPreviousCA(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	t.Setenv("NOKKUD_DATA_DIR", dir)
 
@@ -403,57 +372,53 @@ func TestSaveCertificateRetiresPreviousCA(t *testing.T) {
 		t.Helper()
 		certText, caText := signHostCert(t, ca, hostPub, "target-1", 0, ssh.CertTimeInfinity)
 		certStr, caStr := string(certText), string(caText)
-		if err := saveCertificate(&nokkuv1.SignSSHCertificateResponse{
+		must.NoError(saveCertificate(&nokkuv1.SignSSHCertificateResponse{
 			SignedCertificate: &certStr,
 			CaPublicKey:       &caStr,
-		}, certPath); err != nil {
-			t.Fatalf("saveCertificate: %v", err)
-		}
+		}, certPath), "saveCertificate")
 	}
 
 	save(ca1)
 	active, err := os.ReadFile(paths.UserCAFile())
-	if err != nil {
-		t.Fatalf("read active CA: %v", err)
-	}
-	if !bytes.Equal(bytes.TrimSpace(active), bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca1.pub))) {
-		t.Fatal("active CA file does not hold the first CA")
-	}
-	if _, statErr := os.Stat(paths.RetiredCAFile()); !os.IsNotExist(statErr) {
-		t.Fatal("no retired CA expected after the first save")
-	}
+	must.NoError(err, "read active CA")
+	is.Equal(
+		bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca1.pub)),
+		bytes.TrimSpace(active),
+		"active CA file does not hold the first CA",
+	)
+	_, statErr := os.Stat(paths.RetiredCAFile())
+	must.ErrorIs(statErr, os.ErrNotExist, "no retired CA expected after the first save")
 
 	// Saving under a second CA retires the first.
 	save(ca2)
 	active, err = os.ReadFile(paths.UserCAFile())
-	if err != nil {
-		t.Fatalf("read active CA: %v", err)
-	}
-	if !bytes.Equal(bytes.TrimSpace(active), bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca2.pub))) {
-		t.Fatal("active CA file does not hold the second CA")
-	}
-	retired, err := os.ReadFile(paths.RetiredCAFile())
-	if err != nil {
-		t.Fatalf("read retired CA: %v", err)
-	}
-	if !bytes.Equal(bytes.TrimSpace(retired), bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca1.pub))) {
-		t.Fatal("retired CA file does not hold the first CA")
-	}
+	must.NoError(err, "read active CA")
+	is.Equal(
+		bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca2.pub)),
+		bytes.TrimSpace(active),
+		"active CA file does not hold the second CA",
+	)
+	var retired []byte
+	retired, err = os.ReadFile(paths.RetiredCAFile())
+	must.NoError(err, "read retired CA")
+	is.Equal(
+		bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca1.pub)),
+		bytes.TrimSpace(retired),
+		"retired CA file does not hold the first CA",
+	)
 
 	// A renewal under the same CA must not retire it again.
 	save(ca2)
-	if _, statErr := os.Stat(paths.RetiredCAFile()); statErr != nil {
-		t.Fatal("same-CA renewal must leave the retired CA untouched")
-	}
+	_, statErr = os.Stat(paths.RetiredCAFile())
+	is.NoError(statErr, "same-CA renewal must leave the retired CA untouched")
 }
 
 func writeCert(t testing.TB, dir string, data []byte) {
 	t.Helper()
-	if err := os.WriteFile(
+	must := require.New(t)
+	must.NoError(os.WriteFile(
 		filepath.Join(dir, "ssh_host_ed25519_key-cert.pub"),
 		data,
 		0o644,
-	); err != nil {
-		t.Fatalf("write certificate: %v", err)
-	}
+	), "write certificate")
 }

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
@@ -76,38 +78,28 @@ func (ts *testServer) snapshot() (msgs []*nokkuv1.UploadRecordingRequest, opens,
 // finalizes with a final message on Close.
 func TestUploaderStreamsPlaintext(t *testing.T) {
 	ts := newTestServer(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	u := NewUploader(context.Background(), ts.client, UploaderOptions{
 		SessionID: "s1",
 		Username:  "user",
 	})
 
-	if _, err := u.Write([]byte("terminal output")); err != nil {
-		t.Fatal(err)
-	}
-	if err := u.Close(); err != nil {
-		t.Fatal(err)
-	}
+	_, err := u.Write([]byte("terminal output"))
+	must.NoError(err)
+	must.NoError(u.Close())
 
 	msgs, opens, closed := ts.snapshot()
-	if opens != 1 {
-		t.Fatalf("upload stream opened %d times, want 1", opens)
-	}
-	if closed != 1 {
-		t.Fatalf("streams closed %d, want 1", closed)
-	}
-	if len(msgs) != 3 {
-		t.Fatalf("received %d messages, want meta + chunk + final", len(msgs))
-	}
+	is.Equal(1, opens)
+	is.Equal(1, closed)
+	must.Len(msgs, 3)
 	meta := msgs[0].GetMeta()
-	if meta == nil || meta.GetRecordingId() != "s1" || meta.GetUsername() != "user" {
-		t.Fatalf("meta = %+v, want recording_id s1 username user", meta)
-	}
-	if got := msgs[1].GetChunk(); string(got) != "terminal output" {
-		t.Fatalf("chunk = %q, want raw plaintext", got)
-	}
-	if msgs[2].GetFinal() == nil {
-		t.Fatalf("final message missing, got %v", msgs[2])
-	}
+	must.NotNil(meta)
+	is.Equal("s1", meta.GetRecordingId())
+	is.Equal("user", meta.GetUsername())
+	is.Equal("terminal output", string(msgs[1].GetChunk()))
+	is.NotNil(msgs[2].GetFinal())
 }
 
 // TestUploaderKeepsLocalOnFailure verifies a backend error never fails the
@@ -115,41 +107,40 @@ func TestUploaderStreamsPlaintext(t *testing.T) {
 // success so the local file keeps the data.
 func TestUploaderKeepsLocalOnFailure(t *testing.T) {
 	ts := newTestServer(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	u := NewUploader(context.Background(), ts.client, UploaderOptions{
 		SessionID: "s1",
 		Username:  "user",
 	})
 
-	if _, err := u.Write([]byte("first")); err != nil {
-		t.Fatal(err)
-	}
+	_, err := u.Write([]byte("first"))
+	must.NoError(err)
 	// Force a failure by sending after the server stream is gone is awkward;
 	// the uploader is best-effort, writing after a failed or closed uploader
 	// must still report success.
-	if err := u.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := u.Write([]byte("after close")); err != nil || n == 0 {
-		t.Fatalf("Write after close = %d, %v, want success", n, err)
-	}
+	must.NoError(u.Close())
+	n, err := u.Write([]byte("after close"))
+	must.NoError(err)
+	is.NotZero(n)
 }
 
 // TestUploaderZeroSlicesAreNoop verifies empty writes do not open a stream.
 func TestUploaderZeroSlicesAreNoop(t *testing.T) {
 	ts := newTestServer(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	u := NewUploader(context.Background(), ts.client, UploaderOptions{
 		SessionID: "s1",
 		Username:  "user",
 	})
 
-	if n, err := u.Write(nil); err != nil || n != 0 {
-		t.Fatalf("Write(nil) = %d, %v", n, err)
-	}
-	if err := u.Close(); err != nil {
-		t.Fatal(err)
-	}
+	n, err := u.Write(nil)
+	must.NoError(err)
+	is.Zero(n)
+	must.NoError(u.Close())
 	_, opens, _ := ts.snapshot()
-	if opens != 0 {
-		t.Fatalf("upload stream opened %d times for empty writes, want 0", opens)
-	}
+	is.Zero(opens)
 }

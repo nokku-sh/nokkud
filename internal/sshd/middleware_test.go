@@ -2,15 +2,18 @@ package sshd
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
 
 // TestServerAuthorizeHook verifies the Authorize policy hook runs after the
 // base cert checks and can deny a login.
 func TestServerAuthorizeHook(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	var gotPrincipal string
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{
@@ -22,18 +25,15 @@ func TestServerAuthorizeHook(t *testing.T) {
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err)
 	defer client.Close()
-	if gotPrincipal != testPrincipal {
-		t.Fatalf("authorize got principal %q, want %q", gotPrincipal, testPrincipal)
-	}
+	is.Equal(testPrincipal, gotPrincipal)
 }
 
 // TestServerAuthorizeHookDeny verifies a denied login is refused and the
 // connection cannot be established.
 func TestServerAuthorizeHookDeny(t *testing.T) {
+	is := assert.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{
 		Authorize: func(ssh.ConnMetadata, *ssh.Certificate, string) error {
@@ -42,14 +42,15 @@ func TestServerAuthorizeHookDeny(t *testing.T) {
 	})
 	defer closeFn()
 
-	if _, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal)); err == nil {
-		t.Fatal("login succeeded despite authorize denial")
-	}
+	_, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	is.Error(err, "login succeeded despite authorize denial")
 }
 
 // TestServerForceCommand verifies a certificate force-command critical option
 // replaces whatever the client requested, matching sshd.
 func TestServerForceCommand(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
@@ -59,30 +60,23 @@ func TestServerForceCommand(t *testing.T) {
 	}, testPrincipal)
 
 	client, err := dial(t, addr, currentUser(t), auth)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err)
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err)
 	defer sess.Close()
 
 	// The requested command must be ignored. The forced command runs instead.
 	out, err := sess.Output("echo original")
-	if err != nil {
-		t.Fatalf("exec: %v", err)
-	}
-	if string(out) != "forced\n" {
-		t.Fatalf("output = %q, want %q", out, "forced\n")
-	}
+	must.NoError(err)
+	is.Equal("forced\n", string(out))
 }
 
 // TestServerForceCommandSubsystem verifies a force-command blocks subsystem
 // requests (sftp), matching sshd.
 func TestServerForceCommandSubsystem(t *testing.T) {
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
@@ -92,19 +86,14 @@ func TestServerForceCommandSubsystem(t *testing.T) {
 	}, testPrincipal)
 
 	client, err := dial(t, addr, currentUser(t), auth)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err)
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err)
 	defer sess.Close()
-	if err = sess.RequestSubsystem("sftp"); err == nil {
-		t.Fatal("subsystem unexpectedly allowed with force-command")
-	} else if !strings.Contains(err.Error(), "failed") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+
+	err = sess.RequestSubsystem("sftp")
+	must.Error(err, "subsystem unexpectedly allowed with force-command")
+	must.ErrorContains(err, "failed")
 }

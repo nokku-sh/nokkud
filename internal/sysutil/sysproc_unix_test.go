@@ -8,6 +8,9 @@ import (
 	"os/user"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Non-root processes must never set Credential: Go calls setgroups(2)
@@ -20,6 +23,9 @@ func TestSysProcAttrNoCredentialWhenNonRoot(t *testing.T) {
 		t.Skip("test must run as a non-root user")
 	}
 
+	is := assert.New(t)
+	must := require.New(t)
+
 	u := &user.User{
 		Uid:      strconv.Itoa(os.Getuid()),
 		Gid:      strconv.Itoa(os.Getgid()),
@@ -27,22 +33,14 @@ func TestSysProcAttrNoCredentialWhenNonRoot(t *testing.T) {
 	}
 
 	attr, err := SysProcAttr(u)
-	if err != nil {
-		t.Fatalf("SysProcAttr: %v", err)
-	}
-	if attr.Credential != nil {
-		t.Fatal("Credential must be nil for non-root processes (setgroups EPERM)")
-	}
-	if !attr.Setsid {
-		t.Fatal("Setsid must stay enabled for pty sessions")
-	}
+	must.NoError(err)
+	is.Nil(attr.Credential)
+	is.True(attr.Setsid)
 
 	// End-to-end: the attribute set must actually spawn as this user.
 	cmd := exec.Command("/bin/true")
 	cmd.SysProcAttr = attr
-	if err = cmd.Run(); err != nil {
-		t.Fatalf("spawn with SysProcAttr failed: %v", err)
-	}
+	is.NoError(cmd.Run())
 }
 
 func TestSysProcAttrCredentialWhenRoot(t *testing.T) {
@@ -52,12 +50,11 @@ func TestSysProcAttrCredentialWhenRoot(t *testing.T) {
 		t.Skip("test must run as root")
 	}
 
+	is := assert.New(t)
+	must := require.New(t)
+
 	u := &user.User{Uid: "0", Gid: "0", Username: "root"}
 	attr, err := SysProcAttr(u)
-	if err != nil {
-		t.Fatalf("SysProcAttr: %v", err)
-	}
-	if attr.Credential == nil {
-		t.Fatal("root daemon must keep Credential to drop privileges")
-	}
+	must.NoError(err)
+	is.NotNil(attr.Credential)
 }

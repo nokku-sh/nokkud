@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/aymanbagabas/go-pty"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 )
 
@@ -13,41 +15,27 @@ import (
 // while password prompts have echo disabled.
 func TestEchoEnabled(t *testing.T) {
 	t.Parallel()
+	is := assert.New(t)
+	must := require.New(t)
 
 	ptmx, err := pty.New()
-	if err != nil {
-		t.Fatalf("pty.New: %v", err)
-	}
+	must.NoError(err)
 	defer func() { _ = ptmx.Close() }()
 
 	fd := ptmx.Fd()
-	if !EchoEnabled(fd) {
-		t.Fatal("fresh pty should have ECHO set")
-	}
+	is.True(EchoEnabled(fd))
 
 	termios, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
-	if err != nil {
-		t.Fatalf("get termios: %v", err)
-	}
+	must.NoError(err)
 
 	noEcho := *termios
 	noEcho.Lflag &^= unix.ECHO
-	if err = unix.IoctlSetTermios(int(fd), unix.TCSETS, &noEcho); err != nil {
-		t.Fatalf("set termios: %v", err)
-	}
-	if EchoEnabled(fd) {
-		t.Fatal("ECHO cleared but EchoEnabled reports true")
-	}
+	must.NoError(unix.IoctlSetTermios(int(fd), unix.TCSETS, &noEcho))
+	is.False(EchoEnabled(fd))
 
-	if err = unix.IoctlSetTermios(int(fd), unix.TCSETS, termios); err != nil {
-		t.Fatalf("restore termios: %v", err)
-	}
-	if !EchoEnabled(fd) {
-		t.Fatal("ECHO restored but EchoEnabled reports false")
-	}
+	must.NoError(unix.IoctlSetTermios(int(fd), unix.TCSETS, termios))
+	is.True(EchoEnabled(fd))
 
 	// A bogus fd must fail closed (no leak on error).
-	if EchoEnabled(^uintptr(0)) {
-		t.Fatal("invalid fd must report false")
-	}
+	is.False(EchoEnabled(^uintptr(0)))
 }

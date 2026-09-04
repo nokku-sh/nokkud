@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
@@ -20,6 +22,7 @@ import (
 // TestRecoverAndLog verifies a panic in a handler goroutine is contained and
 // does not escape into the server, and that cleanup still runs.
 func TestRecoverAndLog(t *testing.T) {
+	is := assert.New(t)
 	buf := &syncedBuffer{}
 	s := &Server{logger: slog.New(slog.NewTextHandler(buf, nil))}
 
@@ -30,39 +33,28 @@ func TestRecoverAndLog(t *testing.T) {
 		panic("handler panic must be contained")
 	}()
 
-	if !cleanupRan {
-		t.Fatal("cleanup did not run after recovered panic")
-	}
-	if got := buf.String(); !strings.Contains(got, "handler panic must be contained") {
-		t.Fatalf("panic not logged, got: %s", got)
-	}
-	if got := buf.String(); !strings.Contains(got, "recovered panic") {
-		t.Fatalf("recovery not logged, got: %s", got)
-	}
+	is.True(cleanupRan, "cleanup did not run after recovered panic")
+	is.Contains(buf.String(), "handler panic must be contained")
+	is.Contains(buf.String(), "recovered panic")
 }
 
 // TestServerDisconnectReapsCommand verifies that when the client disconnects
 // mid-command, the running process is killed and the session winds down
 // instead of hanging.
 func TestServerDisconnectReapsCommand(t *testing.T) {
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
-	if err = sess.Start("sleep 30"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	must.NoError(sess.Start("sleep 30"), "start")
 
 	// Drop the connection while the command is running. The server must
 	// kill the child and return promptly.
@@ -82,33 +74,24 @@ func TestServerDisconnectReapsCommand(t *testing.T) {
 // TestServerSignalForwards verifies a client signal reaches the running
 // process and terminates it with the expected status.
 func TestServerSignalForwards(t *testing.T) {
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
-	if err = sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}); err != nil {
-		t.Fatalf("request pty: %v", err)
-	}
-	if err = sess.Start("sleep 30"); err != nil {
-		t.Fatalf("start: %v", err)
-	}
+	must.NoError(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "request pty")
+	must.NoError(sess.Start("sleep 30"), "start")
 
 	// The signal is forwarded to the running command's process.
-	if err = sess.Signal(ssh.SIGTERM); err != nil {
-		t.Fatalf("signal: %v", err)
-	}
+	must.NoError(sess.Signal(ssh.SIGTERM), "signal")
 
 	done := make(chan error, 1)
 	go func() {
@@ -116,9 +99,7 @@ func TestServerSignalForwards(t *testing.T) {
 	}()
 	select {
 	case err = <-done:
-		if err == nil {
-			t.Fatal("expected non-zero exit after signal")
-		}
+		must.Error(err, "expected non-zero exit after signal")
 	case <-time.After(5 * time.Second):
 		t.Fatal("process did not terminate after signal")
 	}
@@ -127,57 +108,44 @@ func TestServerSignalForwards(t *testing.T) {
 // TestServerWindowChange verifies pty resize requests reach the running
 // process.
 func TestServerWindowChange(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
-	if err = sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}); err != nil {
-		t.Fatalf("request pty: %v", err)
-	}
+	must.NoError(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "request pty")
 
 	// stty size prints "rows cols". Window change must land before exec.
-	if err = sess.WindowChange(40, 20); err != nil {
-		t.Fatalf("window change: %v", err)
-	}
+	must.NoError(sess.WindowChange(40, 20), "window change")
 	out, err := sess.Output("stty size")
-	if err != nil {
-		t.Fatalf("exec stty: %v", err)
-	}
-	got := strings.TrimSpace(string(out))
-	if got != "40 20" {
-		t.Fatalf("stty size = %q, want %q", got, "40 20")
-	}
+	must.NoError(err, "exec stty")
+	is.Equal("40 20", strings.TrimSpace(string(out)))
 }
 
 // TestServerEnvWhitelist verifies only whitelisted client environment
 // variables reach the session. Shell/loader-affecting variables are dropped.
 func TestServerEnvWhitelist(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
 	_ = sess.Setenv("LANG", "de_DE.UTF-8")
@@ -189,25 +157,17 @@ func TestServerEnvWhitelist(t *testing.T) {
 	out, err := sess.Output(
 		`printf '%s|%s|%s|%s|%s' "$LANG" "$LC_MESSAGES" "$BASH_ENV" "$LD_PRELOAD" "$SSH_AUTH_SOCK"`,
 	)
-	if err != nil {
-		t.Fatalf("exec: %v", err)
-	}
+	must.NoError(err, "exec")
 	fields := strings.Split(string(out), "|")
-	if len(fields) != 5 {
-		t.Fatalf("env output = %q", out)
-	}
+	must.Len(fields, 5, "env output = %q", out)
 	// LANG and LC_MESSAGES pass through. BASH_ENV and LD_PRELOAD are refused.
-	if fields[0] != "de_DE.UTF-8" || fields[1] != "fr_FR.UTF-8" {
-		t.Fatalf("whitelisted env = %q, %q; want de_DE.UTF-8, fr_FR.UTF-8", fields[0], fields[1])
-	}
-	if fields[2] != "" || fields[3] != "" {
-		t.Fatalf("loader-affecting env leaked: BASH_ENV=%q LD_PRELOAD=%q", fields[2], fields[3])
-	}
+	is.Equal("de_DE.UTF-8", fields[0])
+	is.Equal("fr_FR.UTF-8", fields[1])
+	is.Empty(fields[2])
+	is.Empty(fields[3])
 	// SSH_AUTH_SOCK must not be the client-injected value (it may inherit the
 	// daemon's own agent socket).
-	if fields[4] == "/tmp/evil.sock" {
-		t.Fatalf("client-injected SSH_AUTH_SOCK reached the session")
-	}
+	is.NotEqual("/tmp/evil.sock", fields[4])
 }
 
 // TestServerForceCommandBlocksEnv verifies a certificate force-command runs
@@ -215,6 +175,8 @@ func TestServerEnvWhitelist(t *testing.T) {
 // whitelisted ones) are refused so an injected BASH_ENV cannot override a
 // restricted command.
 func TestServerForceCommandBlocksEnv(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
@@ -223,15 +185,11 @@ func TestServerForceCommandBlocksEnv(t *testing.T) {
 		c.CriticalOptions = map[string]string{"force-command": `printf 'force:%s' "$BASH_ENV"`}
 	}
 	client, err := dial(t, addr, currentUser(t), userCertOpts(t, ca, cert, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
 	_ = sess.Setenv("BASH_ENV", "boom")
@@ -240,12 +198,8 @@ func TestServerForceCommandBlocksEnv(t *testing.T) {
 	// The requested command is ignored. The certificate's force-command runs
 	// instead, and sees neither variable.
 	out, err := sess.Output("echo this-should-be-ignored")
-	if err != nil {
-		t.Fatalf("exec: %v", err)
-	}
-	if string(out) != "force:" {
-		t.Fatalf("output = %q, want %q", out, "force:")
-	}
+	must.NoError(err, "exec")
+	is.Equal("force:", string(out))
 }
 
 // syncedBuffer appends into a shared string under a mutex, for asserting on
@@ -291,11 +245,11 @@ func (s *captureSink) Close() error {
 // streamed to the sink, so commands that bypass a terminal are still
 // captured.
 func TestPlainSessionRecorded(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	t.Setenv("NOKKUD_DATA_DIR", dir)
-	if err := paths.Verify(); err != nil {
-		t.Fatalf("verify paths: %v", err)
-	}
+	must.NoError(paths.Verify(), "verify paths")
 
 	sink := &captureSink{closed: make(chan struct{})}
 	factory := func(context.Context, string, string) io.WriteCloser { return sink }
@@ -313,36 +267,24 @@ func TestPlainSessionRecorded(t *testing.T) {
 		TrustedCAs: []ssh.PublicKey{ca.pub},
 		Tunables:   Tunables{Record: true},
 	})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
+	must.NoError(err, "new server")
 	srv.SetRecordingSinkFactory(factory)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	must.NoError(err, "listen")
 	defer func() { _ = l.Close() }()
 	go func() { _ = srv.Serve(l) }()
 
 	client, err := dial(t, l.Addr().String(), cur, userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
 	out, err := sess.Output("printf hello-recorded")
-	if err != nil {
-		t.Fatalf("exec: %v", err)
-	}
-	if string(out) != "hello-recorded" {
-		t.Fatalf("output = %q, want %q", out, "hello-recorded")
-	}
+	must.NoError(err, "exec")
+	is.Equal("hello-recorded", string(out))
 
 	// finish() closes the recorder before the exit status is sent, so the
 	// sink is complete by the time Output returns.
@@ -353,17 +295,9 @@ func TestPlainSessionRecorded(t *testing.T) {
 	}
 
 	gr, err := gzip.NewReader(&sink.data)
-	if err != nil {
-		t.Fatalf("sink data is not gzip: %v", err)
-	}
+	must.NoError(err, "sink data is not gzip")
 	cast, err := io.ReadAll(gr)
-	if err != nil {
-		t.Fatalf("read recording: %v", err)
-	}
-	if !strings.Contains(string(cast), `"o"`) {
-		t.Fatalf("recording has no output event, got: %s", cast)
-	}
-	if !strings.Contains(string(cast), "hello-recorded") {
-		t.Fatalf("recorded output missing command output, got: %s", cast)
-	}
+	must.NoError(err, "read recording")
+	is.Contains(string(cast), `"o"`)
+	is.Contains(string(cast), "hello-recorded")
 }

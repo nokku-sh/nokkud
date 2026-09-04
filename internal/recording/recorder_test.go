@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
@@ -20,9 +23,8 @@ func newRecordsDir(t *testing.T) string {
 	t.Helper()
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	dir := paths.RecordsDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	must := require.New(t)
+	must.NoError(os.MkdirAll(dir, 0o700))
 	return dir
 }
 
@@ -31,75 +33,53 @@ func newRecordsDir(t *testing.T) string {
 // session's audit events.
 func TestRecorderCorrelatesSessionID(t *testing.T) {
 	recordsDir := newRecordsDir(t)
+	is := assert.New(t)
+	must := require.New(t)
 
 	sessionID := "0123456789abcdef0123456789abcdef"
 	rec, err := New(Options{Width: 80, Height: 24, Title: "t", SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("new recorder: %v", err)
-	}
+	must.NoError(err, "new recorder")
 	rec.RecordOutput([]byte("hello"))
 	rec.Close()
 
 	entries, err := os.ReadDir(recordsDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 recording, got %d", len(entries))
-	}
-	if !strings.Contains(entries[0].Name(), "01234567") {
-		t.Fatalf("filename %q does not embed the session id", entries[0].Name())
-	}
+	must.NoError(err)
+	must.Len(entries, 1)
+	is.Contains(entries[0].Name(), "01234567")
 
 	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer gz.Close()
 
 	var hdr map[string]any
-	if err = json.NewDecoder(gz).Decode(&hdr); err != nil {
-		t.Fatalf("decode header: %v", err)
-	}
-	if got := hdr["session_id"]; got != sessionID {
-		t.Fatalf("header session_id = %v, want %q", got, sessionID)
-	}
+	must.NoError(json.NewDecoder(gz).Decode(&hdr))
+	is.Equal(sessionID, hdr["session_id"])
 }
 
 // TestRecorderV3Schema verifies the file carries the v3 term block in the
 // header and an exit event as the last line of the event stream.
 func TestRecorderV3Schema(t *testing.T) {
 	recordsDir := newRecordsDir(t)
+	is := assert.New(t)
+	must := require.New(t)
 
 	rec, err := New(Options{Width: 100, Height: 40, Title: "t", SessionID: "sess-1"})
-	if err != nil {
-		t.Fatalf("new recorder: %v", err)
-	}
+	must.NoError(err, "new recorder")
 	rec.RecordOutput([]byte("hi"))
 	rec.RecordExit(7)
 	rec.Close()
 
 	entries, err := os.ReadDir(recordsDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 recording, got %d", len(entries))
-	}
+	must.NoError(err)
+	must.Len(entries, 1)
 	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer gz.Close()
 
 	lines := strings.Split(strings.TrimSuffix(string(mustReadAll(t, gz)), "\n"), "\n")
@@ -112,24 +92,18 @@ func TestRecorderV3Schema(t *testing.T) {
 			Type string `json:"type"`
 		} `json:"term"`
 	}
-	if err = json.Unmarshal([]byte(lines[0]), &hdr); err != nil {
-		t.Fatalf("decode header: %v", err)
-	}
-	if hdr.Version != 3 {
-		t.Fatalf("header version = %d, want 3", hdr.Version)
-	}
-	if hdr.Term.Cols != 100 || hdr.Term.Rows != 40 || hdr.Term.Type == "" {
-		t.Fatalf("term block = %+v, want cols=100 rows=40 type set", hdr.Term)
-	}
+	must.NoError(json.Unmarshal([]byte(lines[0]), &hdr))
+	is.Equal(3, hdr.Version)
+	is.Equal(100, hdr.Term.Cols)
+	is.Equal(40, hdr.Term.Rows)
+	is.NotEmpty(hdr.Term.Type)
 
 	last := lines[len(lines)-1]
 	var exit []any
-	if err = json.Unmarshal([]byte(last), &exit); err != nil {
-		t.Fatalf("last event %q is not valid JSON: %v", last, err)
-	}
-	if len(exit) != 3 || exit[1] != "x" || exit[2] != "7" {
-		t.Fatalf("last event = %v, want [interval,\"x\",\"7\"]", exit)
-	}
+	must.NoError(json.Unmarshal([]byte(last), &exit), "last event %q is not valid JSON", last)
+	must.Len(exit, 3)
+	is.Equal("x", exit[1])
+	is.Equal("7", exit[2])
 }
 
 // eventLine is a decoded asciicast event: [interval, code, data].
@@ -148,33 +122,24 @@ func recRecordAndReadEvents(
 	check func([]eventLine),
 ) {
 	t.Helper()
+	must := require.New(t)
 	rec.Close()
 
 	entries, err := os.ReadDir(recordsDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 recording, got %d", len(entries))
-	}
+	must.NoError(err)
+	must.Len(entries, 1)
 	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer gz.Close()
 
 	lines := strings.Split(strings.TrimSuffix(string(mustReadAll(t, gz)), "\n"), "\n")
 	events := make([]eventLine, 0, len(lines)-1)
 	for _, line := range lines[1:] {
 		var ev []json.RawMessage
-		if jerr := json.Unmarshal([]byte(line), &ev); jerr != nil {
-			t.Fatalf("decode event %q: %v", line, jerr)
-		}
+		must.NoError(json.Unmarshal([]byte(line), &ev))
 		var code string
 		var data string
 		if len(ev) >= 3 {
@@ -191,35 +156,30 @@ func recRecordAndReadEvents(
 // cast instead of `\u003c`.
 func TestRecorderNoHTMLEscape(t *testing.T) {
 	recordsDir := newRecordsDir(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	rec, err := New(Options{Width: 80, Height: 24, SessionID: "s1"})
-	if err != nil {
-		t.Fatalf("new recorder: %v", err)
-	}
+	must.NoError(err, "new recorder")
 	rec.RecordOutput([]byte("a < b & c > d\n"))
 	rec.Close()
 
 	entries, err := os.ReadDir(recordsDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.Len(entries, 1)
 	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer gz.Close()
 
 	raw := string(mustReadAll(t, gz))
-	if !strings.Contains(raw, "<") || !strings.Contains(raw, "&") || !strings.Contains(raw, ">") {
-		t.Fatalf("expected literal angle/ampersand in cast, got %q", raw)
-	}
-	if strings.Contains(raw, `\u003c`) || strings.Contains(raw, `\u0026`) {
-		t.Fatalf("cast contains HTML escapes: %q", raw)
-	}
+	is.Contains(raw, "<")
+	is.Contains(raw, "&")
+	is.Contains(raw, ">")
+	is.NotContains(raw, `\u003c`)
+	is.NotContains(raw, `\u0026`)
 }
 
 // TestRecorderEscapedUnicodeRoundTrips verifies event data containing a
@@ -228,10 +188,11 @@ func TestRecorderNoHTMLEscape(t *testing.T) {
 // parsing of the whole cast.
 func TestRecorderEscapedUnicodeRoundTrips(t *testing.T) {
 	recordsDir := newRecordsDir(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	rec, err := New(Options{Width: 80, Height: 24, SessionID: "s1"})
-	if err != nil {
-		t.Fatalf("new recorder: %v", err)
-	}
+	must.NoError(err, "new recorder")
 	input := `echo '\u003c \u003e \u0026'`
 	rec.RecordOutput([]byte(input))
 	recRecordAndReadEvents(t, recordsDir, rec, func(events []eventLine) {
@@ -241,18 +202,14 @@ func TestRecorderEscapedUnicodeRoundTrips(t *testing.T) {
 				found = true
 			}
 		}
-		if !found {
-			t.Fatalf("event data %q did not round trip", input)
-		}
+		is.True(found, "event data %q did not round trip", input)
 	})
 }
 
 func mustReadAll(t *testing.T, r io.Reader) []byte {
 	t.Helper()
 	data, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read gzip: %v", err)
-	}
+	require.NoError(t, err, "read gzip")
 	return data
 }
 
@@ -262,11 +219,11 @@ func mustReadAll(t *testing.T, r io.Reader) []byte {
 // flush.
 func TestRecorderFlushesWithoutClose(t *testing.T) {
 	recordsDir := newRecordsDir(t)
+	is := assert.New(t)
+	must := require.New(t)
 
 	rec, err := New(Options{Width: 80, Height: 24, Title: "t"})
-	if err != nil {
-		t.Fatalf("new recorder: %v", err)
-	}
+	must.NoError(err, "new recorder")
 	defer rec.Close()
 
 	rec.RecordOutput([]byte("first"))
@@ -277,35 +234,25 @@ func TestRecorderFlushesWithoutClose(t *testing.T) {
 	time.Sleep(3 * maxFlushInterval)
 
 	entries, err := os.ReadDir(recordsDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 recording, got %d", len(entries))
-	}
+	must.NoError(err)
+	must.Len(entries, 1)
 
 	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer gz.Close()
 
 	data, err := io.ReadAll(gz)
 	// An unclosed recording has no gzip footer yet, so the reader reports
 	// the data it got plus io.ErrUnexpectedEOF. That is the intended crash
 	// behavior: everything up to the last flush stays readable.
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf("read recording before close: %v", err)
-	}
+	is.True(err == nil || errors.Is(err, io.ErrUnexpectedEOF),
+		"read recording before close: %v", err)
 	body := string(data)
-	if !strings.Contains(body, "first") || !strings.Contains(body, "second") {
-		t.Fatalf("events not flushed to disk before close: %q", body)
-	}
+	is.Contains(body, "first")
+	is.Contains(body, "second")
 }
 
 // New returns (nil, nil) when recording is unavailable (e.g. low disk

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -20,6 +22,8 @@ import (
 // headless, and run real clients (ssh, scp -O/-s, sftp, rsync, git, -L, -R,
 // -A) against it.
 func TestBinaryInterop(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	bin := buildNokkud(t)
 
 	ca := newTestCA(t)
@@ -29,9 +33,7 @@ func TestBinaryInterop(t *testing.T) {
 	// Seed the principal cache. The current user may log in as testPrincipal.
 	// Written directly in the daemon's on-disk format (cache.json) rather
 	// than via Cache.Save, keeping this harness independent of state wiring.
-	if err := writeCacheFile(configDir, currentUser(t), []string{testPrincipal}); err != nil {
-		t.Fatalf("seed cache: %v", err)
-	}
+	must.NoError(writeCacheFile(configDir, currentUser(t), []string{testPrincipal}), "seed cache")
 
 	// Launch the headless server and wait for it to print its address.
 	cmd := exec.Command(
@@ -41,14 +43,10 @@ func TestBinaryInterop(t *testing.T) {
 		"--allow-nonroot",
 	)
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-	if err = cmd.Start(); err != nil {
-		t.Fatalf("start sshd-server: %v", err)
-	}
+	must.NoError(cmd.Start(), "start sshd-server")
 	defer func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
@@ -83,80 +81,61 @@ func TestBinaryInterop(t *testing.T) {
 		"ssh",
 		append(baseOpts, "-q", fmt.Sprintf("%s@%s", user, host), "echo hello")...,
 	)
-	if err != nil {
-		t.Fatalf("ssh exec: %v\n%s", err, out)
-	}
-	if string(out) != "hello\n" {
-		t.Fatalf("ssh exec output = %q", out)
-	}
+	must.NoError(err, "ssh exec: %s", out)
+	is.Equal("hello\n", string(out))
 
 	// 2. scp -O (legacy)
 	src := filepath.Join(scratch, "legacy.txt")
-	if err = os.WriteFile(src, payload, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(src, payload, 0o644), "write scp source")
 	up := filepath.Join(scratch, "legacy-up.txt")
-	if out, err = runCmd(
+	out, err = runCmd(
 		"scp",
 		append(fileOpts, "-O", src, fmt.Sprintf("%s@%s:%s", user, host, up))...,
-	); err != nil {
-		t.Fatalf("scp -O up: %v\n%s", err, out)
-	}
+	)
+	must.NoError(err, "scp -O up: %s", out)
 	var b []byte
 	b, err = os.ReadFile(up)
-	if err != nil || string(b) != string(payload) {
-		t.Fatalf("scp -O up content: %q err=%v", b, err)
-	}
+	must.NoError(err, "read scp -O upload")
+	is.Equal(string(payload), string(b))
 
 	// 3. scp -s (SFTP-based modern)
 	down := filepath.Join(scratch, "modern-down.txt")
-	if out, err = runCmd(
+	out, err = runCmd(
 		"scp",
 		append(fileOpts, "-s", fmt.Sprintf("%s@%s:%s", user, host, src), down)...,
-	); err != nil {
-		t.Fatalf("scp -s down: %v\n%s", err, out)
-	}
-	if b, err = os.ReadFile(down); err != nil || string(b) != string(payload) {
-		t.Fatalf("scp -s down content: %q err=%v", b, err)
-	}
+	)
+	must.NoError(err, "scp -s down: %s", out)
+	b, err = os.ReadFile(down)
+	must.NoError(err, "read scp -s download")
+	is.Equal(string(payload), string(b))
 
 	// 4. sftp batch
 	sftpOps := fmt.Sprintf("get %s %s\nbye\n", src, filepath.Join(scratch, "sftp-down.txt"))
-	if out, err = runCmdWithInput(
+	out, err = runCmdWithInput(
 		"sftp",
 		sftpOps,
 		append(fileOpts, "-b", "-", fmt.Sprintf("%s@%s", user, host))...,
-	); err != nil {
-		t.Fatalf("sftp: %v\n%s", err, out)
-	}
-	if b, err = os.ReadFile(
-		filepath.Join(scratch, "sftp-down.txt"),
-	); err != nil ||
-		string(b) != string(payload) {
-		t.Fatalf("sftp down content: %q err=%v", b, err)
-	}
+	)
+	must.NoError(err, "sftp: %s", out)
+	b, err = os.ReadFile(filepath.Join(scratch, "sftp-down.txt"))
+	must.NoError(err, "read sftp download")
+	is.Equal(string(payload), string(b))
 
 	// 5. rsync
 	rsrc := filepath.Join(t.TempDir(), "rsync.txt")
-	if err = os.WriteFile(rsrc, payload, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(rsrc, payload, 0o600), "write rsync source")
 	sshOpts := fmt.Sprintf("ssh %s", strings.Join(baseOpts, " "))
-	if out, err = runCmd(
+	out, err = runCmd(
 		"rsync",
 		"-e",
 		sshOpts,
 		rsrc,
 		fmt.Sprintf("%s@%s:%s", user, host, filepath.Join(scratch, "rsync.txt")),
-	); err != nil {
-		t.Fatalf("rsync: %v\n%s", err, out)
-	}
-	if b, err = os.ReadFile(
-		filepath.Join(scratch, "rsync.txt"),
-	); err != nil ||
-		string(b) != string(payload) {
-		t.Fatalf("rsync content: %q err=%v", b, err)
-	}
+	)
+	must.NoError(err, "rsync: %s", out)
+	b, err = os.ReadFile(filepath.Join(scratch, "rsync.txt"))
+	must.NoError(err, "read rsync copy")
+	is.Equal(string(payload), string(b))
 
 	// 6. git clone/push over the embedded server
 	gitDir := filepath.Join(t.TempDir(), "repo.git")
@@ -174,9 +153,7 @@ func TestBinaryInterop(t *testing.T) {
 		fmt.Sprintf("%s@%s:%s", user, host, gitDir),
 		work,
 	)
-	if err = os.WriteFile(filepath.Join(work, "f.txt"), []byte("git\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(filepath.Join(work, "f.txt"), []byte("git\n"), 0o644), "write git file")
 	runGit(t, "-C", work, "-c", "core.sshCommand="+gitSSH, "add", "f.txt")
 	runGit(
 		t,
@@ -204,39 +181,27 @@ func TestBinaryInterop(t *testing.T) {
 		"-N", "-q",
 		fmt.Sprintf("%s@%s", user, host),
 	)...)
-	if err = fwd.Start(); err != nil {
-		t.Fatalf("start ssh -L: %v", err)
-	}
+	must.NoError(fwd.Start(), "start ssh -L")
 	defer func() {
 		_ = fwd.Process.Kill()
 		_, _ = fwd.Process.Wait()
 	}()
 
 	// Wait for the local forward port to accept, then round-trip through it.
-	deadline := time.Now().Add(10 * time.Second)
 	var fconn net.Conn
-	for time.Now().Before(deadline) {
+	is.Eventually(func() bool {
 		fconn, err = net.Dial("tcp", "127.0.0.1:"+localPort)
-		if err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if fconn == nil {
-		t.Fatalf("could not connect to local -L port %s: %v", localPort, err)
-	}
+		return err == nil
+	}, 10*time.Second, 50*time.Millisecond)
+	must.NoError(err, "could not connect to local -L port %s", localPort)
 	defer fconn.Close()
-	if _, err = fconn.Write([]byte("forward")); err != nil {
-		t.Fatalf("-L write: %v", err)
-	}
+	_, err = fconn.Write([]byte("forward"))
+	must.NoError(err, "-L write")
 	_ = fconn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 7)
-	if _, err = io.ReadFull(fconn, buf); err != nil {
-		t.Fatalf("-L read: %v", err)
-	}
-	if string(buf) != "forward" {
-		t.Fatalf("-L echo = %q, want %q", buf, "forward")
-	}
+	_, err = io.ReadFull(fconn, buf)
+	must.NoError(err, "-L read")
+	is.Equal("forward", string(buf))
 
 	// 8. -A agent forwarding through the real binary. A dedicated ssh-agent
 	// is started so the check does not depend on the host environment (CI
@@ -249,33 +214,19 @@ func TestBinaryInterop(t *testing.T) {
 	)
 	agentSSH.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
 	aout, aerr := agentSSH.CombinedOutput()
-	if aerr != nil {
-		t.Fatalf("ssh -A: %v\n%s", aerr, aout)
-	}
-	if len(strings.TrimSpace(string(aout))) == 0 {
-		t.Fatal("ssh -A did not expose SSH_AUTH_SOCK")
-	}
+	must.NoError(aerr, "ssh -A: %s", aout)
+	is.NotEmpty(strings.TrimSpace(string(aout)), "ssh -A did not expose SSH_AUTH_SOCK")
 
 	// 9. Audit events were written for the real clients above.
 	auditFiles, err := filepath.Glob(filepath.Join(configDir, "audit", "audit-*.jsonl"))
-	if err != nil {
-		t.Fatalf("glob audit files: %v", err)
-	}
-	if len(auditFiles) == 0 {
-		t.Fatal("no audit events written")
-	}
+	must.NoError(err, "glob audit files")
+	is.NotEmpty(auditFiles, "no audit events written")
 	for _, f := range auditFiles {
 		var data []byte
 		data, err = os.ReadFile(f)
-		if err != nil {
-			t.Fatalf("read audit %s: %v", f, err)
-		}
-		if !strings.Contains(string(data), `"type":"auth_success"`) {
-			t.Fatalf("audit file %s has no auth_success event", f)
-		}
-		if !strings.Contains(string(data), `"type":"command"`) {
-			t.Fatalf("audit file %s has no command event", f)
-		}
+		must.NoError(err, "read audit %s", f)
+		is.Contains(string(data), `"type":"auth_success"`)
+		is.Contains(string(data), `"type":"command"`)
 	}
 	t.Logf("audit: %d event file(s) verified", len(auditFiles))
 }
@@ -311,18 +262,14 @@ func buildNokkud(t *testing.T) string {
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return filepath.Clean(filepath.Join(wd, "..", ".."))
 }
 
 func seedTrustedCA(t *testing.T, dir string, pub ssh.PublicKey) {
 	t.Helper()
 	data := ssh.MarshalAuthorizedKey(pub)
-	if err := os.WriteFile(filepath.Join(dir, "nokku_ca.pub"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "nokku_ca.pub"), data, 0o644))
 }
 
 func readLine(t *testing.T, r io.Reader, timeout time.Duration) string {
@@ -371,9 +318,8 @@ func runCmdWithInput(name, input string, args ...string) ([]byte, error) {
 
 func runGit(t *testing.T, args ...string) {
 	t.Helper()
-	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
+	out, err := exec.Command("git", args...).CombinedOutput()
+	require.NoError(t, err, "git %v: %s", args, out)
 }
 
 // testAgent starts a dedicated ssh-agent and returns its socket path plus a
@@ -385,9 +331,7 @@ func testAgent(t *testing.T) (string, func()) {
 		t.Skip("ssh-agent not installed")
 	}
 	out, err := exec.Command("ssh-agent").CombinedOutput()
-	if err != nil {
-		t.Fatalf("start ssh-agent: %v\n%s", err, out)
-	}
+	require.NoError(t, err, "start ssh-agent: %s", out)
 	var sock, pid string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		key, val, ok := strings.Cut(strings.TrimSpace(line), "=")
@@ -416,9 +360,7 @@ func testAgent(t *testing.T) (string, func()) {
 func freePort(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer ln.Close()
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 	return port

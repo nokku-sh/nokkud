@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSSHPort(t *testing.T) {
@@ -29,9 +32,8 @@ func TestSSHPort(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.addr, func(t *testing.T) {
-			if got := sshPort(tt.addr); got != tt.want {
-				t.Errorf("sshPort(%q) = %q, want %q", tt.addr, got, tt.want)
-			}
+			is := assert.New(t)
+			is.Equal(tt.want, sshPort(tt.addr))
 		})
 	}
 }
@@ -52,9 +54,8 @@ func TestValidPort(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.port, func(t *testing.T) {
-			if got := validPort(tt.port); got != tt.want {
-				t.Errorf("validPort(%q) = %q, want %q", tt.port, got, tt.want)
-			}
+			is := assert.New(t)
+			is.Equal(tt.want, validPort(tt.port))
 		})
 	}
 }
@@ -62,6 +63,8 @@ func TestValidPort(t *testing.T) {
 // TestCaMatches verifies the cached CA comparison used to detect rollovers:
 // content equality, whitespace tolerance, and the missing-file case.
 func TestCaMatches(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	t.Setenv("NOKKUD_DATA_DIR", dir)
 	caPath := filepath.Join(dir, "nokku_ca.pub")
@@ -69,23 +72,11 @@ func TestCaMatches(t *testing.T) {
 
 	c := &Client{}
 
-	if c.caMatches(key) {
-		t.Fatal("caMatches must report false when no CA file exists")
-	}
+	is.False(c.caMatches(key), "caMatches must report false when no CA file exists")
 
-	if err := os.WriteFile(caPath, []byte(key+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !c.caMatches(key) {
-		t.Fatal("caMatches must match the cached CA")
-	}
-	if !c.caMatches(key + "\n   ") {
-		t.Fatal("caMatches must tolerate surrounding whitespace")
-	}
-	if c.caMatches(key[:len(key)-1] + "X") {
-		t.Fatal("caMatches must reject a different CA")
-	}
-	if c.caMatches(strings.TrimSpace(key)) && !c.caMatches(key) {
-		t.Fatal("unexpected result")
-	}
+	must.NoError(os.WriteFile(caPath, []byte(key+"\n"), 0o644))
+	is.True(c.caMatches(key), "caMatches must match the cached CA")
+	is.True(c.caMatches(key+"\n   "), "caMatches must tolerate surrounding whitespace")
+	is.False(c.caMatches(key[:len(key)-1]+"X"), "caMatches must reject a different CA")
+	is.True(c.caMatches(strings.TrimSpace(key)), "caMatches must ignore whitespace differences")
 }

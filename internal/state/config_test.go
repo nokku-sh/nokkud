@@ -2,8 +2,10 @@ package state
 
 import (
 	"os"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
@@ -15,6 +17,9 @@ func newTestDataDir(t *testing.T) {
 
 func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	newTestDataDir(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	c := NewConfig()
 	c.WorkspaceID = "ws-1"
 	c.TargetID = "tgt-1"
@@ -22,123 +27,100 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	c.APIURL = "https://api.example.com"
 	c.SSHAddr = ":4022"
 
-	if err := c.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	must.NoError(c.Save())
 
 	loaded := NewConfig()
-	if err := loaded.Load(); err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if loaded.WorkspaceID != "ws-1" || loaded.TargetID != "tgt-1" ||
-		loaded.DaemonID != "daemon-1" || loaded.APIURL != "https://api.example.com" ||
-		loaded.SSHAddr != ":4022" {
-		t.Fatalf("loaded config = %+v, want all fields set", loaded)
-	}
+	must.NoError(loaded.Load())
+	is.Equal("ws-1", loaded.WorkspaceID)
+	is.Equal("tgt-1", loaded.TargetID)
+	is.Equal("daemon-1", loaded.DaemonID)
+	is.Equal("https://api.example.com", loaded.APIURL)
+	is.Equal(":4022", loaded.SSHAddr)
 }
 
 func TestConfigLoadMissingFileIsNotAnError(t *testing.T) {
 	newTestDataDir(t)
+	is := assert.New(t)
+
 	c := NewConfig()
-	if err := c.Load(); err != nil {
-		t.Fatalf("Load on missing file: %v, want nil", err)
-	}
+	is.NoError(c.Load())
 }
 
 func TestConfigLoadCorruptedClearsAndRemoves(t *testing.T) {
 	newTestDataDir(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	c := NewConfig()
 	c.WorkspaceID = "ws-1"
-	if err := c.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	if err := os.WriteFile(paths.ConfigFile(), []byte("{not json"), 0o600); err != nil {
-		t.Fatalf("corrupt config: %v", err)
-	}
+	must.NoError(c.Save())
+	must.NoError(os.WriteFile(paths.ConfigFile(), []byte("{not json"), 0o600))
 
 	loaded := NewConfig()
-	if err := loaded.Load(); err != nil {
-		t.Fatalf("Load on corrupted config: %v, want nil (daemon must start unenrolled)", err)
-	}
-	if loaded.WorkspaceID != "" {
-		t.Fatalf("corrupted config left state behind: %+v", loaded)
-	}
-	if _, err := os.Stat(paths.ConfigFile()); !os.IsNotExist(err) {
-		t.Fatalf("corrupted config file was not removed: %v", err)
-	}
+	must.NoError(loaded.Load())
+	is.Empty(loaded.WorkspaceID)
+
+	_, err := os.Stat(paths.ConfigFile())
+	is.True(os.IsNotExist(err))
 }
 
 func TestConfigClearKeepsSaveTarget(t *testing.T) {
 	newTestDataDir(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	c := NewConfig()
 	c.WorkspaceID = "ws-1"
 	c.Clear()
 
-	if c.WorkspaceID != "" {
-		t.Fatalf("Clear left fields set: %+v", c)
-	}
-	if err := c.Save(); err != nil {
-		t.Fatalf("Save after Clear: %v", err)
-	}
-	if _, err := os.Stat(paths.ConfigFile()); err != nil {
-		t.Fatalf("config file not written where expected: %v", err)
-	}
+	is.Empty(c.WorkspaceID)
+	must.NoError(c.Save())
+	_, err := os.Stat(paths.ConfigFile())
+	is.NoError(err)
 }
 
 func TestConfigSaveSkipsUnchanged(t *testing.T) {
 	newTestDataDir(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	c := NewConfig()
 	c.WorkspaceID = "ws-1"
-	if err := c.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	must.NoError(c.Save())
 	fi, err := os.Stat(paths.ConfigFile())
-	if err != nil {
-		t.Fatalf("stat config: %v", err)
-	}
-	if err = c.Save(); err != nil {
-		t.Fatalf("second Save: %v", err)
-	}
+	must.NoError(err)
+	is.NoError(c.Save())
 	fi2, err := os.Stat(paths.ConfigFile())
-	if err != nil {
-		t.Fatalf("stat config: %v", err)
-	}
-	if !fi.ModTime().Equal(fi2.ModTime()) {
-		t.Fatal("unchanged Save rewrote the file")
-	}
+	must.NoError(err)
+	is.Equal(fi.ModTime(), fi2.ModTime())
 }
 
 func TestConfigSaveWritesWithPrivatePerms(t *testing.T) {
 	newTestDataDir(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	c := NewConfig()
 	c.WorkspaceID = "ws-1"
-	if err := c.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	must.NoError(c.Save())
 	fi, err := os.Stat(paths.ConfigFile())
-	if err != nil {
-		t.Fatalf("stat config: %v", err)
-	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("config perm = %o, want 600", perm)
-	}
+	must.NoError(err)
+	is.Equal(os.FileMode(0o600), fi.Mode().Perm())
 }
 
 func TestConfigFileNeverContainsPaths(t *testing.T) {
 	newTestDataDir(t)
+	is := assert.New(t)
+	must := require.New(t)
+
 	dataDir := os.Getenv("NOKKUD_DATA_DIR")
 	c := NewConfig()
 	c.WorkspaceID = "ws-1"
-	if err := c.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	must.NoError(c.Save())
 	data, err := os.ReadFile(paths.ConfigFile())
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
+	must.NoError(err)
+
 	// The data dir must not leak into the serialized enrollment state,
 	// which is shared with the control plane.
-	if strings.Contains(string(data), dataDir) {
-		t.Fatal("config file contains the data dir path")
-	}
+	is.NotContains(string(data), dataDir)
 }

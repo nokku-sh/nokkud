@@ -1,16 +1,16 @@
 package sshd
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"errors"
 	"net"
 	"os/user"
 	"runtime"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/state"
@@ -26,17 +26,11 @@ type testCA struct {
 func newTestCA(t *testing.T) testCA {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate CA: %v", err)
-	}
+	require.NoError(t, err, "generate CA")
 	signer, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatalf("CA signer: %v", err)
-	}
+	require.NoError(t, err, "CA signer")
 	pub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatalf("CA public key: %v", err)
-	}
+	require.NoError(t, err, "CA public key")
 	return testCA{pub: pub, signer: signer}
 }
 
@@ -57,17 +51,11 @@ func userCertOpts(
 ) ssh.AuthMethod {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate user key: %v", err)
-	}
+	require.NoError(t, err, "generate user key")
 	userSigner, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatalf("user signer: %v", err)
-	}
+	require.NoError(t, err, "user signer")
 	pub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatalf("user public key: %v", err)
-	}
+	require.NoError(t, err, "user public key")
 	cert := &ssh.Certificate{
 		Key:             pub,
 		CertType:        ssh.UserCert,
@@ -79,13 +67,9 @@ func userCertOpts(
 	if opts != nil {
 		opts(cert)
 	}
-	if err = cert.SignCert(rand.Reader, ca.signer); err != nil {
-		t.Fatalf("sign cert: %v", err)
-	}
+	require.NoError(t, cert.SignCert(rand.Reader, ca.signer), "sign cert")
 	certSigner, err := ssh.NewCertSigner(cert, userSigner)
-	if err != nil {
-		t.Fatalf("cert signer: %v", err)
-	}
+	require.NoError(t, err, "cert signer")
 	return ssh.PublicKeys(certSigner)
 }
 
@@ -100,9 +84,7 @@ func startTestServer(t *testing.T, ca testCA) (addr string, closeFn func()) {
 func startTestServerOpts(t *testing.T, ca testCA, extra Options) (addr string, closeFn func()) {
 	t.Helper()
 	cur, err := user.Current()
-	if err != nil {
-		t.Fatalf("current user: %v", err)
-	}
+	require.NoError(t, err, "current user")
 	principals := func(username string) []string {
 		if username == cur.Username {
 			return []string{testPrincipal}
@@ -114,13 +96,9 @@ func startTestServerOpts(t *testing.T, ca testCA, extra Options) (addr string, c
 	extra.Principals = principals
 	extra.TrustedCAs = []ssh.PublicKey{ca.pub}
 	srv, err := New(extra)
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
+	require.NoError(t, err, "new server")
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 	go func() { _ = srv.Serve(l) }()
 	return l.Addr().String(), func() { _ = l.Close() }
 }
@@ -137,54 +115,44 @@ func dial(t *testing.T, addr, username string, auth ssh.AuthMethod) (*ssh.Client
 }
 
 func TestServerExec(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
 	out, err := sess.Output("printf hello-nokkud")
-	if err != nil {
-		t.Fatalf("exec: %v", err)
-	}
-	if string(out) != "hello-nokkud" {
-		t.Fatalf("output = %q, want %q", out, "hello-nokkud")
-	}
+	must.NoError(err, "exec")
+	is.Equal("hello-nokkud", string(out))
 }
 
 func TestServerExecExitStatus(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
-	if err = sess.Run("exit 7"); err != nil {
-		var ee *ssh.ExitError
-		if !errors.As(err, &ee) || ee.ExitStatus() != 7 {
-			t.Fatalf("expected exit status 7, got %v", err)
-		}
-	}
+	err = sess.Run("exit 7")
+	var ee *ssh.ExitError
+	must.ErrorAs(err, &ee)
+	is.Equal(7, ee.ExitStatus())
 }
 
 func TestServerExecExitSignal(t *testing.T) {
@@ -192,20 +160,18 @@ func TestServerExecExitSignal(t *testing.T) {
 		t.Skip("no POSIX signals on windows")
 	}
 
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
 	// The command kills its own shell, so the server must report exit-signal
@@ -213,161 +179,132 @@ func TestServerExecExitSignal(t *testing.T) {
 	// that to the conventional 128+signal exit status.
 	err = sess.Run("kill -TERM $$")
 	var ee *ssh.ExitError
-	if !errors.As(err, &ee) {
-		t.Fatalf("expected ExitError, got %v", err)
-	}
-	if ee.Signal() != "TERM" {
-		t.Fatalf("signal = %q, want TERM", ee.Signal())
-	}
-	if ee.ExitStatus() != 143 {
-		t.Fatalf("exit status = %d, want 143 (128+SIGTERM)", ee.ExitStatus())
-	}
+	must.ErrorAs(err, &ee)
+	is.Equal("TERM", ee.Signal())
+	is.Equal(143, ee.ExitStatus())
 }
 
 func TestServerPTYExec(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
 
-	if err = sess.RequestPty("xterm-256color", 80, 24, ssh.TerminalModes{}); err != nil {
-		t.Fatalf("request pty: %v", err)
-	}
+	must.NoError(sess.RequestPty("xterm-256color", 80, 24, ssh.TerminalModes{}), "request pty")
 	out, err := sess.Output("printf pty-ok")
-	if err != nil {
-		t.Fatalf("pty exec: %v", err)
-	}
-	if string(out) != "pty-ok" {
-		t.Fatalf("pty output = %q, want %q", out, "pty-ok")
-	}
+	must.NoError(err, "pty exec")
+	is.Equal("pty-ok", string(out))
 }
 
 func TestServerDeniesUntrustedCA(t *testing.T) {
+	is := assert.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	other := newTestCA(t)
-	if _, err := dial(t, addr, currentUser(t), userCert(t, other, testPrincipal)); err == nil {
-		t.Fatal("expected auth to fail with untrusted CA")
-	}
+	_, err := dial(t, addr, currentUser(t), userCert(t, other, testPrincipal))
+	is.Error(err, "expected auth to fail with untrusted CA")
 }
 
 func TestServerDeniesWrongPrincipal(t *testing.T) {
+	is := assert.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
-	if _, err := dial(t, addr, currentUser(t), userCert(t, ca, "unknown-principal")); err == nil {
-		t.Fatal("expected auth to fail with unauthorized principal")
-	}
+	_, err := dial(t, addr, currentUser(t), userCert(t, ca, "unknown-principal"))
+	is.Error(err, "expected auth to fail with unauthorized principal")
 }
 
 func TestServerDeniesNoRules(t *testing.T) {
+	is := assert.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	// No principals rules exist for this (likely nonexistent) username.
-	if _, err := dial(t, addr, "nobody-nokku-test", userCert(t, ca, testPrincipal)); err == nil {
-		t.Fatal("expected auth to fail with no access rules")
-	}
+	_, err := dial(t, addr, "nobody-nokku-test", userCert(t, ca, testPrincipal))
+	is.Error(err, "expected auth to fail with no access rules")
 }
 
 func TestServerDeniesPlainKey(t *testing.T) {
+	is := assert.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	require.NoError(t, err, "generate key")
 	signer, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatalf("signer: %v", err)
-	}
-	if _, err = dial(t, addr, currentUser(t), ssh.PublicKeys(signer)); err == nil {
-		t.Fatal("expected auth to reject a non-certificate key")
-	}
+	require.NoError(t, err, "signer")
+	_, err = dial(t, addr, currentUser(t), ssh.PublicKeys(signer))
+	is.Error(err, "expected auth to reject a non-certificate key")
 }
 
 func currentUser(t *testing.T) string {
 	t.Helper()
 	cur, err := user.Current()
-	if err != nil {
-		t.Fatalf("current user: %v", err)
-	}
+	require.NoError(t, err, "current user")
 	return cur.Username
 }
 
 // TestHostKeysStable verifies that a generated host key survives reloads: if
 // it changed, every known_hosts entry would break on daemon restart.
 func TestHostKeysStable(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 
 	s1, c1, err := loadHostKeys()
-	if err != nil {
-		t.Fatalf("load host keys: %v", err)
-	}
+	must.NoError(err, "load host keys")
 	for _, c := range c1 {
 		defer func() { _ = c.Close() }()
 	}
-	if len(s1) == 0 {
-		t.Fatal("expected at least one host key")
-	}
+	is.NotEmpty(s1, "expected at least one host key")
 	first := s1[0].PublicKey().Marshal()
 
 	s2, c2, err := loadHostKeys()
-	if err != nil {
-		t.Fatalf("reload host keys: %v", err)
-	}
+	must.NoError(err, "reload host keys")
 	for _, c := range c2 {
 		defer func() { _ = c.Close() }()
 	}
 	second := s2[0].PublicKey().Marshal()
-	if !bytes.Equal(first, second) {
-		t.Fatal("host key changed across reloads")
-	}
+	is.Equal(first, second)
 }
 
 // TestNewWithoutTrustedCA verifies the server starts with no trusted CA on
 // first boot (the CA file lands after the first certificate sync). Reload
 // picks it up. Without CAs, no login can succeed until then.
 func TestNewWithoutTrustedCA(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	srv, err := New(Options{
 		Principals: func(string) []string {
 			return nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("expected server to start without a trusted CA, got: %v", err)
-	}
-	if len(srv.trustedCAs) != 0 {
-		t.Fatalf("expected zero trusted CAs, got %d", len(srv.trustedCAs))
-	}
+	must.NoError(err, "expected server to start without a trusted CA")
+	is.Empty(srv.trustedCAs)
 }
 
 // TestServerLivePrincipals verifies that adding a principal to the shared
 // cache takes effect on the next connection, without restarting the server.
 func TestServerLivePrincipals(t *testing.T) {
+	must := require.New(t)
 	ca := newTestCA(t)
 	cur, err := user.Current()
-	if err != nil {
-		t.Fatalf("current user: %v", err)
-	}
+	require.NoError(t, err, "current user")
 
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	cache := state.NewCache()
@@ -378,40 +315,25 @@ func TestServerLivePrincipals(t *testing.T) {
 		},
 		TrustedCAs: []ssh.PublicKey{ca.pub},
 	})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
+	must.NoError(err, "new server")
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	must.NoError(err, "listen")
 	go func() { _ = srv.Serve(l) }()
 	defer l.Close()
 
 	// No rules yet: denied.
-	if _, err = dial(
-		t,
-		l.Addr().String(),
-		cur.Username,
-		userCert(t, ca, testPrincipal),
-	); err == nil {
-		t.Fatal("expected auth to fail before the principal is granted")
-	}
+	_, err = dial(t, l.Addr().String(), cur.Username, userCert(t, ca, testPrincipal))
+	must.Error(err, "expected auth to fail before the principal is granted")
 
 	// Backend push lands in the shared cache: now allowed.
 	cache.Replace(map[string][]string{cur.Username: {testPrincipal}}, nil, 0)
 	client, err := dial(t, l.Addr().String(), cur.Username, userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial after cache update: %v", err)
-	}
+	must.NoError(err, "dial after cache update")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err, "new session")
 	defer sess.Close()
-	if _, err = sess.Output("printf live"); err != nil {
-		t.Fatalf("exec: %v", err)
-	}
+	_, err = sess.Output("printf live")
+	must.NoError(err, "exec")
 }

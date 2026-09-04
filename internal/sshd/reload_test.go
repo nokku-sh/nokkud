@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
@@ -22,6 +24,8 @@ func softwareHostKeys() func() ([]ssh.Signer, error) {
 // TestServerReloadPicksUpCA verifies the server can start with no cached CA
 // (first boot) and, after Reload, trusts the CA that lands on disk.
 func TestServerReloadPicksUpCA(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	configDir := t.TempDir()
 	t.Setenv("NOKKUD_DATA_DIR", configDir)
@@ -38,32 +42,26 @@ func TestServerReloadPicksUpCA(t *testing.T) {
 		TrustedCAs: []ssh.PublicKey{ca.pub},
 		HostKeys:   softwareHostKeys(),
 	})
-	if err != nil {
-		t.Fatalf("new server without CA: %v", err)
-	}
+	must.NoError(err, "new server without CA")
 	defer func() { _ = srv.Close() }()
 
 	// Now the CA file appears (as the cert sync would write it) and Reload
 	// must pick it up.
-	if err = os.WriteFile(
+	must.NoError(os.WriteFile(
 		filepath.Join(configDir, "nokku_ca.pub"),
 		ssh.MarshalAuthorizedKey(ca.pub),
 		0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err = srv.Reload(); err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if !srv.trustedCA(ca.pub) {
-		t.Fatal("reloaded server does not trust the CA that landed on disk")
-	}
+	))
+	must.NoError(srv.Reload())
+	is.True(srv.trustedCA(ca.pub), "reloaded server does not trust the CA that landed on disk")
 }
 
 // TestLoadTrustedCAsRetiredGrace verifies the retired CA stays trusted for
 // the rollover grace window and drops off afterwards, while the active CA
 // always remains trusted.
 func TestLoadTrustedCAsRetiredGrace(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	active := newTestCA(t)
 	retired := newTestCA(t)
 	configDir := t.TempDir()
@@ -71,13 +69,11 @@ func TestLoadTrustedCAsRetiredGrace(t *testing.T) {
 
 	writeCAFile := func(name string, ca testCA) {
 		t.Helper()
-		if err := os.WriteFile(
+		must.NoError(os.WriteFile(
 			filepath.Join(configDir, name),
 			ssh.MarshalAuthorizedKey(ca.pub),
 			0o644,
-		); err != nil {
-			t.Fatal(err)
-		}
+		))
 	}
 	trusts := func(keys []ssh.PublicKey, ca testCA) bool {
 		t.Helper()
@@ -90,61 +86,42 @@ func TestLoadTrustedCAsRetiredGrace(t *testing.T) {
 	}
 
 	writeCAFile("nokku_ca.pub", active)
-
 	keys, err := loadTrustedCAs()
-	if err != nil {
-		t.Fatalf("loadTrustedCAs: %v", err)
-	}
-	if !trusts(keys, active) || trusts(keys, retired) {
-		t.Fatal("active CA must be trusted, no retired CA present")
-	}
+	must.NoError(err)
+	is.True(trusts(keys, active), "active CA must be trusted")
+	is.False(trusts(keys, retired), "no retired CA present")
 
 	// A fresh retired CA (recent mtime) is trusted alongside the active one.
 	writeCAFile("nokku_ca.previous.pub", retired)
 	keys, err = loadTrustedCAs()
-	if err != nil {
-		t.Fatalf("loadTrustedCAs: %v", err)
-	}
-	if !trusts(keys, active) || !trusts(keys, retired) {
-		t.Fatal("retired CA must stay trusted during the grace window")
-	}
+	must.NoError(err)
+	is.True(trusts(keys, active), "active CA must stay trusted during the grace window")
+	is.True(trusts(keys, retired), "retired CA must stay trusted during the grace window")
 
 	// After the grace window the retired CA is no longer trusted.
 	old := time.Now().Add(-retiredCAGrace - time.Hour)
-	if err = os.Chtimes(filepath.Join(configDir, "nokku_ca.previous.pub"), old, old); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.Chtimes(filepath.Join(configDir, "nokku_ca.previous.pub"), old, old))
 	keys, err = loadTrustedCAs()
-	if err != nil {
-		t.Fatalf("loadTrustedCAs: %v", err)
-	}
-	if trusts(keys, retired) {
-		t.Fatal("retired CA must stop being trusted after the grace window")
-	}
-	if !trusts(keys, active) {
-		t.Fatal("active CA must remain trusted")
-	}
+	must.NoError(err)
+	is.False(trusts(keys, retired), "retired CA must stop being trusted after the grace window")
+	is.True(trusts(keys, active), "active CA must remain trusted")
 
 	// A corrupt retired CA must not break authentication.
-	if err = os.WriteFile(
+	must.NoError(os.WriteFile(
 		filepath.Join(configDir, "nokku_ca.previous.pub"),
 		[]byte("garbage"),
 		0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	))
 	keys, err = loadTrustedCAs()
-	if err != nil {
-		t.Fatalf("corrupt retired CA must not fail the load: %v", err)
-	}
-	if !trusts(keys, active) {
-		t.Fatal("active CA must remain trusted with a corrupt retired CA")
-	}
+	must.NoError(err, "corrupt retired CA must not fail the load")
+	is.True(trusts(keys, active), "active CA must remain trusted with a corrupt retired CA")
 }
 
 // TestServerReloadRefreshesHostCerts verifies Reload adopts a newly written
 // host certificate for the host key.
 func TestServerReloadRefreshesHostCerts(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	configDir := t.TempDir()
 	t.Setenv("NOKKUD_DATA_DIR", configDir)
@@ -159,22 +136,16 @@ func TestServerReloadRefreshesHostCerts(t *testing.T) {
 		TrustedCAs: []ssh.PublicKey{ca.pub},
 		HostKeys:   softwareHostKeys(),
 	})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
+	must.NoError(err, "new server")
 	defer func() { _ = srv.Close() }()
 
 	// Read the host key generated by New, sign it as a host cert, and write
 	// the cert next to it, as RenewHostCerts would.
 	keyPath := paths.SoftwareHostKey()
 	keyData, err := os.ReadFile(keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	hostSigner, err := ssh.ParsePrivateKey(keyData)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	hostPub := hostSigner.PublicKey()
 	cert := &ssh.Certificate{
 		Key:         hostPub,
@@ -183,17 +154,11 @@ func TestServerReloadRefreshesHostCerts(t *testing.T) {
 		ValidAfter:  0,
 		ValidBefore: ssh.CertTimeInfinity,
 	}
-	if err = cert.SignCert(rand.Reader, ca.signer); err != nil {
-		t.Fatalf("sign host cert: %v", err)
-	}
+	must.NoError(cert.SignCert(rand.Reader, ca.signer))
 	certPath := keyPath + "-cert.pub"
-	if err = os.WriteFile(certPath, ssh.MarshalAuthorizedKey(cert), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(certPath, ssh.MarshalAuthorizedKey(cert), 0o644))
 
-	if err = srv.Reload(); err != nil {
-		t.Fatalf("reload: %v", err)
-	}
+	must.NoError(srv.Reload())
 
 	// A host cert signer's PublicKey() returns the certificate itself.
 	srv.certsMu.RLock()
@@ -204,7 +169,5 @@ func TestServerReloadRefreshesHostCerts(t *testing.T) {
 			hasCert = true
 		}
 	}
-	if !hasCert {
-		t.Fatal("reload did not adopt the host certificate")
-	}
+	is.True(hasCert, "reload did not adopt the host certificate")
 }

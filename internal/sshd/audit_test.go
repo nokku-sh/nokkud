@@ -8,12 +8,17 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nokku-sh/nokkud/internal/audit"
 )
 
 // TestServerAuditEvents verifies auth success/failure, session, and command
 // events are emitted to the audit sink.
 func TestServerAuditEvents(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	sink := &sliceAudit{}
 	addr, closeFn := startTestServerOpts(t, ca, Options{Audit: sink})
@@ -21,29 +26,18 @@ func TestServerAuditEvents(t *testing.T) {
 
 	// A successful login + command.
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err)
 	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("new session: %v", err)
-	}
+	must.NoError(err)
 	out, err := sess.Output("echo hi")
-	if err != nil || string(out) != "hi\n" {
-		t.Fatalf("exec: %q err=%v", out, err)
-	}
+	must.NoError(err)
+	is.Equal("hi\n", string(out))
 	_ = sess.Close()
 	_ = client.Close()
 
 	// A failed login (wrong principal).
-	if _, err = dial(
-		t,
-		addr,
-		currentUser(t),
-		userCert(t, ca, "some-other-principal"),
-	); err == nil {
-		t.Fatal("login with wrong principal unexpectedly succeeded")
-	}
+	_, err = dial(t, addr, currentUser(t), userCert(t, ca, "some-other-principal"))
+	must.Error(err, "login with wrong principal unexpectedly succeeded")
 
 	types := sink.types()
 	for _, want := range []audit.EventType{
@@ -53,51 +47,38 @@ func TestServerAuditEvents(t *testing.T) {
 		audit.EventSessionEnd,
 		audit.EventCommand,
 	} {
-		if !containsEvent(types, want) {
-			t.Fatalf("missing audit event %q in %v", want, types)
-		}
+		is.True(containsEvent(types, want), "missing audit event %q in %v", want, types)
 	}
 }
 
 // TestAuditSinkFile verifies the JSONL audit sink writes parseable events.
 func TestAuditSinkFile(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	s, err := audit.New(filepath.Join(dir, "audit"))
-	if err != nil {
-		t.Fatalf("new sink: %v", err)
-	}
+	must.NoError(err)
 	defer s.Close()
 
 	s.Emit(audit.Event{Type: audit.EventAuthSuccess, User: "bob", Principal: "p1"})
 	s.Emit(audit.Event{Type: audit.EventSessionStart, User: "bob"})
-	if err = s.Close(); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(s.Close())
 
 	matches, err := filepath.Glob(filepath.Join(dir, "audit", "audit-*.jsonl"))
-	if err != nil || len(matches) != 1 {
-		t.Fatalf("audit files: %v %v", matches, err)
-	}
+	must.NoError(err)
+	is.Len(matches, 1)
 	f, err := os.Open(matches[0])
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	defer f.Close()
 	var events []audit.Event
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		var ev audit.Event
-		if err = json.Unmarshal(sc.Bytes(), &ev); err != nil {
-			t.Fatalf("parse: %v", err)
-		}
+		must.NoError(json.Unmarshal(sc.Bytes(), &ev))
 		events = append(events, ev)
 	}
-	if err = sc.Err(); err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	if len(events) != 2 {
-		t.Fatalf("events = %d, want 2", len(events))
-	}
+	must.NoError(sc.Err())
+	is.Len(events, 2)
 }
 
 type sliceAudit struct {

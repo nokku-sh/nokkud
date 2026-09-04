@@ -10,6 +10,7 @@ require (
 	github.com/mizuchilabs/kata v0.1.3
 	github.com/nokku-sh/mon v0.1.0
 	github.com/pkg/sftp v1.13.11
+	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sys v0.47.0
@@ -24,5 +25,6 @@ require (
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 )

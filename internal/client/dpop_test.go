@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 
@@ -26,113 +28,90 @@ import (
 
 func newTestProofer(t *testing.T) *dpop.Proofer {
 	t.Helper()
+	must := require.New(t)
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	must.NoError(err, "generate key")
 	p, err := dpop.NewProofer(key, dpop.ProoferOptions{})
-	if err != nil {
-		t.Fatalf("new proofer: %v", err)
-	}
+	must.NoError(err, "new proofer")
 	return p
 }
 
 // proofClaims decodes the payload of a compact JWT without verifying it.
 func proofClaims(t *testing.T, proof string) map[string]any {
 	t.Helper()
+	must := require.New(t)
 	parts := strings.Split(proof, ".")
-	if len(parts) != 3 {
-		t.Fatalf("proof is not a compact JWT: %q", proof)
-	}
+	must.Len(parts, 3, "proof is not a compact JWT: %q", proof)
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		t.Fatalf("decode payload: %v", err)
-	}
+	must.NoError(err, "decode payload")
 	var claims map[string]any
-	if err = json.Unmarshal(payload, &claims); err != nil {
-		t.Fatalf("unmarshal claims: %v", err)
-	}
+	must.NoError(json.Unmarshal(payload, &claims), "unmarshal claims")
 	return claims
 }
 
 func TestDPoPAuthEnrolledUsesDPoPScheme(t *testing.T) {
 	t.Parallel()
+	is := assert.New(t)
+	must := require.New(t)
 	st := &state.Config{SessionToken: "sess-token", APIURL: "https://app.example.com"}
 	a := &dpopAuth{config: st, proofer: newTestProofer(t)}
 
 	header := http.Header{}
-	if err := a.sign(header, "/nokku.v1.DaemonService/SyncDaemon"); err != nil {
-		t.Fatalf("sign: %v", err)
-	}
-	if got := header.Get("Authorization"); got != "DPoP sess-token" {
-		t.Errorf("Authorization = %q, want %q", got, "DPoP sess-token")
-	}
-	if header.Get("DPoP") == "" {
-		t.Fatal("expected a DPoP proof header")
-	}
-	if _, ok := proofClaims(t, header.Get("DPoP"))["ath"]; !ok {
-		t.Error("enrolled proof must carry an ath claim")
-	}
+	must.NoError(a.sign(header, "/nokku.v1.DaemonService/SyncDaemon"), "sign")
+	is.Equal("DPoP sess-token", header.Get("Authorization"))
+	is.NotEmpty(header.Get("DPoP"), "expected a DPoP proof header")
+	is.Contains(proofClaims(t, header.Get("DPoP")), "ath", "enrolled proof must carry an ath claim")
 }
 
 func TestDPoPAuthEnrollUnboundProof(t *testing.T) {
 	t.Parallel()
+	is := assert.New(t)
+	must := require.New(t)
 	st := &state.Config{APIURL: "https://app.example.com"} // no SessionToken yet
 	a := &dpopAuth{config: st, proofer: newTestProofer(t)}
 
 	header := http.Header{}
-	if err := a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure); err != nil {
-		t.Fatalf("sign: %v", err)
-	}
-	if got := header.Get("Authorization"); got != "" {
-		t.Errorf("Authorization = %q, want empty (no token on enroll)", got)
-	}
+	must.NoError(a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure), "sign")
+	is.Empty(header.Get("Authorization"), "no token on enroll")
 	proof := header.Get("DPoP")
-	if proof == "" {
-		t.Fatal("expected a DPoP proof header")
-	}
-	if _, ok := proofClaims(t, proof)["ath"]; ok {
-		t.Error("enrollment proof must not carry an ath claim")
-	}
+	is.NotEmpty(proof, "expected a DPoP proof header")
+	is.NotContains(proofClaims(t, proof), "ath", "enrollment proof must not carry an ath claim")
 }
 
 func TestDPoPAuthHTUHasNoDoubleSlash(t *testing.T) {
 	t.Parallel()
+	is := assert.New(t)
+	must := require.New(t)
 	st := &state.Config{APIURL: "https://app.example.com"} // no SessionToken yet
 	a := &dpopAuth{config: st, proofer: newTestProofer(t)}
 
 	header := http.Header{}
-	if err := a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure); err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	must.NoError(a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure), "sign")
 	proof := header.Get("DPoP")
-	if proof == "" {
-		t.Fatal("expected a DPoP proof header")
-	}
-	if got := proofClaims(t, proof)["htu"]; got != "https://app.example.com"+nokkuv1connect.DaemonServiceEnrollDaemonProcedure {
-		t.Errorf("proof htu = %v", got)
-	}
+	is.NotEmpty(proof, "expected a DPoP proof header")
+	is.Equal(
+		"https://app.example.com"+nokkuv1connect.DaemonServiceEnrollDaemonProcedure,
+		proofClaims(t, proof)["htu"],
+	)
 }
 
 func TestDPoPAuthNoTokenNoEnrollIsNoop(t *testing.T) {
 	t.Parallel()
+	is := assert.New(t)
+	must := require.New(t)
 	st := &state.Config{APIURL: "https://app.example.com"}
 	a := &dpopAuth{config: st, proofer: newTestProofer(t)}
 
 	header := http.Header{}
-	if err := a.sign(header, "/nokku.v1.DaemonService/SyncDaemon"); err != nil {
-		t.Fatalf("sign: %v", err)
-	}
-	if got := header.Get("Authorization"); got != "" {
-		t.Errorf("Authorization = %q, want empty", got)
-	}
-	if header.Get("DPoP") != "" {
-		t.Error("expected no DPoP proof for a non-enroll call without a token")
-	}
+	must.NoError(a.sign(header, "/nokku.v1.DaemonService/SyncDaemon"), "sign")
+	is.Empty(header.Get("Authorization"))
+	is.Empty(header.Get("DPoP"), "expected no DPoP proof for a non-enroll call without a token")
 }
 
 func TestDPoPAuthHTUUsesCanonicalServerURL(t *testing.T) {
 	t.Parallel()
+	is := assert.New(t)
+	must := require.New(t)
 	st := &state.Config{APIURL: "http://localhost:3000"} // connect address
 	a := &dpopAuth{
 		config:    st,
@@ -141,39 +120,28 @@ func TestDPoPAuthHTUUsesCanonicalServerURL(t *testing.T) {
 	}
 
 	header := http.Header{}
-	if err := a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure); err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	must.NoError(a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure), "sign")
 	want := "https://app.example.com" + nokkuv1connect.DaemonServiceEnrollDaemonProcedure
-	if got := proofClaims(t, header.Get("DPoP"))["htu"]; got != want {
-		t.Errorf("proof htu = %v, want %v", got, want)
-	}
+	is.Equal(want, proofClaims(t, header.Get("DPoP"))["htu"])
 }
 
 func TestDPoPAuthLearnNonceLearnsServerURL(t *testing.T) {
 	t.Parallel()
+	is := assert.New(t)
+	must := require.New(t)
 	st := &state.Config{APIURL: "http://localhost:3000"}
 	a := &dpopAuth{config: st, proofer: newTestProofer(t)}
 
 	err := connect.NewError(connect.CodeUnauthenticated, errors.New("stale DPoP nonce"))
 	err.Meta().Set("DPoP-Nonce", "nonce-2")
 	err.Meta().Set(urlHeader, "https://app.example.com")
-	if !a.LearnNonce(err) {
-		t.Fatal("LearnNonce() = false, want true")
-	}
+	is.True(a.LearnNonce(err), "LearnNonce() = false, want true")
 
 	header := http.Header{}
-	if err := a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure); err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	must.NoError(a.sign(header, nokkuv1connect.DaemonServiceEnrollDaemonProcedure), "sign")
 	claims := proofClaims(t, header.Get("DPoP"))
-	if got := claims["nonce"]; got != "nonce-2" {
-		t.Errorf("proof nonce = %v, want nonce-2", got)
-	}
-	want := "https://app.example.com" + nokkuv1connect.DaemonServiceEnrollDaemonProcedure
-	if got := claims["htu"]; got != want {
-		t.Errorf("proof htu = %v, want %v", got, want)
-	}
+	is.Equal("nonce-2", claims["nonce"])
+	is.Equal("https://app.example.com"+nokkuv1connect.DaemonServiceEnrollDaemonProcedure, claims["htu"])
 }
 
 // TestDPoPAuthRefreshesStaleNonceForStreams verifies streaming requests
@@ -182,6 +150,7 @@ func TestDPoPAuthLearnNonceLearnsServerURL(t *testing.T) {
 // is fresh.
 func TestDPoPAuthRefreshesStaleNonceForStreams(t *testing.T) {
 	t.Parallel()
+	is := assert.New(t)
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits++
@@ -203,17 +172,11 @@ func TestDPoPAuthRefreshesStaleNonceForStreams(t *testing.T) {
 	a.mu.Lock()
 	got := a.nonce
 	a.mu.Unlock()
-	if got != "fresh-nonce" {
-		t.Fatalf("nonce = %q, want fresh-nonce", got)
-	}
-	if hits != 1 {
-		t.Fatalf("nonce endpoint hit %d times, want 1", hits)
-	}
+	is.Equal("fresh-nonce", got)
+	is.Equal(1, hits)
 
 	a.refreshNonce(context.Background())
-	if hits != 1 {
-		t.Fatalf("nonce endpoint hit %d times after refresh, want 1", hits)
-	}
+	is.Equal(1, hits, "nonce endpoint hit again while the cached nonce was fresh")
 }
 
 // TestDPoPAuthUnaryRefreshesStaleNonce verifies unary requests also prefetch
@@ -221,6 +184,8 @@ func TestDPoPAuthRefreshesStaleNonceForStreams(t *testing.T) {
 // first attempt instead of burning the deliberate 401 round trip.
 func TestDPoPAuthUnaryRefreshesStaleNonce(t *testing.T) {
 	t.Parallel()
+	is := assert.New(t)
+	must := require.New(t)
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits++
@@ -243,16 +208,8 @@ func TestDPoPAuthUnaryRefreshesStaleNonce(t *testing.T) {
 		return connect.NewResponse(&nokkuv1.GetVersionResponse{}), nil
 	})
 	resp, err := unary(context.Background(), connect.NewRequest(&nokkuv1.GetVersionRequest{}))
-	if err != nil {
-		t.Fatalf("unary: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected a response")
-	}
-	if hits != 1 {
-		t.Fatalf("nonce endpoint hit %d times, want 1", hits)
-	}
-	if got := proofClaims(t, proof)["nonce"]; got != "fresh-nonce" {
-		t.Fatalf("proof nonce = %v, want fresh-nonce", got)
-	}
+	must.NoError(err, "unary")
+	is.NotNil(resp)
+	is.Equal(1, hits)
+	is.Equal("fresh-nonce", proofClaims(t, proof)["nonce"])
 }

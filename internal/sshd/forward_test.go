@@ -6,10 +6,11 @@ import (
 	"io"
 	"net"
 	"os/exec"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -17,9 +18,7 @@ import (
 func testEchoServer(t *testing.T) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("echo listen: %v", err)
-	}
+	require.NoError(t, err, "echo listen")
 	go func() {
 		for {
 			c, aerr := ln.Accept()
@@ -38,6 +37,8 @@ func testEchoServer(t *testing.T) net.Listener {
 // TestServerDirectTCPIP verifies -L style forwarding: a direct-tcpip channel
 // reaches the requested destination.
 func TestServerDirectTCPIP(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
@@ -47,32 +48,25 @@ func TestServerDirectTCPIP(t *testing.T) {
 	_, portStr, _ := net.SplitHostPort(echo.Addr().String())
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	conn, err := client.Dial("tcp", "127.0.0.1:"+portStr)
-	if err != nil {
-		t.Fatalf("forward dial: %v", err)
-	}
+	must.NoError(err, "forward dial")
 	defer conn.Close()
 
-	if _, err = conn.Write([]byte("ping")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	_, err = conn.Write([]byte("ping"))
+	must.NoError(err, "write")
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 4)
-	if _, err = io.ReadFull(conn, buf); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(buf) != "ping" {
-		t.Fatalf("echo = %q, want %q", buf, "ping")
-	}
+	_, err = io.ReadFull(conn, buf)
+	must.NoError(err, "read")
+	is.Equal("ping", string(buf))
 }
 
 // TestServerDirectTCPIPDisabled verifies forwarding is rejected when off.
 func TestServerDirectTCPIPDisabled(t *testing.T) {
+	is := assert.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
@@ -82,33 +76,28 @@ func TestServerDirectTCPIPDisabled(t *testing.T) {
 	_, portStr, _ := net.SplitHostPort(echo.Addr().String())
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	require.NoError(t, err, "dial")
 	defer client.Close()
 
-	if _, err = client.Dial("tcp", "127.0.0.1:"+portStr); err == nil {
-		t.Fatal("forwarding unexpectedly allowed")
-	}
+	_, err = client.Dial("tcp", "127.0.0.1:"+portStr)
+	is.Error(err, "forwarding unexpectedly allowed")
 }
 
 // TestServerRemoteForward verifies -R style forwarding: a listener is bound on
 // the server and connections are delivered to the client.
 func TestServerRemoteForward(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	ln, err := client.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("remote listen: %v", err)
-	}
+	must.NoError(err, "remote listen")
 	defer ln.Close()
 
 	// The client's listener accepts the forwarded-tcpip channel opened for
@@ -128,69 +117,48 @@ func TestServerRemoteForward(t *testing.T) {
 
 	// Connect to the server-side listener as a plain TCP client.
 	sconn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatalf("dial server-side forward: %v", err)
-	}
+	must.NoError(err, "dial server-side forward")
 	defer sconn.Close()
 
-	if _, err = sconn.Write([]byte("pong")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	_, err = sconn.Write([]byte("pong"))
+	must.NoError(err, "write")
 	_ = sconn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 4)
-	if _, err = io.ReadFull(sconn, buf); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(buf) != "pong" {
-		t.Fatalf("echo = %q, want %q", buf, "pong")
-	}
+	_, err = io.ReadFull(sconn, buf)
+	must.NoError(err, "read")
+	is.Equal("pong", string(buf))
 }
 
 // TestServerMaxSessions verifies the per-connection session cap.
 func TestServerMaxSessions(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxSessions: 2}})
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	s1, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("session 1: %v", err)
-	}
+	must.NoError(err, "session 1")
 	defer s1.Close()
 	s2, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("session 2: %v", err)
-	}
+	must.NoError(err, "session 2")
 	defer s2.Close()
 
-	if _, err = client.NewSession(); err == nil {
-		t.Fatal("third session unexpectedly allowed")
-	} else if !strings.Contains(err.Error(), "too many sessions") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	_, err = client.NewSession()
+	must.ErrorContains(err, "too many sessions")
 
 	// Closing one session frees a slot (the server notices asynchronously).
-	if err = s1.Close(); err != nil {
-		t.Fatalf("close s1: %v", err)
-	}
+	must.NoError(s1.Close(), "close s1")
 	var s3 *ssh.Session
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	is.Eventually(func() bool {
 		s3, err = client.NewSession()
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("session after close: %v", err)
-	}
+		return err == nil
+	}, 5*time.Second, 20*time.Millisecond)
+	must.NoError(err, "session after close")
 	defer s3.Close()
 }
 
@@ -199,20 +167,18 @@ func TestServerMaxSessions(t *testing.T) {
 // address, so the server must report it back verbatim even though the listener
 // itself is pinned to loopback.
 func TestServerRemoteForwardLocalhost(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	ln, err := client.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatalf("remote listen: %v", err)
-	}
+	must.NoError(err, "remote listen")
 	defer ln.Close()
 
 	go func() {
@@ -229,22 +195,16 @@ func TestServerRemoteForwardLocalhost(t *testing.T) {
 	}()
 
 	sconn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatalf("dial server-side forward: %v", err)
-	}
+	must.NoError(err, "dial server-side forward")
 	defer sconn.Close()
 
-	if _, err = sconn.Write([]byte("pong")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	_, err = sconn.Write([]byte("pong"))
+	must.NoError(err, "write")
 	_ = sconn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 4)
-	if _, err = io.ReadFull(sconn, buf); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(buf) != "pong" {
-		t.Fatalf("echo = %q, want %q", buf, "pong")
-	}
+	_, err = io.ReadFull(sconn, buf)
+	must.NoError(err, "read")
+	is.Equal("pong", string(buf))
 }
 
 // TestServerRemoteForwardInterop drives ssh -R with the real OpenSSH client:
@@ -259,6 +219,8 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 		t.Skip("ssh not installed")
 	}
 
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
@@ -273,9 +235,7 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	// The remote forward is bound via a placeholder port. OpenSSH -R binds on
 	// the server to the requested port. Use a free port.
 	bound, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	_, boundPortStr, _ := net.SplitHostPort(bound.Addr().String())
 	_ = bound.Close()
 
@@ -294,12 +254,8 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 		fmt.Sprintf("%s@%s", user, host),
 	)
 	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.NoError(cmd.Start(), "start ssh")
 	defer func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
@@ -311,21 +267,21 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	// the client's -R end and echoed.
 	sconn, err := net.Dial("tcp", "127.0.0.1:"+boundPortStr)
 	if err != nil {
-		t.Fatalf("dial server-side forward: %v\n%s", err, slurp(stderr))
+		// slurp lazily: reading the pipe blocks until the ssh process exits
+		must.NoError(err, "dial server-side forward\n%s", slurp(stderr))
 	}
 	defer sconn.Close()
 
-	if _, err = sconn.Write([]byte("interop")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	_, err = sconn.Write([]byte("interop"))
+	must.NoError(err, "write")
 	_ = sconn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 7)
-	if _, err = io.ReadFull(sconn, buf); err != nil {
-		t.Fatalf("read: %v\n%s", err, slurp(stderr))
+	_, err = io.ReadFull(sconn, buf)
+	if err != nil {
+		// slurp lazily: reading the pipe blocks until the ssh process exits
+		must.NoError(err, "read\n%s", slurp(stderr))
 	}
-	if string(buf) != "interop" {
-		t.Fatalf("echo = %q, want %q", buf, "interop")
-	}
+	is.Equal("interop", string(buf))
 }
 
 func slurp(r io.Reader) string {
@@ -336,27 +292,31 @@ func slurp(r io.Reader) string {
 // TestRemoteBindAddr verifies remote forwards are pinned to loopback unless
 // gateway ports are enabled, matching OpenSSH's GatewayPorts=no default.
 func TestRemoteBindAddr(t *testing.T) {
-	cases := []struct {
+	tests := []struct {
+		name      string
 		requested string
 		gateway   bool
 		want      string
 	}{
-		{"", false, "127.0.0.1"},
-		{"0.0.0.0", false, "127.0.0.1"},
-		{"192.168.1.5", false, "127.0.0.1"},
-		{"", true, "0.0.0.0"},
-		{"192.168.1.5", true, "192.168.1.5"},
+		{"empty request pins loopback", "", false, "127.0.0.1"},
+		{"wildcard request pins loopback", "0.0.0.0", false, "127.0.0.1"},
+		{"lan request pins loopback", "192.168.1.5", false, "127.0.0.1"},
+		{"empty request with gateway binds wildcard", "", true, "0.0.0.0"},
+		{"lan request with gateway binds lan", "192.168.1.5", true, "192.168.1.5"},
 	}
-	for _, tc := range cases {
-		if got := remoteBindAddr(tc.requested, tc.gateway); got != tc.want {
-			t.Errorf("remoteBindAddr(%q, %v) = %q, want %q", tc.requested, tc.gateway, got, tc.want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := assert.New(t)
+			is.Equal(tt.want, remoteBindAddr(tt.requested, tt.gateway))
+		})
 	}
 }
 
 // TestServerGatewayPortsToggle verifies the runtime option flips the remote
 // forward bind policy.
 func TestServerGatewayPortsToggle(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	srv, err := New(Options{
@@ -364,28 +324,21 @@ func TestServerGatewayPortsToggle(t *testing.T) {
 		TrustedCAs: []ssh.PublicKey{ca.pub},
 		Tunables:   Tunables{AllowForwarding: true},
 	})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	if srv.tun.Load().GatewayPorts {
-		t.Fatal("gateway ports enabled by default")
-	}
+	must.NoError(err, "new server")
+	is.False(srv.tun.Load().GatewayPorts, "gateway ports enabled by default")
 	srv.SetTunables(Tunables{AllowForwarding: true, GatewayPorts: true})
-	if !srv.tun.Load().GatewayPorts {
-		t.Fatal("SetTunables did not enable gateway ports")
-	}
+	is.True(srv.tun.Load().GatewayPorts, "SetTunables did not enable gateway ports")
 }
 
 func TestServerForwardingLargeTransfer(t *testing.T) {
+	must := require.New(t)
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
 	defer closeFn()
 
 	payload := bytes.Repeat([]byte("0123456789abcdef"), 512*1024) // 8 MiB
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	must.NoError(err, "listen")
 	defer ln.Close()
 	go func() {
 		c, aerr := ln.Accept()
@@ -400,20 +353,15 @@ func TestServerForwardingLargeTransfer(t *testing.T) {
 	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	must.NoError(err, "dial")
 	defer client.Close()
 
 	conn, err := client.Dial("tcp", "127.0.0.1:"+portStr)
-	if err != nil {
-		t.Fatalf("forward dial: %v", err)
-	}
+	must.NoError(err, "forward dial")
 	defer conn.Close()
 
-	if _, err = conn.Write(payload); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	_, err = conn.Write(payload)
+	must.NoError(err, "write")
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.CloseWrite()
 	}

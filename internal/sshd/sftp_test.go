@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/pkg/sftp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -50,20 +52,21 @@ func TestSFTPHelperProcess(t *testing.T) {
 // tests create a scratch subdirectory under it and use absolute paths.
 func sftpClient(t *testing.T, ca testCA) (*sftp.Client, func()) {
 	t.Helper()
+	must := require.New(t)
 	addr, closeFn := startTestServer(t, ca)
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
 	if err != nil {
 		closeFn()
-		t.Fatalf("dial: %v", err)
 	}
+	must.NoError(err)
 
 	sc, err := sftp.NewClient(client)
 	if err != nil {
 		client.Close()
 		closeFn()
-		t.Fatalf("sftp client: %v", err)
 	}
+	must.NoError(err)
 	return sc, func() {
 		sc.Close()
 		client.Close()
@@ -76,20 +79,19 @@ func sftpClient(t *testing.T, ca testCA) (*sftp.Client, func()) {
 // operations land in the scratch dir and are cleaned up afterwards.
 func homeScratch(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	cur, err := user.Current()
-	if err != nil {
-		t.Fatalf("current user: %v", err)
-	}
+	must.NoError(err)
 	//nolint:usetesting // must live under the real home. t.TempDir() is /tmp
 	dir, err := os.MkdirTemp(cur.HomeDir, ".nokkud-sftp-test-*")
-	if err != nil {
-		t.Fatalf("scratch dir under %s: %v", cur.HomeDir, err)
-	}
+	must.NoError(err, "scratch dir under %s", cur.HomeDir)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
 }
 
 func TestServerSFTPTransfer(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	scratch := homeScratch(t)
 	sc, closeFn := sftpClient(t, ca)
@@ -99,101 +101,70 @@ func TestServerSFTPTransfer(t *testing.T) {
 	payload := []byte("hello nokkud sftp")
 	path := filepath.Join(scratch, "hello.txt")
 	f, err := sc.Create(path)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err = f.Write(payload); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if err = f.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	must.NoError(err)
+	_, err = f.Write(payload)
+	must.NoError(err)
+	must.NoError(f.Close())
 
 	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("contents = %q, want %q", got, payload)
-	}
+	must.NoError(err)
+	is.Equal(payload, got)
 
 	r, err := sc.Open(path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	must.NoError(err)
 	data, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
+	must.NoError(err)
 	_ = r.Close()
-	if !bytes.Equal(data, payload) {
-		t.Fatalf("read via client = %q, want %q", data, payload)
-	}
+	is.Equal(payload, data)
 
 	entries, err := sc.ReadDir(scratch)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "hello.txt" {
-		t.Fatalf("readdir = %+v, want exactly hello.txt", entries)
-	}
+	must.NoError(err)
+	must.Len(entries, 1)
+	is.Equal("hello.txt", entries[0].Name())
 }
 
 func TestServerSFTPOps(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	scratch := homeScratch(t)
 	sc, closeFn := sftpClient(t, ca)
 	defer closeFn()
 
 	// mkdir/rename/remove/stat round-trip.
-	if err := sc.Mkdir(filepath.Join(scratch, "sub")); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := sc.Rename(
+	must.NoError(sc.Mkdir(filepath.Join(scratch, "sub")))
+	must.NoError(sc.Rename(
 		filepath.Join(scratch, "sub"),
 		filepath.Join(scratch, "renamed"),
-	); err != nil {
-		t.Fatalf("rename: %v", err)
-	}
+	))
 	info, err := sc.Stat(filepath.Join(scratch, "renamed"))
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if !info.IsDir() {
-		t.Fatalf("stat: expected directory, got %v", info.Mode())
-	}
-	if err = sc.RemoveDirectory(filepath.Join(scratch, "renamed")); err != nil {
-		t.Fatalf("rmdir: %v", err)
-	}
-	if _, err = sc.Stat(filepath.Join(scratch, "renamed")); err == nil {
-		t.Fatal("expected stat to fail after rmdir")
-	}
+	must.NoError(err)
+	is.True(info.IsDir(), "expected directory, got %v", info.Mode())
+	must.NoError(sc.RemoveDirectory(filepath.Join(scratch, "renamed")))
+
+	_, err = sc.Stat(filepath.Join(scratch, "renamed"))
+	is.Error(err, "expected stat to fail after rmdir")
 }
 
 // TestServerSFTPWorkingDir verifies relative paths resolve under the user's
 // real home directory, like sshd's sftp-server.
 func TestServerSFTPWorkingDir(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	home := currentHome(t)
 	sc, closeFn := sftpClient(t, ca)
 	defer closeFn()
 
 	wd, err := sc.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if wd != home {
-		t.Fatalf("working dir = %q, want %q", wd, home)
-	}
+	must.NoError(err)
+	is.Equal(home, wd)
 
 	// A relative path must resolve under home.
-	if err = sc.Mkdir("nokkud-rel-test"); err != nil {
-		t.Fatalf("mkdir relative: %v", err)
-	}
+	must.NoError(sc.Mkdir("nokkud-rel-test"))
 	defer func() { _ = os.RemoveAll(filepath.Join(home, "nokkud-rel-test")) }()
-	if _, err = os.Stat(filepath.Join(home, "nokkud-rel-test")); err != nil {
-		t.Fatalf("relative dir not created under home: %v", err)
-	}
+	_, err = os.Stat(filepath.Join(home, "nokkud-rel-test"))
+	must.NoError(err, "relative dir not created under home")
 }
 
 // TestServerSCPModern drives the real scp binary in SFTP mode (scp -s), which
@@ -207,6 +178,8 @@ func TestServerSCPModern(t *testing.T) {
 		t.Fatal("TestServerSCPModern requires running under the test binary")
 	}
 
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	scratch := homeScratch(t)
 	addr, closeFn := startTestServer(t, ca)
@@ -214,9 +187,7 @@ func TestServerSCPModern(t *testing.T) {
 
 	payload := []byte("scp modern mode\n")
 	src := filepath.Join(t.TempDir(), "in.txt")
-	if err = os.WriteFile(src, payload, 0o600); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
+	must.NoError(os.WriteFile(src, payload, 0o600))
 
 	host, port := hostPort(t, addr)
 	user := currentUser(t)
@@ -234,17 +205,11 @@ func TestServerSCPModern(t *testing.T) {
 		dst,
 	)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("scp failed: %v\n%s", err, out)
-	}
+	must.NoError(err, "scp failed: %s", out)
 
 	got, err := os.ReadFile(filepath.Join(scratch, "copied.txt"))
-	if err != nil {
-		t.Fatalf("read copied file: %v", err)
-	}
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("copied contents = %q, want %q", got, payload)
-	}
+	must.NoError(err)
+	is.Equal(payload, got)
 }
 
 // TestServerRsync drives the real rsync binary over the embedded server's
@@ -258,6 +223,8 @@ func TestServerRsync(t *testing.T) {
 		t.Fatal("TestServerRsync requires running under the test binary")
 	}
 
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	scratch := homeScratch(t)
 	addr, closeFn := startTestServer(t, ca)
@@ -265,9 +232,7 @@ func TestServerRsync(t *testing.T) {
 
 	payload := []byte("rsync over nokkud\n")
 	src := filepath.Join(t.TempDir(), "data.txt")
-	if err = os.WriteFile(src, payload, 0o600); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
+	must.NoError(os.WriteFile(src, payload, 0o600))
 
 	host, port := hostPort(t, addr)
 	user := currentUser(t)
@@ -285,17 +250,11 @@ func TestServerRsync(t *testing.T) {
 		remote,
 	)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("rsync failed: %v\n%s", err, out)
-	}
+	must.NoError(err, "rsync failed: %s", out)
 
 	got, err := os.ReadFile(filepath.Join(scratch, "data.txt"))
-	if err != nil {
-		t.Fatalf("read rsynced file: %v", err)
-	}
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("rsynced contents = %q, want %q", got, payload)
-	}
+	must.NoError(err)
+	is.Equal(payload, got)
 }
 
 // TestServerGit drives git over the embedded server: git speaks the pack
@@ -309,17 +268,14 @@ func TestServerGit(t *testing.T) {
 		t.Fatal("TestServerGit requires running under the test binary")
 	}
 
+	is := assert.New(t)
+	must := require.New(t)
 	ca := newTestCA(t)
 	scratch := homeScratch(t)
 	repo := filepath.Join(scratch, "repo.git")
-	if err = os.MkdirAll(repo, 0o700); err != nil {
-		t.Fatalf("mkdir repo: %v", err)
-	}
-	cmd := exec.Command(git, "init", "--bare", repo)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
+	must.NoError(os.MkdirAll(repo, 0o700))
+	out, err := exec.Command(git, "init", "--bare", repo).CombinedOutput()
+	must.NoError(err, "git init: %s", out)
 
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
@@ -331,17 +287,13 @@ func TestServerGit(t *testing.T) {
 	// Build a commit locally and push it over SSH.
 	work := t.TempDir()
 	write := func(p, c string) {
-		if err = os.WriteFile(filepath.Join(work, p), []byte(c), 0o600); err != nil {
-			t.Fatalf("write %s: %v", p, err)
-		}
+		must.NoError(os.WriteFile(filepath.Join(work, p), []byte(c), 0o600), "write %s", p)
 	}
 	run := func(name string, args ...string) {
 		c := exec.Command(name, args...)
 		c.Dir = work
-		out, err = c.CombinedOutput()
-		if err != nil {
-			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
-		}
+		cout, cerr := c.CombinedOutput()
+		must.NoError(cerr, "%s %v: %s", name, args, cout)
 	}
 	run("git", "init", "-q")
 	write("a.txt", "git over nokkud\n")
@@ -368,46 +320,36 @@ func TestServerGit(t *testing.T) {
 	push.Dir = work
 	push.Env = append(os.Environ(), "GIT_SSH_COMMAND="+sshCmd)
 	out, err = push.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git push: %v\n%s", err, out)
-	}
+	must.NoError(err, "git push: %s", out)
 
 	// The commit must be reachable in the remote repo.
 	verify := exec.Command(git, "rev-parse", "HEAD")
 	verify.Dir = work
 	head, err := verify.Output()
-	if err != nil {
-		t.Fatalf("rev-parse: %v", err)
-	}
+	must.NoError(err)
 	head = bytes.TrimSpace(head)
 	show := exec.Command(git, "show-ref", "refs/heads/main")
 	show.Dir = repo
 	out, err = show.Output()
-	if err != nil {
-		t.Fatalf("remote ref missing: %v\n%s", err, out)
-	}
-	if !bytes.Contains(out, head) {
-		t.Fatalf("remote ref %q not pushed; show-ref = %q", head, out)
-	}
+	must.NoError(err, "remote ref missing: %s", out)
+	is.True(bytes.Contains(out, head), "remote ref %q not pushed, show-ref = %q", head, out)
 }
 
 // hostPort splits a 127.0.0.1:port addr.
 func hostPort(t *testing.T, addr string) (string, string) {
 	t.Helper()
+	must := require.New(t)
 	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatalf("split %s: %v", addr, err)
-	}
+	must.NoError(err, "split %s", addr)
 	return host, port
 }
 
 // currentHome returns the current user's home directory.
 func currentHome(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	cur, err := user.Current()
-	if err != nil {
-		t.Fatalf("current user: %v", err)
-	}
+	must.NoError(err)
 	return cur.HomeDir
 }
 
@@ -415,14 +357,11 @@ func currentHome(t *testing.T) string {
 // and returns the path to the private key (scp -i).
 func userCertFile(t *testing.T, ca testCA) string {
 	t.Helper()
+	must := require.New(t)
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate user key: %v", err)
-	}
+	must.NoError(err)
 	pub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatalf("user public key: %v", err)
-	}
+	must.NoError(err)
 	cert := &ssh.Certificate{
 		Key:             pub,
 		CertType:        ssh.UserCert,
@@ -431,25 +370,17 @@ func userCertFile(t *testing.T, ca testCA) string {
 		ValidAfter:      0,
 		ValidBefore:     ssh.CertTimeInfinity,
 	}
-	if err = cert.SignCert(rand.Reader, ca.signer); err != nil {
-		t.Fatalf("sign cert: %v", err)
-	}
+	must.NoError(cert.SignCert(rand.Reader, ca.signer))
 
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "id_ed25519")
 	privBlock, err := ssh.MarshalPrivateKey(priv, "")
-	if err != nil {
-		t.Fatalf("marshal key: %v", err)
-	}
-	if err = os.WriteFile(keyPath, pem.EncodeToMemory(privBlock), 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
+	must.NoError(err)
+	must.NoError(os.WriteFile(keyPath, pem.EncodeToMemory(privBlock), 0o600))
 
 	certPath := keyPath + "-cert.pub"
 	certPub := ssh.MarshalAuthorizedKey(cert)
-	if err = os.WriteFile(certPath, certPub, 0o600); err != nil {
-		t.Fatalf("write cert: %v", err)
-	}
+	must.NoError(os.WriteFile(certPath, certPub, 0o600))
 	return keyPath
 }
 

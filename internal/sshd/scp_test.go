@@ -6,7 +6,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestServerSCPLegacy exercises the legacy SCP protocol (scp -O) end to end,
@@ -26,22 +30,17 @@ func TestServerSCPLegacy(t *testing.T) {
 	addr, closeFn := startTestServer(t, ca)
 	defer closeFn()
 
+	must := require.New(t)
 	user := currentUser(t)
 	home := currentHome(t)
 	_, port := hostPort(t, addr)
 	scratches := filepath.Join(home, "nokkud-scp-scratch")
-	if err := os.RemoveAll(scratches); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.RemoveAll(scratches))
 	defer os.RemoveAll(scratches)
-	if err := os.MkdirAll(scratches, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.MkdirAll(scratches, 0o755))
 
 	src := filepath.Join(scratches, "src.txt")
-	if err := os.WriteFile(src, []byte("legacy scp payload\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(src, []byte("legacy scp payload\n"), 0o644))
 
 	identity := userCertFile(t, ca)
 	opts := []string{
@@ -52,50 +51,71 @@ func TestServerSCPLegacy(t *testing.T) {
 		"-o", "UserKnownHostsFile=" + filepath.Join(scratches, "known_hosts"),
 		"-P", port,
 	}
-	// copy up
-	up := filepath.Join(scratches, "up.txt")
-	cmd := exec.Command("scp", append(opts, src, fmt.Sprintf("%s@127.0.0.1:%s", user, up))...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("scp up: %v: %s", err, out)
-	}
-	if b, err := os.ReadFile(up); err != nil || string(b) != "legacy scp payload\n" {
-		t.Fatalf("scp up content: %q err=%v", b, err)
-	}
-	// copy down
-	dst := filepath.Join(scratches, "dst.txt")
-	cmd = exec.Command("scp", append(opts, fmt.Sprintf("%s@127.0.0.1:%s", user, src), dst)...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("scp down: %v: %s", err, out)
-	}
-	if b, err := os.ReadFile(dst); err != nil || string(b) != "legacy scp payload\n" {
-		t.Fatalf("scp down content: %q err=%v", b, err)
+	remote := func(p string) string {
+		return fmt.Sprintf("%s@127.0.0.1:%s", user, p)
 	}
 
-	// Recursive directory copy up. Destination must exist for the source
-	// directory name to be preserved (scp quirk).
-	srcdir := filepath.Join(scratches, "srcdir")
-	inner := filepath.Join(srcdir, "sub")
-	if err := os.MkdirAll(inner, 0o755); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name      string
+		extraOpts []string
+		args      []string
+		setup     func(t *testing.T)
+		verify    string
+		want      string
+	}{
+		{
+			name:   "up",
+			args:   []string{src, remote(filepath.Join(scratches, "up.txt"))},
+			verify: filepath.Join(scratches, "up.txt"),
+			want:   "legacy scp payload\n",
+		},
+		{
+			name:   "down",
+			args:   []string{remote(src), filepath.Join(scratches, "dst.txt")},
+			verify: filepath.Join(scratches, "dst.txt"),
+			want:   "legacy scp payload\n",
+		},
+		{
+			// Destination must exist for the source directory name to be
+			// preserved (scp quirk).
+			name:      "recursive up",
+			extraOpts: []string{"-r"},
+			setup: func(t *testing.T) {
+				setup := require.New(t)
+				srcdir := filepath.Join(scratches, "srcdir")
+				setup.NoError(os.MkdirAll(filepath.Join(srcdir, "sub"), 0o755))
+				setup.NoError(os.WriteFile(
+					filepath.Join(srcdir, "sub", "f.txt"),
+					[]byte("nested\n"),
+					0o644,
+				))
+				setup.NoError(os.Mkdir(filepath.Join(scratches, "uptree"), 0o755))
+			},
+			args:   []string{filepath.Join(scratches, "srcdir"), remote(filepath.Join(scratches, "uptree"))},
+			verify: filepath.Join(scratches, "uptree", "srcdir", "sub", "f.txt"),
+			want:   "nested\n",
+		},
 	}
-	if err := os.WriteFile(filepath.Join(inner, "f.txt"), []byte("nested\n"), 0o644); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup(t)
+			}
+			runLegacySCP(t, opts, tt.extraOpts, tt.args, tt.verify, tt.want)
+		})
 	}
-	uptree := filepath.Join(scratches, "uptree")
-	if err := os.Mkdir(uptree, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cmd = exec.Command(
-		"scp",
-		append(opts, "-r", srcdir, fmt.Sprintf("%s@127.0.0.1:%s", user, uptree))...,
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("scp -r up: %v: %s", err, out)
-	}
-	if b, err := os.ReadFile(
-		filepath.Join(uptree, "srcdir", "sub", "f.txt"),
-	); err != nil ||
-		string(b) != "nested\n" {
-		t.Fatalf("scp -r up content: %q err=%v", b, err)
-	}
+}
+
+func runLegacySCP(t *testing.T, opts, extraOpts, args []string, verify, want string) {
+	t.Helper()
+	is := assert.New(t)
+	must := require.New(t)
+	all := append(slices.Clone(opts), extraOpts...)
+	all = append(all, args...)
+	cmd := exec.Command("scp", all...)
+	out, err := cmd.CombinedOutput()
+	must.NoError(err, "scp: %s", out)
+	b, err := os.ReadFile(verify)
+	must.NoError(err)
+	is.Equal(want, string(b))
 }
