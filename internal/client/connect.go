@@ -133,8 +133,8 @@ func (c *Client) handleServerMessage(
 		return c.reconcile(ctx, m.HeartbeatAck.GetStateVersion())
 	case *nokkuv1.ConnectResponse_StateUpdate:
 		return c.reconcile(ctx, m.StateUpdate.GetStateVersion())
-	case *nokkuv1.ConnectResponse_Session:
-		c.sessionWG.Go(func() { c.startSession(ctx, m.Session) })
+	case *nokkuv1.ConnectResponse_RelayOpen:
+		c.sessionWG.Go(func() { c.startRelay(ctx, m.RelayOpen) })
 	default:
 		slog.Debug("unexpected server message", "type", fmt.Sprintf("%T", msg.GetMsg()))
 	}
@@ -154,16 +154,4 @@ func (c *Client) reconcile(ctx context.Context, serverVersion int64) error {
 		return fmt.Errorf("sync after state update: %w", err)
 	}
 	return nil
-}
-
-func (c *Client) startSession(ctx context.Context, req *nokkuv1.DaemonSession) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("session handler panicked", "id", req.GetSessionId(), "panic", r)
-		}
-	}()
-
-	if err := c.runPTYSession(ctx, req); err != nil {
-		slog.Error("session failed", "id", req.GetSessionId(), "error", err)
-	}
 }

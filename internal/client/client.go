@@ -100,7 +100,7 @@ func New(
 
 // Run keeps the control stream to the backend open until ctx is cancelled.
 func (c *Client) Run(ctx context.Context) error {
-	// Graceful shutdown drains in-flight PTY sessions
+	// Graceful shutdown drains in-flight relay sessions
 	defer func() {
 		if ctx.Err() != nil {
 			c.sessionWG.Wait()
