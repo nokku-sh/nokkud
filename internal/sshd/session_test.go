@@ -301,3 +301,73 @@ func TestPlainSessionRecorded(t *testing.T) {
 	is.Contains(string(cast), `"o"`)
 	is.Contains(string(cast), "hello-recorded")
 }
+
+// TestRecordingCorrelatesWebSessionID verifies an env NOKKU_SESSION_ID sent
+// before the session starts labels the recording, so web sessions riding
+// the SSH relay keep their backend session id on the recording.
+func TestRecordingCorrelatesWebSessionID(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
+	dir := t.TempDir()
+	t.Setenv("NOKKUD_DATA_DIR", dir)
+	must.NoError(paths.Verify(), "verify paths")
+
+	const webSessionID = "0197a3f2-7c1b-7de1-9a2b-3f4c5d6e7f80"
+
+	var mu sync.Mutex
+	var gotID string
+	sink := &captureSink{closed: make(chan struct{})}
+	factory := func(_ context.Context, sessionID, _ string) io.WriteCloser {
+		mu.Lock()
+		gotID = sessionID
+		mu.Unlock()
+		return sink
+	}
+
+	cur := currentUser(t)
+	ca := newTestCA(t)
+	principals := func(username string) []string {
+		if username == cur {
+			return []string{testPrincipal}
+		}
+		return nil
+	}
+	srv, err := New(Options{
+		Principals: principals,
+		TrustedCAs: []ssh.PublicKey{ca.pub},
+		Tunables:   Tunables{Record: true},
+	})
+	must.NoError(err, "new server")
+	srv.SetRecordingSinkFactory(factory)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	must.NoError(err, "listen")
+	defer func() { _ = l.Close() }()
+	go func() { _ = srv.Serve(l) }()
+
+	client, err := dial(t, l.Addr().String(), cur, userCert(t, ca, testPrincipal))
+	must.NoError(err, "dial")
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	must.NoError(err, "new session")
+	defer sess.Close()
+
+	ok, err := sess.SendRequest("env", true, ssh.Marshal(
+		struct{ Name, Value string }{"NOKKU_SESSION_ID", webSessionID},
+	))
+	must.NoError(err, "env request")
+	is.True(ok, "env request accepted")
+
+	_, err = sess.Output("printf env-recorded")
+	must.NoError(err, "exec")
+
+	select {
+	case <-sink.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recording sink was never closed")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	is.Equal(webSessionID, gotID, "recording must carry the env session id")
+}

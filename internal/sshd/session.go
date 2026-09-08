@@ -256,8 +256,26 @@ func allowedEnv(name string) bool {
 	switch name {
 	case "TERM", "LANG", "TZ", "TERM_PROGRAM", "COLORTERM":
 		return true
+	// Reserved daemon metadata: labels the recording, no shell effect.
+	case "NOKKU_SESSION_ID":
+		return true
 	}
 	return strings.HasPrefix(name, "LC_")
+}
+
+// envValue returns the value of a session environment variable, set through
+// an env request or the pty handler. Repeated entries resolve to the last
+// one, matching what the child environment sees.
+func (sess *session) envValue(key string) (string, bool) {
+	kv := key + "="
+	var value string
+	found := false
+	for _, e := range sess.env {
+		if after, ok := strings.CutPrefix(e, kv); ok {
+			value, found = after, true
+		}
+	}
+	return value, found
 }
 
 // setEnv sets a session environment variable, replacing any existing entry so
@@ -546,13 +564,20 @@ func (sess *session) startRecorder(width, height int) {
 	if sess.rec != nil || !sess.server.tun.Load().Record {
 		return
 	}
+	// A web session labels itself through the reserved env so its recording
+	// correlates with the backend session. Only a canonical UUID is
+	// promoted: a free-form value could forge another session's id.
+	recSessionID := sess.sessionID
+	if id, ok := sess.envValue("NOKKU_SESSION_ID"); ok && canonicalUUID(id) {
+		recSessionID = id
+	}
 	var sink io.WriteCloser
 	if sess.server.recordingSinkFactory != nil {
 		// WithoutCancel: the upload stream must outlive the session
 		// context, which is canceled while the session tears down.
 		sink = sess.server.recordingSinkFactory(
 			context.WithoutCancel(sess.ctx),
-			sess.sessionID,
+			recSessionID,
 			sess.sysUser.Username,
 		)
 	}
@@ -561,12 +586,33 @@ func (sess *session) startRecorder(width, height int) {
 		Height:    height,
 		Title:     fmt.Sprintf("ssh-%s", sess.sysUser.Username),
 		Label:     sess.sysUser.Username,
-		SessionID: sess.sessionID,
+		SessionID: recSessionID,
 		Sink:      sink,
 	})
 	if err == nil && rec != nil {
 		sess.rec = rec
 	}
+}
+
+// canonicalUUID reports whether s is a lowercase hyphenated 8-4-4-4-12
+// UUID, the form uuid.NewV7 produces for backend session ids.
+func canonicalUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // recTee feeds written bytes to the session recorder as input or output
