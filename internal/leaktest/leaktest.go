@@ -1,6 +1,4 @@
-// Package leaktest verifies that a test suite leaves no permanently stuck
-// goroutines behind. It reads the runtime/pprof "goroutineleak" profile
-// instead of depending on a third-party leak checker.
+// Package leaktest detects goroutine leaks in a test suite via the runtime/pprof "goroutineleak" profile.
 package leaktest
 
 import (
@@ -10,9 +8,8 @@ import (
 	"runtime/pprof"
 )
 
-// Exit checks the goroutineleak profile after a test suite has finished and
-// overrides code with 1 when goroutines leaked. Wire it into TestMain with
-// m.Run()'s result, so the check runs once with every server torn down:
+// Exit checks the goroutineleak profile after a test suite finishes, returning
+// 1 when goroutines leaked. Wire it to m.Run()'s result, after teardown:
 //
 //	func TestMain(m *testing.M) {
 //		os.Exit(leaktest.Exit(m.Run()))
@@ -25,11 +22,11 @@ func Exit(code int) int {
 
 	var buf bytes.Buffer
 	if err := p.WriteTo(&buf, 1); err != nil {
-		fmt.Fprintf(os.Stderr, "leaktest: write goroutineleak profile: %v\n", err)
+		fmt.Fprintf(os.Stderr, "write goroutineleak profile: %v\n", err)
 		return 1
 	}
 	if p.Count() > 0 {
-		fmt.Fprintf(os.Stderr, "leaktest: leaked goroutines:\n%s\n", buf.String())
+		fmt.Fprintf(os.Stderr, "leaked goroutines:\n%s\n", buf.String())
 		return 1
 	}
 	return code

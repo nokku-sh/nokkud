@@ -21,37 +21,23 @@ import (
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
-// serveSessionChannel accepts a "session" channel and serves its request
-// stream to completion.
-func serveSessionChannel(
-	s *Server,
-	conn *ssh.ServerConn,
-	_ *connState,
-	newCh ssh.NewChannel,
-) ssh.Channel {
-	c, reqs, err := newCh.Accept()
-	if err != nil {
-		s.logger.Debug("sshd: accept session channel", "error", err)
-		return nil
-	}
-	s.serveSession(conn, c, reqs)
-	return c
-}
+// webSessionKeyIDPrefix marks control-plane user certificates for a web
+// terminal session. Must stay in sync with the backend's mintSessionCert.
+const webSessionKeyIDPrefix = "nokku:web:session:"
 
-// session handles a single "session" channel. It embeds the SSH channel so
-// handlers write to it directly, and exposes the request state (env,
-// command, subsystem) plus a single teardown path via Exit.
+// session handles a single "session" channel.
 type session struct {
 	ssh.Channel
 
 	server  *Server
 	conn    *ssh.ServerConn
+	st      *connState
 	reqs    <-chan *ssh.Request
 	sysUser *user.User
 	shell   string
 
-	// ctx is canceled when the session ends. Exec'd commands use it so a
-	// disconnect reaps them even if the request stream misbehaves.
+	// Exec'd commands use ctx, so a disconnect reaps them even if the
+	// request stream misbehaves.
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -59,10 +45,9 @@ type session struct {
 	rawCmd  string
 	handled bool
 
-	// sessionID correlates audit events for one session channel.
 	sessionID string
 
-	// agent forwarding: listener + socket path for SSH_AUTH_SOCK
+	// agent forwarding listener, exported to the child as SSH_AUTH_SOCK
 	agentLn   net.Listener
 	agentSock string
 
@@ -76,13 +61,62 @@ type session struct {
 	proc     *os.Process
 	wantKill bool
 
-	// pendingSignals buffers signals that arrived before the command started.
-	// They are flushed to the process once it exists. Guarded by procMu.
+	// pendingSignals buffers signals that arrived before the command started,
+	// flushed by setProc. Guarded by procMu.
 	pendingSignals []os.Signal
 }
 
-// serveSession runs the request loop for a session channel.
-func (s *Server) serveSession(conn *ssh.ServerConn, ch ssh.Channel, reqs <-chan *ssh.Request) {
+// recOut feeds written bytes to the recorder before passing them on. Recorder
+// methods swallow their errors, so a failing recording never disturbs the stream.
+type recOut struct {
+	w   io.Writer
+	rec *recording.Recorder
+}
+
+// serveSessionChannel accepts a "session" channel and serves its request
+// stream. Session caps are enforced before the channel is accepted.
+func serveSessionChannel(
+	s *Server,
+	conn *ssh.ServerConn,
+	st *connState,
+	newCh ssh.NewChannel,
+) (ch ssh.Channel) {
+	defer s.recoverAndLog("channel session", func() {
+		if ch != nil {
+			_ = ch.Close()
+			return
+		}
+		_ = newCh.Reject(ssh.ConnectionFailed, "channel handler failed")
+	})
+
+	if !st.acquireSession(s.tun.Load().MaxSessions) {
+		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions")
+		return nil
+	}
+	defer st.releaseSession()
+
+	if !s.acquirePrincipalSession(conn.User(), s.tun.Load().MaxSessionsPerUser) {
+		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions for user")
+		return nil
+	}
+	defer s.releasePrincipalSession(conn.User())
+
+	c, reqs, err := newCh.Accept()
+	if err != nil {
+		s.logger.Debug("accept session channel failed", "error", err)
+		return nil
+	}
+	ch = c
+	s.serveSession(conn, st, c, reqs)
+	return c
+}
+
+func (s *Server) serveSession(
+	conn *ssh.ServerConn,
+	st *connState,
+	ch ssh.Channel,
+	reqs <-chan *ssh.Request,
+) {
 	sysUser, err := sysutil.LookupUser(conn.User())
 	if err != nil {
 		s.emit(
@@ -98,12 +132,20 @@ func (s *Server) serveSession(conn *ssh.ServerConn, ch ssh.Channel, reqs <-chan 
 		return
 	}
 
+	if loginErr := sysutil.LoginAllowed(sysUser, s.nologinFile); loginErr != nil {
+		s.emit(eventWith(connEvent(conn), audit.EventAuthFailure, "", loginErr.Error()))
+		s.authFailure(conn, loginErr)
+		_ = ch.Close()
+		return
+	}
+
 	sessionID := uuid.NewV7().String()
 	ctx, cancel := context.WithCancel(context.Background())
 	sess := &session{
 		Channel:   ch,
 		server:    s,
 		conn:      conn,
+		st:        st,
 		reqs:      reqs,
 		sysUser:   sysUser,
 		shell:     sysutil.UserShell(sysUser),
@@ -121,10 +163,8 @@ func (s *Server) serveSession(conn *ssh.ServerConn, ch ssh.Channel, reqs <-chan 
 	sess.handleRequests()
 }
 
-// handleRequests processes the session request stream. shell/exec/subsystem
-// start the work in a handler goroutine while this loop keeps servicing
-// window-change and signal requests. When the stream ends (client
-// disconnect) the running process is killed and the handler is joined.
+// handleRequests services the request stream, running shell/exec/subsystem
+// work in a handler goroutine. On stream end the process is reaped and joined.
 func (sess *session) handleRequests() {
 	handlerDone := make(chan struct{})
 	var started bool
@@ -188,17 +228,14 @@ func (sess *session) handleRequests() {
 		}
 	}
 
-	// Client disconnected (or the session channel closed): reap any
-	// running process, then wait for the handler to wind down. If no
-	// handler ever started there is nothing to join.
+	// Client disconnected or the channel closed: reap the process, then wait
+	// for the handler to wind down. Nothing to join if none ever started.
 	sess.killProc()
 	if started {
 		<-handlerDone
 	}
 }
 
-// handleCommand handles a shell/exec request. It replies and returns true
-// when the session should start running the command.
 func (sess *session) handleCommand(req *ssh.Request) bool {
 	if sess.handled {
 		_ = req.Reply(false, nil)
@@ -228,8 +265,6 @@ func (sess *session) handleCommand(req *ssh.Request) bool {
 	return true
 }
 
-// forceCommand returns the certificate's force-command critical option, or ""
-// when none is set.
 func (sess *session) forceCommand() string {
 	if sess.conn == nil || sess.conn.Permissions == nil {
 		return ""
@@ -237,35 +272,46 @@ func (sess *session) forceCommand() string {
 	return sess.conn.Permissions.Extensions["force-command"]
 }
 
-// acceptEnv applies the client environment whitelist (the SSH equivalent
-// of OpenSSH's AcceptEnv). A certificate force-command refuses client-
-// supplied environment entirely, so an injected BASH_ENV or LD_PRELOAD
-// cannot override a restricted command.
+// webSession reports whether the session authenticated with a control-plane
+// web-terminal certificate. The key id is signed, so it is trustworthy.
+func (sess *session) webSession() bool {
+	if sess.conn == nil || sess.conn.Permissions == nil {
+		return false
+	}
+	return strings.HasPrefix(
+		sess.conn.Permissions.Extensions["nokku-cert-key-id"],
+		webSessionKeyIDPrefix,
+	)
+}
+
+// acceptEnv is the client environment whitelist. A force-command refuses
+// client env, so BASH_ENV or LD_PRELOAD cannot override a restricted command.
 func (sess *session) acceptEnv(name string) bool {
 	if sess.forceCommand() != "" {
 		return false
 	}
+	// The recording label is only accepted from a web session, else a client
+	// could label its recording with another session's id.
+	if name == "NOKKU_SESSION_ID" {
+		return sess.webSession()
+	}
 	return allowedEnv(name)
 }
 
-// allowedEnv reports whether a client env request variable may reach the
-// session. Only locale/terminal hints are trusted. Anything that could
-// influence program loading or the shell (PATH, LD_*, BASH_ENV, ENV) or
-// override daemon-set session metadata (SSH_*) is refused.
+// allowedEnv admits only locale and terminal hints. PATH, LD_*, BASH_ENV, ENV
+// and SSH_* are refused: they could steer program loading or shell startup.
 func allowedEnv(name string) bool {
 	switch name {
 	case "TERM", "LANG", "TZ", "TERM_PROGRAM", "COLORTERM":
 		return true
-	// Reserved daemon metadata: labels the recording, no shell effect.
+	// Reserved daemon metadata, no shell effect.
 	case "NOKKU_SESSION_ID":
 		return true
 	}
 	return strings.HasPrefix(name, "LC_")
 }
 
-// envValue returns the value of a session environment variable, set through
-// an env request or the pty handler. Repeated entries resolve to the last
-// one, matching what the child environment sees.
+// envValue returns the last value set for key, matching the child environment.
 func (sess *session) envValue(key string) (string, bool) {
 	kv := key + "="
 	var value string
@@ -278,8 +324,7 @@ func (sess *session) envValue(key string) (string, bool) {
 	return value, found
 }
 
-// setEnv sets a session environment variable, replacing any existing entry so
-// the last-set value wins regardless of request order.
+// setEnv replaces any existing entry so the last-set value wins.
 func (sess *session) setEnv(key, value string) {
 	kv := key + "="
 	for i, e := range sess.env {
@@ -291,8 +336,6 @@ func (sess *session) setEnv(key, value string) {
 	sess.env = append(sess.env, kv+value)
 }
 
-// acceptSubsystem handles a subsystem request. It replies and returns the
-// subsystem name when a handler is registered for it.
 func (sess *session) acceptSubsystem(req *ssh.Request) (string, bool) {
 	if sess.handled {
 		_ = req.Reply(false, nil)
@@ -308,7 +351,7 @@ func (sess *session) acceptSubsystem(req *ssh.Request) (string, bool) {
 		_ = req.Reply(false, nil)
 		return "", false
 	}
-	if _, ok := sess.server.subsystemHandlers[r.Name]; !ok {
+	if r.Name != sftpSubsystem {
 		_ = req.Reply(false, nil)
 		return "", false
 	}
@@ -317,10 +360,9 @@ func (sess *session) acceptSubsystem(req *ssh.Request) (string, bool) {
 	return r.Name, true
 }
 
-// runSubsystem serves the requested subsystem and returns its exit status.
 func (sess *session) runSubsystem(name string) uint32 {
-	if handler, ok := sess.server.subsystemHandlers[name]; ok {
-		return handler(sess)
+	if name == sftpSubsystem {
+		return sess.runSFTP()
 	}
 	return 1
 }
@@ -347,7 +389,7 @@ func (sess *session) ptyReq(req *ssh.Request) {
 
 	ptmx, err := pty.New()
 	if err != nil {
-		sess.server.logger.Debug("sshd: open pty", "error", err)
+		sess.server.logger.Debug("open pty failed", "error", err)
 		_ = req.Reply(false, nil)
 		return
 	}
@@ -368,7 +410,7 @@ func (sess *session) windowChange(req *ssh.Request) {
 	var w struct{ Cols, Rows, W, H uint32 }
 	if ssh.Unmarshal(req.Payload, &w) == nil && sess.ptmx != nil {
 		if err := sess.ptmx.Resize(int(w.Cols), int(w.Rows)); err != nil {
-			sess.server.logger.Debug("sshd: resize pty", "error", err)
+			sess.server.logger.Debug("resize pty failed", "error", err)
 		}
 	}
 	_ = req.Reply(true, nil)
@@ -420,8 +462,8 @@ func (sess *session) killProc() {
 	}
 }
 
-// Exit reports the exit status and closes the session channel. Safe to call
-// multiple times. Only the first call has an effect.
+// Exit reports the exit status and closes the channel. Idempotent, only the
+// first call has an effect.
 func (sess *session) Exit(code int) {
 	sess.finish(code, func() {
 		status := struct{ Status uint32 }{exitCodeToU32(code)}
@@ -429,9 +471,8 @@ func (sess *session) Exit(code int) {
 	})
 }
 
-// ExitProcess reports a finished process the way OpenSSH does. exit-status
-// for a normal exit, exit-signal when the command died by signal, so clients
-// surface 128+signal (137 for SIGKILL, 143 for SIGTERM).
+// ExitProcess reports a finished process like OpenSSH: exit-status normally,
+// exit-signal when killed by a signal, so clients surface 128+signal.
 func (sess *session) ExitProcess(st *os.ProcessState) {
 	name, code, signaled := processSignal(st)
 	if !signaled {
@@ -446,8 +487,7 @@ func (sess *session) ExitProcess(st *os.ProcessState) {
 	sess.exitSignal(name, code)
 }
 
-// exitSignal reports that the command was killed by a signal. It sends an
-// exit-signal channel request (RFC 4254 section 6.10) instead of exit-status.
+// exitSignal sends an exit-signal channel request (RFC 4254 section 6.10).
 func (sess *session) exitSignal(name string, code int) {
 	sess.finish(code, func() {
 		sig := struct {
@@ -460,9 +500,8 @@ func (sess *session) exitSignal(name string, code int) {
 	})
 }
 
-// finish is the single teardown path for a session. It emits the session_end
-// audit event, delivers the terminal channel request via send, and closes the
-// channel.
+// finish is the single teardown path: it emits the session_end audit event,
+// delivers the terminal channel request via send, then closes the channel.
 func (sess *session) finish(code int, send func()) {
 	sess.exitMu.Lock()
 	defer sess.exitMu.Unlock()
@@ -487,7 +526,6 @@ func (sess *session) finish(code int, send func()) {
 	_ = sess.Close()
 }
 
-// run dispatches to the pty or plain execution path.
 func (sess *session) run() {
 	if sess.ptmx != nil {
 		sess.runPTY()
@@ -496,8 +534,6 @@ func (sess *session) run() {
 	sess.runPlain()
 }
 
-// runPTY runs the command attached to the pty, relaying stdin/stdout and
-// recording when enabled.
 func (sess *session) runPTY() {
 	cmd := sess.ptmx.Command(sess.shell)
 	if err := ptysession.Configure(
@@ -526,8 +562,8 @@ func (sess *session) runPTY() {
 	waitInput()
 }
 
-// runPlain runs the command without a pty, wiring the channel straight to
-// the process (the non-interactive `ssh host command` path).
+// runPlain runs the command without a pty, the non-interactive `ssh host
+// command` path.
 func (sess *session) runPlain() {
 	var cmd *exec.Cmd
 	// #nosec G204 - running the authenticated user's command is the SSH
@@ -550,23 +586,19 @@ func (sess *session) runPlain() {
 	// sensitive output (cat, curl, git) leaves the machine.
 	sess.startRecorder(80, 24)
 
-	// Stderr goes to the channel's extended data stream (like sshd), not
-	// the regular data stream. Binary protocols (rsync, git, scp -s) are
-	// length-prefixed and break if stderr bytes are interleaved.
+	// Stderr goes to the extended data stream (like sshd), not the data
+	// stream: length-prefixed protocols break if stderr bytes interleave.
 	sess.runProcess(cmd, sess.Stderr())
 }
 
-// startRecorder builds the session's recorder when recording is enabled.
-// Does nothing when recording is off, setup failed, or one already exists
-// (the pty-req path creates it earlier). Dimensions are the terminal size;
-// plain sessions without a pty use a fixed 80x24 header.
+// startRecorder builds the recorder when recording is on. No-op when off or
+// one already exists (pty-req creates it earlier). width/height size the header.
 func (sess *session) startRecorder(width, height int) {
 	if sess.rec != nil || !sess.server.tun.Load().Record {
 		return
 	}
-	// A web session labels itself through the reserved env so its recording
-	// correlates with the backend session. Only a canonical UUID is
-	// promoted: a free-form value could forge another session's id.
+	// Only a canonical UUID is promoted from the reserved env: a free-form
+	// value could forge another session's recording id.
 	recSessionID := sess.sessionID
 	if id, ok := sess.envValue("NOKKU_SESSION_ID"); ok && canonicalUUID(id) {
 		recSessionID = id
@@ -594,50 +626,20 @@ func (sess *session) startRecorder(width, height int) {
 	}
 }
 
-// canonicalUUID reports whether s is a lowercase hyphenated 8-4-4-4-12
-// UUID, the form uuid.NewV7 produces for backend session ids.
+// canonicalUUID reports whether s is a lowercase hyphenated 8-4-4-4-12 UUID,
+// the form uuid.NewV7 produces. Re-serializing rejects braced and URN forms.
 func canonicalUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i, r := range s {
-		switch i {
-		case 8, 13, 18, 23:
-			if r != '-' {
-				return false
-			}
-		default:
-			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-				return false
-			}
-		}
-	}
-	return true
+	u, err := uuid.Parse(s)
+	return err == nil && u.String() == s
 }
 
-// recTee feeds written bytes to the session recorder as input or output
-// events before passing them on. Recorder methods swallow their own errors,
-// so a failing recording never disturbs the stream.
-type recTee struct {
-	w      io.Writer
-	rec    *recording.Recorder
-	output bool
-}
-
-func (t recTee) Write(p []byte) (int, error) {
-	if t.output {
-		t.rec.RecordOutput(p)
-	} else {
-		t.rec.RecordInput(p)
-	}
+func (t recOut) Write(p []byte) (int, error) {
+	t.rec.RecordOutput(p)
 	return t.w.Write(p)
 }
 
-// runProcess starts cmd and relays the session channel to its stdin/stdout
-// until the process exits, then reports the exit via ExitProcess and rejoins
-// the relay goroutines. errW, when non-nil, is wired to the process stderr.
-// The caller must configure the command beforehand (args, env, dir,
-// privileges). It returns the process state so a caller can derive a code.
+// runProcess relays the channel to cmd's stdin/stdout then reports the exit via
+// ExitProcess. The caller configures cmd first. errW, if set, is the process stderr.
 func (sess *session) runProcess(cmd *exec.Cmd, errW io.Writer) *os.ProcessState {
 	if errW != nil {
 		cmd.Stderr = errW
@@ -645,20 +647,20 @@ func (sess *session) runProcess(cmd *exec.Cmd, errW io.Writer) *os.ProcessState 
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		sess.server.logger.Debug("sshd: process stdin pipe", "error", err)
+		sess.server.logger.Debug("process stdin pipe failed", "error", err)
 		sess.Exit(1)
 		return nil
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		sess.server.logger.Debug("sshd: process stdout pipe", "error", err)
+		sess.server.logger.Debug("process stdout pipe failed", "error", err)
 		sess.Exit(1)
 		return nil
 	}
 
 	if err = cmd.Start(); err != nil {
-		sess.server.logger.Debug("sshd: start command", "error", err)
+		sess.server.logger.Debug("start command failed", "error", err)
 		_ = stdin.Close()
 		_ = stdout.Close()
 		sess.Exit(1)
@@ -668,22 +670,20 @@ func (sess *session) runProcess(cmd *exec.Cmd, errW io.Writer) *os.ProcessState 
 
 	var relay sync.WaitGroup
 
-	// The relay targets pass through the recorder when one is active, so
-	// both directions of a plain session are recorded.
-	var inW, outW io.Writer = stdin, io.Writer(sess)
+	// Only output is recorded on the plain path: without a PTY there is no
+	// echo signal, so input cannot be told apart and is never captured.
+	var outW io.Writer = sess
 	if sess.rec != nil {
-		inW = recTee{w: stdin, rec: sess.rec}
-		outW = recTee{w: sess, rec: sess.rec, output: true}
+		outW = recOut{w: sess, rec: sess.rec}
 	}
 
-	// client -> process
 	relay.Go(func() {
 		defer stdin.Close()
-		_, _ = io.Copy(inW, sess)
+		_, _ = io.Copy(stdin, sess)
 	})
 
-	// process -> client. A length-prefixed protocol (rsync) reads stderr
-	// as extended data, so stdout is the only thing on the data stream.
+	// process -> client: only stdout, since length-prefixed protocols read
+	// stderr as extended data.
 	stdoutDone := make(chan struct{})
 	relay.Go(func() {
 		defer close(stdoutDone)
@@ -694,26 +694,23 @@ func (sess *session) runProcess(cmd *exec.Cmd, errW io.Writer) *os.ProcessState 
 	// which would truncate output the relay has not yet copied.
 	<-stdoutDone
 	if waitErr := cmd.Wait(); waitErr != nil {
-		sess.server.logger.Debug("sshd: command exited", "error", waitErr)
+		sess.server.logger.Debug("command exited", "error", waitErr)
 	}
 
-	// cmd.Wait() reaped the process and closed the pipes, but the
-	// client-side relay is still blocked reading the session channel.
-	// Exit closes it so the io.Copy above returns, then we join the relays.
+	// cmd.Wait() closed the pipes, but the client-side relay is still blocked
+	// reading the channel. ExitProcess closes it, then the relays are joined.
 	sess.ExitProcess(cmd.ProcessState)
 	relay.Wait()
 	return cmd.ProcessState
 }
 
-// buildEnv combines the target user's environment with the client-requested
-// variables and SSH session metadata.
 func (sess *session) buildEnv() []string {
 	env := sysutil.CmdEnv(sess.sysUser, sess.shell)
 	env = append(env, sess.env...)
 	if sess.conn != nil {
 		env = append(
 			env,
-			"SSH_CONNECTION="+sess.conn.RemoteAddr().String()+" "+sess.conn.LocalAddr().String(),
+			"SSH_CONNECTION="+connectionFields(sess.conn.RemoteAddr(), sess.conn.LocalAddr()),
 		)
 	}
 	if sess.ptmx != nil {
@@ -723,6 +720,22 @@ func (sess *session) buildEnv() []string {
 		env = append(env, "SSH_AUTH_SOCK="+sess.agentSock)
 	}
 	return env
+}
+
+// connectionFields renders the four SSH_CONNECTION fields (remote ip, remote
+// port, local ip, local port). [net.Addr] alone would render host:port twice.
+func connectionFields(remote, local net.Addr) string {
+	rHost, rPort := splitHostPort(remote)
+	lHost, lPort := splitHostPort(local)
+	return rHost + " " + rPort + " " + lHost + " " + lPort
+}
+
+func splitHostPort(a net.Addr) (string, string) {
+	host, port, err := net.SplitHostPort(a.String())
+	if err != nil {
+		return a.String(), ""
+	}
+	return host, port
 }
 
 func exitCodeOf(st *os.ProcessState) uint32 {
@@ -735,8 +748,8 @@ func exitCodeOf(st *os.ProcessState) uint32 {
 	return 1
 }
 
-// exitCodeToU32 maps a process exit code to the SSH exit-status value.
-// POSIX exit codes are 0-255. Anything out of range maps to 1.
+// exitCodeToU32 maps a process exit code to the SSH exit-status value. POSIX
+// exit codes are 0-255, anything out of range maps to 1.
 func exitCodeToU32(code int) uint32 {
 	if code < 0 || code > 255 {
 		return 1

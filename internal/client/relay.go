@@ -31,19 +31,14 @@ type relayStream interface {
 func (c *Client) startRelay(ctx context.Context, req *nokkuv1.RelayOpen) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("relay handler panicked", "id", req.GetRelayId(), "panic", r)
+			slog.Error("relay handler panicked", "relay", req.GetRelayId(), "panic", r)
 		}
 	}()
 
 	if err := c.runRelay(ctx, req); err != nil {
-		slog.Error("relay failed", "id", req.GetRelayId(), "error", err)
+		slog.Warn("relay failed", "relay", req.GetRelayId(), "error", err)
 	}
 }
-
-// runRelay bridges one user SSH connection to the daemon's own sshd over a
-// DaemonRelay stream. It ends on sshd closing the connection, a stream
-// error, a server-issued close, idle timeout, or TTL.
-//
 
 func (c *Client) runRelay(ctx context.Context, req *nokkuv1.RelayOpen) error {
 	select {
@@ -60,24 +55,19 @@ func (c *Client) runRelay(ctx context.Context, req *nokkuv1.RelayOpen) error {
 	return runRelayStream(ctx, stream, c.config.SSHAddr, req.GetRelayId())
 }
 
-// runRelayStream bridges one opened relay stream to the daemon's own sshd.
-// It ends on sshd closing the connection, a stream error, a server-issued
-// close, idle timeout, or TTL.
-//
-
+// runRelayStream bridges one relay stream to the daemon's own sshd, ending on
+// sshd close, a stream error, a server-issued close, idle timeout, or TTL.
 func runRelayStream(ctx context.Context, stream relayStream, sshAddr, relayID string) error {
 	logger := slog.With("relay", relayID)
 
 	ctx, cancel := context.WithTimeout(ctx, sessionTTL)
 	defer cancel()
 
-	// Ready goes out before dialing sshd: the backend resolves its pending
-	// relay on the ready frame, so a dial failure below surfaces there as a
-	// closed frame instead of a pending timeout. It must be the stream's
-	// first message: the backend correlates the pending relay by it.
-	id := relayID
+	// Ready must be the stream's first message: the backend resolves its
+	// pending relay on it. Send it before dialing sshd so a dial failure
+	// surfaces there as a closed frame instead of a pending timeout.
 	if err := stream.Send(&nokkuv1.DaemonRelayRequest{
-		Msg: &nokkuv1.DaemonRelayRequest_Ready{Ready: &nokkuv1.DaemonRelayReady{RelayId: &id}},
+		Msg: &nokkuv1.DaemonRelayRequest_Ready{Ready: &nokkuv1.DaemonRelayReady{RelayId: &relayID}},
 	}); err != nil {
 		return err
 	}
@@ -147,11 +137,8 @@ func runRelayStream(ctx context.Context, stream relayStream, sshAddr, relayID st
 
 	<-done
 
-	// Send the close while the stream context is still alive: cleanup
-	// cancels ctx and a Send on a canceled context is rejected locally. The
-	// gate token is drained rather than returned, so a pump that read sshd
-	// traffic just before teardown can never send a data frame after the
-	// closed frame.
+	// Send while ctx is alive, since a Send on a canceled context is rejected
+	// locally, and drain the gate so no data frame follows the closed frame.
 	select {
 	case sendGate <- struct{}{}:
 		_ = stream.Send(&nokkuv1.DaemonRelayRequest{
@@ -236,10 +223,8 @@ func dialSSHd(ctx context.Context, sshAddr string) (net.Conn, error) {
 	return dialer.DialContext(ctx, "tcp", dialAddr)
 }
 
-// relayDialAddr resolves where the daemon's own sshd listens. A wildcard
-// bind host means loopback, a specific bind address is used as is. An empty
-// address is a misconfiguration: main installs the default before serving,
-// so empty here means the config was cleared mid-run.
+// relayDialAddr maps the daemon's own listen address to a dialable target. A
+// wildcard bind host means loopback. Empty means the config was cleared mid-run.
 func relayDialAddr(addr string) (string, error) {
 	if addr == "" {
 		return "", errors.New("ssh listen address is not configured")

@@ -14,6 +14,7 @@ import (
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/hostcerts"
 	"github.com/nokku-sh/nokkud/internal/paths"
+	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
@@ -57,27 +58,30 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		if saveErr := c.cache.Save(); saveErr != nil {
 			slog.Error("persist cleared synced state on rejection", "error", saveErr)
 		}
-		slog.Error("daemon rejected, exiting")
 		return errDaemonRejected
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED:
-		// Apply below.
+		// Apply the synced state below.
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_UNSPECIFIED,
 		nokkuv1.DaemonStatus_DAEMON_STATUS_PENDING:
-		return nil // Nothing to apply
+		return nil
 	}
 
-	// Build the new state locally and swap it in atomically, so auth reads
-	// never see an empty principal map between Clear and repopulate.
+	// Build and swap the new state atomically so auth reads never see an empty
+	// principal map mid-sync.
 	principals := make(map[string][]string, len(res.GetPrincipals()))
 	for _, p := range res.GetPrincipals() {
 		principals[p.GetUsername()] = p.GetIds()
 	}
-	c.cache.Replace(principals, res.GetConfig(), res.GetStateVersion())
+	revocations := make(map[string]int64, len(res.GetRevokedPrincipals()))
+	for _, r := range res.GetRevokedPrincipals() {
+		revocations[r.GetPrincipal()] = r.GetRevokedBefore()
+	}
+	c.cache.Replace(principals, revocations, res.GetConfig(), res.GetStateVersion())
 
 	c.applyConfig()
 
-	// CA rollover, re-sign the host certificate under the new authority and
-	// reload the server before acknowledging the new state.
+	// CA rollover: re-sign the host certificate under the new authority and
+	// reload before acknowledging the new state.
 	if ca := res.GetCaPublicKey(); ca != "" && !c.caMatches(ca) {
 		if renewErr := c.renewHostCerts(ctx, true); renewErr != nil {
 			return fmt.Errorf("renew host certificates after CA rollover: %w", renewErr)
@@ -101,24 +105,31 @@ func (c *Client) caMatches(key string) bool {
 }
 
 // applyConfig pushes the synced daemon config into the embedded SSH server.
-// Unset fields fall back to the server's compiled-in defaults so a partial
-// config can never silently disable forwarding or leave the server uncapped.
+// Unset fields keep the server defaults so a partial config cannot silently
+// disable forwarding or leave the server uncapped.
 func (c *Client) applyConfig() {
 	if c.sshSrv == nil {
 		return
 	}
-	cfg := c.cache.DaemonConfig()
-	t := c.sshSrv.DefaultTunables()
+	c.sshSrv.SetTunables(overlayConfig(c.sshSrv.DefaultTunables(), c.cache.DaemonConfig()))
+}
+
+// overlayConfig applies a synced daemon config on top of the compiled-in
+// policy. A proto field that was never set (editions 2023 has explicit
+// presence) keeps the daemon default; only an explicit value overrides it.
+func overlayConfig(t sshd.Tunables, cfg *nokkuv1.DaemonConfig) sshd.Tunables {
 	if cfg == nil {
-		c.sshSrv.SetTunables(t)
-		return
+		return t
 	}
-	t.Record = cfg.GetRecordSessions()
+	t.Record = boolField(cfg.RecordSessions, t.Record)
 	t.AllowForwarding = boolField(cfg.AllowForwarding, t.AllowForwarding)
 	t.AllowAgentForwarding = boolField(cfg.AllowAgentForwarding, t.AllowAgentForwarding)
 	t.GatewayPorts = boolField(cfg.GatewayPorts, t.GatewayPorts)
 	t.MaxSessions = intField(cfg.MaxSessions, t.MaxSessions)
+	t.MaxChannels = intField(cfg.MaxChannels, t.MaxChannels)
+	t.DropRetiredCA = boolField(cfg.DropRetiredCa, t.DropRetiredCA)
 	t.MaxConnections = intField(cfg.MaxConnections, t.MaxConnections)
+	t.MaxStartups = intField(cfg.MaxStartups, t.MaxStartups)
 	t.MaxSessionsPerUser = intField(cfg.MaxSessionsPerUser, t.MaxSessionsPerUser)
 	t.ConnRate = intField(cfg.ConnRate, t.ConnRate)
 	t.ConnRateBurst = intField(cfg.ConnRateBurst, t.ConnRateBurst)
@@ -126,10 +137,9 @@ func (c *Client) applyConfig() {
 	if d := cfg.GetClientAliveInterval(); d != nil {
 		t.ClientAliveInterval = d.AsDuration()
 	}
-	c.sshSrv.SetTunables(t)
+	return t
 }
 
-// boolField returns v when set, otherwise the daemon's default.
 func boolField(v *bool, def bool) bool {
 	if v != nil {
 		return *v
@@ -137,7 +147,6 @@ func boolField(v *bool, def bool) bool {
 	return def
 }
 
-// intField returns v when set, otherwise the daemon's default.
 func intField(v *int32, def int) int {
 	if v != nil {
 		return int(*v)
@@ -147,11 +156,11 @@ func intField(v *int32, def int) int {
 
 func (c *Client) renewHostCerts(ctx context.Context, force bool) error {
 	renewed, err := hostcerts.RenewHostCerts(ctx, c.config.TargetID, c.signHostCert, force)
-	slog.Debug("renew host certificates", "renewed", renewed, "force", force, "error", err)
 	if err != nil {
 		return err
 	}
-	if renewed > 0 {
+	slog.Debug("renew host certificates", "renewed", renewed, "force", force)
+	if renewed {
 		c.reloadSSH()
 	}
 	return nil

@@ -1,7 +1,12 @@
 #!/bin/sh
-set -e
+set -eu
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "error: run as root (sudo ./install.sh)" >&2
+	exit 1
+fi
 
 echo "Installing Nokku Daemon..."
 

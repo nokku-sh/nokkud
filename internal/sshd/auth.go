@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"maps"
 	"os"
 	"slices"
@@ -16,16 +18,16 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-var errNoCertificates = errors.New("sshd: only certificate authentication is supported")
-
-// retiredCAGrace is how long the previously trusted CA remains accepted after
-// a rollover, so user certificates it signed keep working until they expire
-// (the backend's default user TTLs are at most 7 days).
+// retiredCAGrace keeps certificates signed by a rolled-over CA valid until
+// they expire (user TTLs are at most 7 days).
 const retiredCAGrace = 8 * 24 * time.Hour
 
-// loadTrustedCAs reads every CA public key from the daemon's cached CA files.
-// The active CA plus, within retiredCAGrace of the rollover, the retired one.
-func loadTrustedCAs() ([]ssh.PublicKey, error) {
+var errNoCertificates = errors.New("sshd: only certificate authentication is supported")
+
+// loadTrustedCAs returns the active CA public keys plus, within retiredCAGrace
+// of a rollover, the retired CA. With dropRetired the retired CA is not trusted
+// and its file is removed, so trust cannot come back.
+func loadTrustedCAs(dropRetired bool) ([]ssh.PublicKey, error) {
 	userCA := paths.UserCAFile()
 	keys, err := parseCAFile(userCA)
 	if err != nil {
@@ -35,7 +37,11 @@ func loadTrustedCAs() ([]ssh.PublicKey, error) {
 	// Best-effort. A corrupt or missing retired file must never take down
 	// authentication, which the active CA still provides.
 	retiredCA := paths.RetiredCAFile()
-	if st, statErr := os.Stat(retiredCA); statErr == nil {
+	if dropRetired {
+		if removeErr := os.Remove(retiredCA); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			slog.Debug("remove retired CA", "error", removeErr)
+		}
+	} else if st, statErr := os.Stat(retiredCA); statErr == nil {
 		if time.Since(st.ModTime()) < retiredCAGrace {
 			if retired, parseErr := parseCAFile(retiredCA); parseErr == nil {
 				keys = append(keys, retired...)
@@ -48,8 +54,8 @@ func loadTrustedCAs() ([]ssh.PublicKey, error) {
 	return keys, nil
 }
 
-// parseCAFile parses every authorized-key line from path. Blank lines and
-// comments are skipped, matching the authorized_keys format the file mirrors.
+// parseCAFile parses every authorized-key line in path, skipping blanks and
+// comments.
 func parseCAFile(path string) ([]ssh.PublicKey, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -76,22 +82,25 @@ func parseCAFile(path string) ([]ssh.PublicKey, error) {
 	return keys, nil
 }
 
-// trustedCA reports whether key is one of the configured CAs.
+// caKeys indexes CA public keys by wire encoding so lookups never marshal on
+// the auth path.
+func caKeys(keys []ssh.PublicKey) map[string]struct{} {
+	set := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		set[string(k.Marshal())] = struct{}{}
+	}
+	return set
+}
+
 func (s *Server) trustedCA(key ssh.PublicKey) bool {
 	s.certsMu.RLock()
 	defer s.certsMu.RUnlock()
-	blob := key.Marshal()
-	for _, ca := range s.trustedCAs {
-		if bytes.Equal(blob, ca.Marshal()) {
-			return true
-		}
-	}
-	return false
+	_, ok := s.trustedCAs[string(key.Marshal())]
+	return ok
 }
 
-// publicKeyCallback authenticates a user certificate. The certificate
-// principals are subject UUIDs. A principal is accepted when it is in the
-// cached allowed set for the requested local username.
+// publicKeyCallback authenticates a user certificate whose principals are
+// subject UUIDs.
 func (s *Server) publicKeyCallback(
 	conn ssh.ConnMetadata,
 	key ssh.PublicKey,
@@ -100,9 +109,8 @@ func (s *Server) publicKeyCallback(
 	if !ok {
 		return nil, s.deny(conn, errNoCertificates)
 	}
-	// CheckCert does not validate the cert type (only CertChecker.Authenticate
-	// does), so a host certificate from a shared or misconfigured CA would
-	// otherwise authenticate a user.
+	// CheckCert does not validate the cert type, so a host certificate from a
+	// shared or misconfigured CA would otherwise authenticate a user.
 	if cert.CertType != ssh.UserCert {
 		return nil, s.deny(conn, fmt.Errorf("sshd: certificate has type %d, want user certificate", cert.CertType))
 	}
@@ -130,10 +138,17 @@ func (s *Server) publicKeyCallback(
 		)
 	}
 
-	// Reuses x/crypto/ssh's validation for critical options, the validity
-	// window, and the CA signature. source-address is enforced by the stack
-	// against the CriticalOptions this callback returns below. The checker is
-	// built per-auth so CA reloads apply to new connections immediately.
+	// Certificates minted before a principal's revocation cutoff are refused
+	// here. Later ones work again, so no serial tracking is needed.
+	if s.revoked != nil {
+		if before, revoked := s.revoked(matched); revoked && before > 0 && cert.ValidAfter < uint64(before) {
+			return nil, s.deny(conn, errors.New("sshd: certificate revoked"))
+		}
+	}
+
+	// Built per-auth so CA reloads apply to new connections immediately.
+	// x/crypto/ssh enforces the critical options, validity window, and CA
+	// signature.
 	checker := ssh.CertChecker{
 		IsUserAuthority:          s.trustedCA,
 		SupportedCriticalOptions: []string{"force-command", "source-address"},
@@ -142,19 +157,8 @@ func (s *Server) publicKeyCallback(
 		return nil, s.deny(conn, err)
 	}
 
-	// Post-auth policy hook. Device trust, MFA, workspace membership, or any
-	// extension enforcement layered on top of the base checks.
-	if s.authorize != nil {
-		if err := s.authorize(conn, cert, matched); err != nil {
-			return nil, s.deny(conn, fmt.Errorf("sshd: login denied by policy: %w", err))
-		}
-	}
-
-	// CriticalOptions flow to the stack, which enforces source-address and
-	// exposes force-command to the session. Extensions flow to the session so
-	// it can enforce the permit-* options (absent means deny, matching sshd).
-	// Wire-parsed certs always carry an Extensions map; hand-built ones may
-	// not, and writing into a nil map would panic inside the auth callback.
+	// CriticalOptions are enforced by the stack, Extensions by the session.
+	// A hand-built cert can have a nil Extensions map, which panics on write.
 	perms := &ssh.Permissions{
 		CriticalOptions: maps.Clone(cert.CriticalOptions),
 		Extensions:      maps.Clone(cert.Extensions),
@@ -163,6 +167,9 @@ func (s *Server) publicKeyCallback(
 		perms.Extensions = make(map[string]string, 2)
 	}
 	perms.Extensions["nokku-principal"] = matched
+	// The key id is covered by the CA signature, so the session can trust it
+	// to tell a control-plane web session from a direct login.
+	perms.Extensions["nokku-cert-key-id"] = cert.KeyId
 	if fc := cert.CriticalOptions["force-command"]; fc != "" {
 		perms.Extensions["force-command"] = fc
 	}
@@ -171,8 +178,8 @@ func (s *Server) publicKeyCallback(
 	return perms, nil
 }
 
-// certExt reports whether the authenticated certificate carries the named
-// extension. Absent means deny, matching sshd's permit-* semantics.
+// certExt reports whether the certificate carries the named extension. Absent
+// means deny.
 func certExt(conn *ssh.ServerConn, name string) bool {
 	if conn == nil || conn.Permissions == nil {
 		return false
@@ -181,8 +188,8 @@ func certExt(conn *ssh.ServerConn, name string) bool {
 	return ok
 }
 
-// deny logs a rejected auth attempt and returns err to the caller. Every
-// denial flows through here so there is a single audit/log point.
+// deny logs a rejected auth attempt and returns err. Every denial flows
+// through here, so audit and logging share one site.
 func (s *Server) deny(conn ssh.ConnMetadata, err error) error {
 	ev := eventWith(connEvent(conn), audit.EventAuthFailure, "", err.Error())
 	s.emit(ev)
@@ -190,10 +197,9 @@ func (s *Server) deny(conn ssh.ConnMetadata, err error) error {
 	return err
 }
 
-// authFailure logs a denied auth attempt for audit purposes.
 func (s *Server) authFailure(conn ssh.ConnMetadata, err error) {
 	s.logger.Warn(
-		"sshd: auth denied",
+		"auth denied",
 		"user", conn.User(),
 		"remote", conn.RemoteAddr(),
 		"client", string(conn.ClientVersion()),

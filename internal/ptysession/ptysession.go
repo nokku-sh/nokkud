@@ -1,7 +1,4 @@
-// Package ptysession runs a user's login shell inside a PTY and relays bytes
-// between the PTY and the session transport, optionally recording the stream.
-// It is shared by the embedded SSH server and the backend-relayed web
-// terminal.
+// Package ptysession runs a login shell in a PTY and relays bytes to the session transport.
 package ptysession
 
 import (
@@ -24,11 +21,38 @@ type Recorder interface {
 	Close()
 }
 
-// Configure prepares cmd to run sysUser's login shell. When command is empty
-// the shell runs as a login shell; otherwise it runs `shell -c command`. The
-// caller must already have built cmd attached to the PTY (via ptmx.Command)
-// and supplies the environment. It returns the privilege-drop error from
-// SysProcAttr when running as root.
+// RunOptions configures a PTY session.
+type RunOptions struct {
+	// Pty is the already created and sized PTY the command runs in.
+	Pty pty.Pty
+	// Cmd is the command to run in Pty. It must have been built via
+	// ptmx.Command and Configured with args, env, dir and privileges.
+	Cmd *pty.Cmd
+	// In is the client-to-process byte stream.
+	In io.Reader
+	// Out is the process-to-client byte stream.
+	Out io.Writer
+	// Rec records the session. Input is recorded only while the PTY has echo
+	// enabled, so un-echoed password entry is never captured.
+	Rec Recorder
+	// OnStart, when set, is called with the process once it has started (used
+	// to forward signals).
+	OnStart func(*os.Process)
+}
+
+// outputWriter records output and forwards it to the transport.
+type outputWriter struct {
+	dst io.Writer
+	rec Recorder
+}
+
+func (w *outputWriter) Write(p []byte) (int, error) {
+	w.rec.RecordOutput(p)
+	return w.dst.Write(p)
+}
+
+// Configure makes cmd run sysUser's login shell: a login shell when command
+// is empty, else `shell -c command`. It applies the privilege drop for root.
 func Configure(cmd *pty.Cmd, sysUser *user.User, shell, command string, env []string) error {
 	cmd.Args[0] = "-" + filepath.Base(shell) // login shell
 	if command != "" {
@@ -45,33 +69,10 @@ func Configure(cmd *pty.Cmd, sysUser *user.User, shell, command string, env []st
 	return nil
 }
 
-// RunOptions configures a PTY session.
-type RunOptions struct {
-	// Pty is the already created and sized PTY the command runs in.
-	Pty pty.Pty
-	// Cmd is the command to run in Pty. It must have been built via
-	// ptmx.Command and Configured with args, env, dir and privileges.
-	Cmd *pty.Cmd
-	// In is the client-to-process byte stream.
-	In io.Reader
-	// Out is the process-to-client byte stream.
-	Out io.Writer
-	// Rec records the session when non-nil. Input is recorded only while the
-	// PTY has echo enabled (password prompts).
-	Rec Recorder
-	// OnStart, when set, is called with the process once it has started (used
-	// to forward signals).
-	OnStart func(*os.Process)
-}
-
 // Run starts Cmd in Pty and relays bytes between In/Out and the PTY until the
-// child exits, then reaps it and returns its process state (nil when Start
-// failed). The parent's copy of the PTY slave is closed so the master reports
-// EOF as soon as the child exits.
+// child exits, then reaps it. ps is nil when Start failed.
 //
-// The returned waitInput joins the input relay goroutine. It must be called
-// only after In has been closed, otherwise the relay is still blocked reading
-// it; SSH sessions close the channel in ExitProcess before joining.
+// waitInput must be called only after In is closed, else it blocks forever.
 func Run(opts RunOptions) (ps *os.ProcessState, waitInput func()) {
 	if err := opts.Cmd.Start(); err != nil {
 		return nil, func() {}
@@ -109,17 +110,6 @@ func Run(opts RunOptions) (ps *os.ProcessState, waitInput func()) {
 	_ = opts.Cmd.Wait()
 
 	return opts.Cmd.ProcessState, wg.Wait
-}
-
-// outputWriter records output and forwards it to the transport.
-type outputWriter struct {
-	dst io.Writer
-	rec Recorder
-}
-
-func (w *outputWriter) Write(p []byte) (int, error) {
-	w.rec.RecordOutput(p)
-	return w.dst.Write(p)
 }
 
 // closePTYSlave drops the parent's reference to the PTY slave so the master

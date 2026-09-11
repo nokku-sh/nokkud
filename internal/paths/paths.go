@@ -1,6 +1,4 @@
-// Package paths resolves the filesystem locations nokkud owns. Every
-// location derives from NOKKUD_DATA_DIR when set, so tests can point the
-// daemon at a scratch directory.
+// Package paths resolves the filesystem locations nokkud owns.
 package paths
 
 import (
@@ -15,15 +13,15 @@ const (
 	configFilename      = "config.json"
 	cacheFilename       = "cache.json"
 	signerStateFilename = "state.json"
+	hostSignerFilename  = "ssh_host_signer.json"
 	userCAFilename      = "nokku_ca.pub"
 	retiredCAFilename   = "nokku_ca.previous.pub"
 	recordsDir          = "recordings"
 	auditDir            = "audit"
-	tpmHostKeyName      = "ssh_host_ecdsa_key"
+	hostKeyName         = "ssh_host_ecdsa_key"
 	softwareHostKeyName = "ssh_host_ed25519_key"
 )
 
-// dataDir returns the root writable directory for daemon state.
 func dataDir() string {
 	if dir := os.Getenv("NOKKUD_DATA_DIR"); dir != "" {
 		return dir
@@ -63,21 +61,38 @@ func UserCAFile() string { return filepath.Join(dataDir(), userCAFilename) }
 
 func RetiredCAFile() string { return filepath.Join(dataDir(), retiredCAFilename) }
 
+// HostSignerStateFile is the tpm.Signer state backing the host identity.
+func HostSignerStateFile() string { return filepath.Join(dataDir(), hostSignerFilename) }
+
+// HostKeyPub is the public half of the host identity, signed into a host
+// certificate by the sync. The key is ECDSA P-256 in both storage modes.
+func HostKeyPub() string { return filepath.Join(dataDir(), hostKeyName+".pub") }
+
+// HostKeyCert is the host certificate the embedded SSH server presents.
+func HostKeyCert() string { return filepath.Join(dataDir(), hostKeyName+"-cert.pub") }
+
+// SoftwareHostKey is the legacy pre-Signer ed25519 private key path, removed
+// on upgrade.
 func SoftwareHostKey() string { return filepath.Join(dataDir(), softwareHostKeyName) }
 
+// SoftwareHostKeyPub is the legacy pre-Signer ed25519 public key path, removed
+// on upgrade.
 func SoftwareHostKeyPub() string { return SoftwareHostKey() + ".pub" }
 
+// SoftwareHostKeyCert is the legacy pre-Signer ed25519 host certificate path,
+// removed on upgrade.
 func SoftwareHostKeyCert() string { return SoftwareHostKey() + "-cert.pub" }
 
-func TPMHostKeyPub() string { return filepath.Join(dataDir(), tpmHostKeyName+".pub") }
-
-func TPMHostKeyCert() string { return filepath.Join(dataDir(), tpmHostKeyName+"-cert.pub") }
-
-// Verify creates the owned directories and checks that the SSH paths exist.
+// Verify creates the owned directories with 0700 perms. MkdirAll leaves an
+// existing directory's mode alone, so the mode is applied explicitly.
 func Verify() error {
 	dir := dataDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("cannot create directory %s: %w", dir, err)
+	}
+	//nolint:gosec // G302: a directory needs the execute bit to be traversable
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("cannot secure directory %s: %w", dir, err)
 	}
 	if err := os.MkdirAll(RecordsDir(), 0o700); err != nil {
 		return fmt.Errorf("cannot create directory %s: %w", RecordsDir(), err)

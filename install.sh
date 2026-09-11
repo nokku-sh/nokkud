@@ -13,6 +13,9 @@ GH_REPO="nokku-sh/nokkud"
 CS_OWNER="nokku"
 CS_REPO="nokkud"
 
+# Checksum manifest and cosign bundle, named by GoReleaser.
+CHECKSUM_FILE="${BINARY_NAME}_checksums.txt"
+
 VERSION="${NOKKUD_VERSION:-}"
 
 usage() {
@@ -49,7 +52,15 @@ while [ "$#" -gt 0 ]; do
 	shift
 done
 
+# Accept both v1.2.3 and 1.2.3.
+VERSION="${VERSION#v}"
+
 have() { command -v "$1" >/dev/null 2>&1; }
+
+if ! have curl; then
+	echo "error: curl is required but was not found on PATH" >&2
+	exit 1
+fi
 
 as_root() {
 	if [ "$(id -u)" -eq 0 ]; then
@@ -62,6 +73,8 @@ as_root() {
 # Install via the distro package manager from Cloudsmith.
 # Returns 0 only if the binary is found on PATH afterwards.
 install_package() {
+	# Packages are published for Linux only; other systems use the tarball.
+	[ "$(uname -s)" = "Linux" ] || return 1
 	[ -z "$VERSION" ] || return 1
 
 	case " $(command -v apt-get dnf yum zypper apk) " in
@@ -131,8 +144,8 @@ install_package() {
 	alpine) apk info -e "$BINARY_NAME" >/dev/null 2>&1 && pkg_installed=true ;;
 	esac
 
-	if [ "$pkg_installed" != true ]; then
-		echo "warning: '${BINARY_NAME}' package is not installed; falling back to the GitHub binary." >&2
+	if [ "$pkg_installed" != true ] || ! have "$BINARY_NAME"; then
+		echo "warning: '${BINARY_NAME}' is not on PATH after the package install; falling back to the GitHub binary." >&2
 		rm -rf "$TMP_DIR"
 		return 1
 	fi
@@ -142,8 +155,30 @@ install_package() {
 	return 0
 }
 
-# Download the release tarball from GitHub and run the bundled installer.
+# sha256 prints the SHA-256 of a file using whichever tool is available.
+sha256() {
+	if have sha256sum; then
+		sha256sum "$1" | awk '{print $1}'
+	elif have shasum; then
+		shasum -a 256 "$1" | awk '{print $1}'
+	elif have openssl; then
+		openssl dgst -sha256 "$1" | awk '{print $NF}'
+	else
+		echo "error: no SHA-256 tool found (need sha256sum, shasum, or openssl)" >&2
+		return 1
+	fi
+}
+
+# Download the release tarball from GitHub, verify it, then run the bundled
+# installer. Nothing from the download is executed before the checksum and, when
+# cosign is available, the signature on the checksum manifest are verified.
 install_binary() {
+	if [ "$(uname -s)" != "Linux" ]; then
+		echo "error: prebuilt tarballs are published for Linux only" >&2
+		echo "See https://github.com/${GH_REPO}/releases/latest for the package list." >&2
+		exit 1
+	fi
+
 	ARCH=$(uname -m)
 	case "$ARCH" in
 	x86_64 | amd64) GOARCH=amd64 ;;
@@ -156,20 +191,60 @@ install_binary() {
 	esac
 
 	if [ -n "$VERSION" ]; then
-		URL="https://github.com/${GH_REPO}/releases/download/v${VERSION}/${BINARY_NAME}_linux_${GOARCH}.tar.gz"
+		REL_BASE="https://github.com/${GH_REPO}/releases/download/v${VERSION}"
 	else
-		URL="https://github.com/${GH_REPO}/releases/latest/download/${BINARY_NAME}_linux_${GOARCH}.tar.gz"
+		REL_BASE="https://github.com/${GH_REPO}/releases/latest/download"
 	fi
 
-	TMP_DIR=$(mktemp -d)
+	TARBALL="${BINARY_NAME}_linux_${GOARCH}.tar.gz"
+
+	TMP_DIR=$(mktemp -d) || {
+		echo "error: cannot create a temporary directory (check TMPDIR)" >&2
+		exit 1
+	}
 	trap 'rm -rf "$TMP_DIR"' EXIT
 
 	echo "Downloading ${BINARY_NAME} (linux/${GOARCH}) from GitHub..."
-	curl -fsSL -o "${TMP_DIR}/${BINARY_NAME}.tar.gz" "$URL"
-	tar -xzf "${TMP_DIR}/${BINARY_NAME}.tar.gz" -C "$TMP_DIR"
+	curl -fsSL -o "${TMP_DIR}/${TARBALL}" "${REL_BASE}/${TARBALL}"
+
+	# The checksum manifest is the root of trust. Verify its cosign signature
+	# when possible, then verify the tarball against it.
+	curl -fsSL -o "${TMP_DIR}/${CHECKSUM_FILE}" "${REL_BASE}/${CHECKSUM_FILE}"
+	if have cosign; then
+		curl -fsSL -o "${TMP_DIR}/${CHECKSUM_FILE}.sigstore.json" \
+			"${REL_BASE}/${CHECKSUM_FILE}.sigstore.json"
+		echo "Verifying ${CHECKSUM_FILE} signature with cosign..."
+		if ! cosign verify-blob \
+			--bundle "${TMP_DIR}/${CHECKSUM_FILE}.sigstore.json" \
+			--certificate-identity-regexp \
+			'https://github.com/nokku-sh/nokkud/\.github/workflows/.*' \
+			--certificate-oidc-issuer https://token.actions.githubusercontent.com \
+			"${TMP_DIR}/${CHECKSUM_FILE}"; then
+			echo "error: ${CHECKSUM_FILE} signature verification failed" >&2
+			exit 1
+		fi
+	else
+		echo "warning: cosign not found; the checksum is verified but the checksum manifest itself is not authenticated." >&2
+	fi
+
+	WANT=$(awk -v name="$TARBALL" '$2 == name { print $1 }' "${TMP_DIR}/${CHECKSUM_FILE}")
+	if [ -z "$WANT" ]; then
+		echo "error: ${TARBALL} is not listed in ${CHECKSUM_FILE}" >&2
+		exit 1
+	fi
+
+	GOT=$(sha256 "${TMP_DIR}/${TARBALL}") || exit 1
+	if [ "${WANT}" != "${GOT}" ]; then
+		echo "error: checksum mismatch for ${TARBALL}" >&2
+		echo "  expected ${WANT}" >&2
+		echo "  got      ${GOT}" >&2
+		exit 1
+	fi
+
+	tar -xzf "${TMP_DIR}/${TARBALL}" -C "$TMP_DIR"
 
 	cd "$TMP_DIR"
-	as_root ./install.sh
+	as_root sh ./install.sh
 }
 
 if install_package; then

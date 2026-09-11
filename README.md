@@ -22,11 +22,11 @@
 - **Offline Resiliency:** If the backend control plane is unavailable, principal checks use the last local cache. You are never locked out.
 - **Break-Glass Safety:** Your system `sshd` is never touched. It stays safely on port 22 as a fallback, while Nokku traffic runs on port 4022.
 - **TPM 2.0**: machines with a TPM (or a vTPM on AWS, GCP, Azure, Proxmox, ...) sign with a key generated inside the TPM that never leaves it. The key is derived deterministically, so it survives reboots without storing anything.
-- **Software fallback**: machines without a TPM use a software key encrypted at rest with a key derived from the machine's identity (`/etc/machine-id` and friends).
+- **Software fallback**: machines without a TPM use an ECDSA P-256 key wrapped with a key derived from the machine's fingerprint (`/etc/machine-id` and friends). That wrap only prevents copying the state file to another machine; it is not encryption against anyone who can already read the file, because the machine fingerprint is public. The key is only as strong as the file permissions. On servers with a TPM, run with `--require-tpm` so the daemon refuses to fall back.
 
 ## Install & Firewall
 
-Install the binary, it will setup the systemd/OpenRC service, and load the AppArmor/SELinux policy:
+Install the daemon. The installer sets up the systemd or OpenRC service and loads the AppArmor/SELinux policy:
 
 ```bash
 curl -fsSL https://get.nokku.sh/nokkud | sudo sh
@@ -52,32 +52,46 @@ Generate an enrollment token in the Nokku web app, then run:
 
 ```bash
 sudo systemctl stop nokkud
-sudo nokkud --enroll <TOKEN>
+sudo nokkud --enroll
 sudo systemctl start nokkud
 ```
 
-Everything `nokkud` owns lives securely under `/var/lib/nokkud/`. No long-lived secrets live on the machine; it proves possession of its TPM or encrypted software key with DPoP.
+`--enroll` prompts for the token without echoing it. For unattended installs set
+`NOKKUD_ENROLL_TOKEN` instead. The token is never taken from the command line,
+where any local user could read it from the process list.
+
+Everything `nokkud` owns lives under `/var/lib/nokkud/`. On a TPM machine the signing key never leaves the TPM; without one, the software key is stored wrapped to the machine fingerprint. The daemon authenticates with DPoP, and the session token it holds is bound to that key.
 
 ### Manual install
 
-Download the latest binary from [Releases](https://github.com/nokku-sh/nokkud/releases).
+Download the release tarball for your architecture from
+[Releases](https://github.com/nokku-sh/nokkud/releases), then run the bundled
+installer:
 
-Create the systemd unit at `/etc/systemd/system/nokkud.service` (also shipped at [packaging/systemd/nokkud.service](packaging/systemd/nokkud.service)).
-Then register and start it:
+```bash
+tar -xzf nokkud_*_linux_amd64.tar.gz
+sudo ./install.sh
+```
+
+Prefer to place things yourself? Copy
+[packaging/systemd/nokkud.service](packaging/systemd/nokkud.service) to
+`/etc/systemd/system/nokkud.service`, then register and start it:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now nokkud
 ```
 
-Running OpenRC or another init system? Use [packaging/openrc/nokkud.openrc](packaging/openrc/nokkud.openrc) as a starting point.
+Running OpenRC or another init system? Use
+[packaging/openrc/nokkud.openrc](packaging/openrc/nokkud.openrc) as a starting
+point.
 
 ## Configuration
 
 | Flag            | Environment           | Purpose                                              |
 | --------------- | --------------------- | ---------------------------------------------------- |
 | `--api`         | `NOKKUD_API_URL`      | Backend URL                                          |
-| `--enroll`      | `NOKKUD_ENROLL_TOKEN` | Enrollment token                                     |
+| `--enroll`      | `NOKKUD_ENROLL_TOKEN` | Enroll this host. Prompts unless the env token is set |
 | `--ca`          | `NOKKUD_CA_ID`        | Certificate authority UUID                           |
 | `--ssh-addr`    | `NOKKUD_SSH_ADDR`     | Embedded SSH server listen address (default `:4022`) |
 | `--debug`       | `NOKKUD_DEBUG`        | Debug logging                                        |
@@ -108,6 +122,9 @@ Then stop and disable the service and remove the binary:
 sudo systemctl disable --now nokkud
 rm -f /usr/bin/nokkud
 ```
+
+If you installed from a package, remove the package instead (`apt remove nokkud`,
+`dnf remove nokkud`, or `apk del nokkud`).
 
 ## Hosting
 

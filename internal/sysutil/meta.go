@@ -8,18 +8,8 @@ import (
 	"strings"
 )
 
-// Metadata returns the small, static host description sent on every daemon sync.
-func Metadata() map[string]string {
-	hostname, _ := os.Hostname()
-	return map[string]string{
-		"hostname": hostname,
-		"os":       runtime.GOOS,
-		"arch":     runtime.GOARCH,
-	}
-}
-
-// noisePrefixes are virtual interfaces that never make useful SSH endpoints.
-// Container, VM, bridge and Kubernetes CNI plumbing.
+// noisePrefixes are virtual interfaces that never make useful SSH endpoints:
+// container, VM, bridge, and Kubernetes CNI plumbing.
 var noisePrefixes = []string{
 	"docker", "veth", "br-", "virbr", "vmnet",
 	"vboxnet", "vnic", "vethernet",
@@ -31,13 +21,22 @@ var noisePrefixes = []string{
 	"podman", "containerd",
 }
 
-// tunnelPrefixes are mesh/point-to-point VPN interfaces. They are reported
-// deliberately. For a decentralized access daemon a WireGuard or Tailscale
-// address is often the most reliable way to reach the server.
+// tunnelPrefixes are mesh/point-to-point VPN interfaces, reported deliberately:
+// a WireGuard or Tailscale address is often the best way to reach the server.
 var tunnelPrefixes = []string{"wg", "tun", "tap", "utun", "ppp"}
 
-// PrivateIPs returns up to two usable IPv4 addresses: physical NICs and
-// known mesh-VPN tunnels, skipping loopback and container plumbing.
+// Metadata returns the static host description sent on every daemon sync.
+func Metadata() map[string]string {
+	hostname, _ := os.Hostname()
+	return map[string]string{
+		"hostname": hostname,
+		"os":       runtime.GOOS,
+		"arch":     runtime.GOARCH,
+	}
+}
+
+// PrivateIPs returns up to two usable IPv4 addresses from physical NICs and
+// known mesh VPN tunnels, skipping loopback and container plumbing.
 func PrivateIPs() []string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -50,9 +49,8 @@ func PrivateIPs() []string {
 			continue
 		}
 
-		// Point-to-point links are usually VPN tunnels. Only the known
-		// mesh interfaces make useful endpoints. Anything else
-		// point-to-point is skipped.
+		// Point-to-point links are usually VPN tunnels, so only known mesh
+		// interfaces make useful endpoints.
 		if i.Flags&net.FlagPointToPoint != 0 && !hasAnyPrefix(i.Name, tunnelPrefixes) {
 			continue
 		}

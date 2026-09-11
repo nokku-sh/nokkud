@@ -1,6 +1,4 @@
-// Package hostcerts manages the host SSH certificate lifecycle. It signs
-// host keys against the backend and stores certs and the trusted CA where
-// the embedded SSH server reads them.
+// Package hostcerts manages the host SSH certificate lifecycle for the embedded SSH server.
 package hostcerts
 
 import (
@@ -16,61 +14,43 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/nokku-sh/mon/fsutil"
+
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/paths"
-	"github.com/nokku-sh/nokkud/internal/util"
 )
 
-// renewFraction and renewWindowCap define the renewal window as a share of
-// the certificate's validity, capped at the historical fixed offset. A
-// fraction instead of a fixed window so short-lived certificates (the
-// backend now caps host TTLs at 7 days) never sit inside the window from
-// the moment they are issued, which would turn the renewal watcher into a
-// loop.
+// The renewal window is a fraction of validity, capped at the historical
+// offset, so short-lived certs never start inside it and spin the watcher.
 const (
 	renewFraction  = 0.15
 	renewWindowCap = 7 * 24 * time.Hour
 )
 
-// renewalDeadline returns the moment cert enters its renewal window.
-func renewalDeadline(cert *ssh.Certificate) time.Time {
-	validAfter := uint64ToUnixTime(cert.ValidAfter)
-	validBefore := uint64ToUnixTime(cert.ValidBefore)
-	window := min(time.Duration(float64(validBefore.Sub(validAfter))*renewFraction), renewWindowCap)
-	return validBefore.Add(-window)
-}
-
-// KeyPair is a host public key paired with the certificate path that backs it.
+// KeyPair is a host public key and the certificate path that backs it.
 type KeyPair struct {
 	PublicKeyPath string
 	CertPath      string
 	PublicKeyData []byte
 }
 
-// hostKeyPair returns the active host key. The TPM-backed key when it exists,
-// otherwise the on-disk software key. ok is false when no host key exists yet
-// (e.g. the SSH server has never started).
+// hostKeyPair returns the active host key, or ok false when no host key exists
+// yet. The identity is ECDSA P-256 in both TPM-resident and software modes.
 func hostKeyPair() (KeyPair, bool) {
-	for _, c := range []struct{ pub, cert string }{
-		{paths.TPMHostKeyPub(), paths.TPMHostKeyCert()},
-		{paths.SoftwareHostKeyPub(), paths.SoftwareHostKeyCert()},
-	} {
-		data, readErr := os.ReadFile(filepath.Clean(c.pub))
-		if readErr != nil {
-			continue
-		}
-		return KeyPair{
-			PublicKeyPath: c.pub,
-			CertPath:      c.cert,
-			PublicKeyData: data,
-		}, true
+	pub := paths.HostKeyPub()
+	data, err := os.ReadFile(filepath.Clean(pub))
+	if err != nil {
+		return KeyPair{}, false
 	}
-	return KeyPair{}, false
+	return KeyPair{
+		PublicKeyPath: pub,
+		CertPath:      paths.HostKeyCert(),
+		PublicKeyData: data,
+	}, true
 }
 
 // OutdatedHostCerts returns the host key when its certificate is missing,
-// signed for another principal, signed for another key, or inside its
-// renewal window.
+// signed for another principal or key, or inside its renewal window.
 func OutdatedHostCerts(targetID string) ([]KeyPair, error) {
 	kp, ok := hostKeyPair()
 	if !ok {
@@ -84,9 +64,8 @@ func OutdatedHostCerts(targetID string) ([]KeyPair, error) {
 	return nil, nil
 }
 
-// matchesKey reports whether the certificate was issued for the key in kp.
-// A certificate for a previous key (e.g. after a TPM clear or replacement)
-// must be re-issued even though its validity window is still fine.
+// matchesKey reports whether the certificate was issued for the key in kp. A
+// cert for a previous key must be re-issued even within its validity window.
 func matchesKey(cert *ssh.Certificate, kp KeyPair) bool {
 	pub, _, _, _, err := ssh.ParseAuthorizedKey(bytes.TrimSpace(kp.PublicKeyData))
 	if err != nil {
@@ -96,56 +75,42 @@ func matchesKey(cert *ssh.Certificate, kp KeyPair) bool {
 }
 
 // RenewHostCerts signs and stores a fresh certificate for the host key via
-// sign. When force is set, the key is re-signed regardless of validity. That
-// is used after a CA rollover to refetch the CA and re-sign the host identity
-// under the new authority. Returns the count. Failures are logged and the
-// first one returned.
+// sign, reporting whether one was written. force re-signs after a CA rollover.
 func RenewHostCerts(
 	ctx context.Context,
 	targetID string,
 	sign func(context.Context, KeyPair) (*nokkuv1.SignSSHCertificateResponse, error),
 	force bool,
-) (int, error) {
-	var pairs []KeyPair
-	var err error
+) (bool, error) {
+	var kp KeyPair
 	if force {
-		if kp, ok := hostKeyPair(); ok {
-			pairs = []KeyPair{kp}
+		var ok bool
+		if kp, ok = hostKeyPair(); !ok {
+			return false, nil
 		}
 	} else {
-		pairs, err = OutdatedHostCerts(targetID)
-	}
-	if err != nil {
-		return 0, err
+		pairs, err := OutdatedHostCerts(targetID)
+		if err != nil {
+			return false, err
+		}
+		if len(pairs) == 0 {
+			return false, nil
+		}
+		kp = pairs[0]
 	}
 
-	var firstErr error
-	renewed := 0
-	for _, kp := range pairs {
-		var res *nokkuv1.SignSSHCertificateResponse
-		res, err = sign(ctx, kp)
-		if err != nil {
-			slog.Warn("sign host key", "error", err, "key", kp.PublicKeyPath)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		if err = saveCertificate(res, kp.CertPath); err != nil {
-			slog.Warn("failed to save host certificate", "path", kp.CertPath, "error", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		renewed++
+	res, err := sign(ctx, kp)
+	if err != nil {
+		return false, err
 	}
-	return renewed, firstErr
+	if err = saveCertificate(res, kp.CertPath); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-// NextRenewal returns the renewal deadline for the host certificate: 85%
-// through its validity (capped at 7 days before expiry). Now, if it is
-// already out of date or none exists yet.
+// NextRenewal returns the renewal deadline for the host certificate, or now
+// if it is already out of date or none exists.
 func NextRenewal(targetID string) time.Time {
 	now := time.Now()
 
@@ -169,16 +134,11 @@ func NextRenewal(targetID string) time.Time {
 	if renewalTime.Before(now) {
 		return now
 	}
-	slog.Debug(
-		"certificate renewal scheduled",
-		"next_renewal",
-		time.Until(renewalTime).Round(time.Second),
-	)
 	return renewalTime
 }
 
-// saveCertificate verifies the cert was signed by the returned CA key,
-// then stores both where the embedded SSH server reads them.
+// saveCertificate verifies the cert was signed by the returned CA key, then
+// stores it and the CA where the embedded SSH server reads them.
 func saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path string) error {
 	signedCert := bytes.TrimSpace([]byte(res.GetSignedCertificate()))
 	caPubKey := bytes.TrimSpace([]byte(res.GetCaPublicKey()))
@@ -197,17 +157,16 @@ func saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path string) error
 		return errors.New("invalid signature: certificate not signed by provided CA")
 	}
 
-	// A new signing CA. Park the current one before switching so the SSH
-	// server can keep trusting certificates it signed during the rollover
-	// grace window (see sshd.loadTrustedCAs). The retired file's mtime is
-	// stamped with the retirement time so the grace window starts at the
-	// rollover, not when the old CA was last written.
+	// New CA: retire the current file before overwriting so the SSH server
+	// keeps trusting certs it signed, stamped now for the mtime grace window.
 	userCA := paths.UserCAFile()
 	retiredCA := paths.RetiredCAFile()
 	if current, readErr := os.ReadFile(userCA); readErr == nil &&
 		!bytes.Equal(bytes.TrimSpace(current), caPubKey) {
-		if renameErr := os.Rename((userCA), retiredCA); renameErr != nil {
-			return fmt.Errorf("retire previous CA: %w", renameErr)
+		// Write before overwriting: renaming the old CA away first would
+		// leave no active CA and deny all logins until the next sync.
+		if err = fsutil.WriteIfChanged(retiredCA, bytes.TrimSpace(current), 0o644); err != nil {
+			return fmt.Errorf("retire previous CA: %w", err)
 		}
 		now := time.Now()
 		if err = os.Chtimes(retiredCA, now, now); err != nil {
@@ -215,18 +174,18 @@ func saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path string) error
 		}
 	}
 
-	if err = util.WriteIfChanged(userCA, caPubKey, 0o644); err != nil {
+	if err = fsutil.WriteIfChanged(userCA, caPubKey, 0o644); err != nil {
 		return fmt.Errorf("write user CA: %w", err)
 	}
 
-	if err = util.WriteIfChanged(path, ssh.MarshalAuthorizedKey(cert), 0o644); err != nil {
+	if err = fsutil.WriteIfChanged(path, ssh.MarshalAuthorizedKey(cert), 0o644); err != nil {
 		return fmt.Errorf("write certificate: %w", err)
 	}
 	return nil
 }
 
-// isValid reports whether cert is acceptable for targetID and not yet due
-// for renewal.
+// isValid reports whether cert is acceptable for targetID and not yet due for
+// renewal.
 func isValid(cert *ssh.Certificate, targetID string) bool {
 	now := time.Now()
 
@@ -242,6 +201,14 @@ func isValid(cert *ssh.Certificate, targetID string) bool {
 		return true
 	}
 	return now.Before(renewalDeadline(cert))
+}
+
+// renewalDeadline returns the moment cert enters its renewal window.
+func renewalDeadline(cert *ssh.Certificate) time.Time {
+	validAfter := uint64ToUnixTime(cert.ValidAfter)
+	validBefore := uint64ToUnixTime(cert.ValidBefore)
+	window := min(time.Duration(float64(validBefore.Sub(validAfter))*renewFraction), renewWindowCap)
+	return validBefore.Add(-window)
 }
 
 func parseCertificateBytes(data []byte) (*ssh.Certificate, error) {

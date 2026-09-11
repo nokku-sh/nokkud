@@ -10,9 +10,7 @@ import (
 	"github.com/nokku-sh/nokkud/internal/hostcerts"
 )
 
-const (
-	defaultDelay = 30 * time.Second
-)
+const defaultDelay = 30 * time.Second
 
 func (c *Client) startWatchers(ctx context.Context) {
 	go c.watchCertificates(ctx)

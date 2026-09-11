@@ -8,19 +8,17 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// maxTrackedIPs bounds the per-IP rate limiter cache. Entries beyond it are
-// evicted LRU-style, so a distributed flood cannot grow memory unbounded.
+// maxTrackedIPs bounds the per-IP limiter cache so a distributed flood cannot
+// grow memory unbounded.
 const maxTrackedIPs = 4096
 
-// newLimiters builds the per-source-IP connection rate limiter cache.
 func newLimiters() *lru.Cache[string, *rate.Limiter] {
 	cache, _ := lru.New[string, *rate.Limiter](maxTrackedIPs)
 	return cache
 }
 
-// allowConn reports whether a new connection from ip fits the configured
-// per-IP connection rate. Rate and burst are read from the live tunables on
-// every call so SetTunables applies to new connections immediately.
+// allowConn reports whether a connection from ip fits its per-IP limit. Rate
+// and burst come from the live tunables so SetTunables applies immediately.
 func (s *Server) allowConn(ip string) bool {
 	t := s.tun.Load()
 	if t.ConnRate <= 0 {
@@ -36,7 +34,6 @@ func (s *Server) allowConn(ip string) bool {
 	return lim.Allow()
 }
 
-// remoteIP extracts the rate-limit key from a connection address.
 func remoteIP(addr net.Addr) string {
 	if tcp, ok := addr.(*net.TCPAddr); ok {
 		return tcp.IP.String()
@@ -45,7 +42,7 @@ func remoteIP(addr net.Addr) string {
 }
 
 // banner returns the pre-auth banner reflecting the live tunables, so the
-// client learns the policy that will govern its session before authenticating.
+// client learns its policy before authenticating.
 func (s *Server) banner() string {
 	t := s.tun.Load()
 	if !t.Banner {

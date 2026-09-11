@@ -3,7 +3,9 @@ package hostcerts
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
 	"os"
@@ -59,37 +61,29 @@ func signHostCert(
 	return ssh.MarshalAuthorizedKey(cert), ssh.MarshalAuthorizedKey(ca.pub)
 }
 
-// writeHostKey drops the software host key pair into dir so the certificate
-// logic finds it and returns the public key for signing. Only the .pub half
-// is read by the certificate logic.
-func writeHostKey(t testing.TB, dir string) ssh.PublicKey {
-	t.Helper()
-	must := require.New(t)
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	must.NoError(err, "generate host key")
-	pub, err := ssh.NewPublicKey(priv.Public())
-	must.NoError(err, "host public key")
-	must.NoError(os.WriteFile(
-		filepath.Join(dir, "ssh_host_ed25519_key.pub"),
-		ssh.MarshalAuthorizedKey(pub),
-		0o644,
-	), "write host pub")
-	must.NoError(os.WriteFile(
-		filepath.Join(dir, "ssh_host_ed25519_key"),
-		[]byte("unused"),
-		0o600,
-	), "write host key")
-	return pub
-}
-
-// newHostPub returns a fresh host public key for signing test certificates.
+// newHostPub returns a fresh ECDSA P-256 host public key, matching the
+// identity the daemon now uses.
 func newHostPub(t testing.TB) ssh.PublicKey {
 	t.Helper()
 	must := require.New(t)
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	must.NoError(err, "generate host key")
-	pub, err := ssh.NewPublicKey(priv.Public())
+	pub, err := ssh.NewPublicKey(&key.PublicKey)
 	must.NoError(err, "host public key")
+	return pub
+}
+
+// writeHostKey drops the host public key into dir so the certificate logic
+// finds it and returns the key for signing. Only the public half is read.
+func writeHostKey(t testing.TB, dir string) ssh.PublicKey {
+	t.Helper()
+	must := require.New(t)
+	pub := newHostPub(t)
+	must.NoError(os.WriteFile(
+		filepath.Join(dir, "ssh_host_ecdsa_key.pub"),
+		ssh.MarshalAuthorizedKey(pub),
+		0o644,
+	), "write host pub")
 	return pub
 }
 
@@ -285,11 +279,11 @@ func TestRenewHostCertsSignFailure(t *testing.T) {
 
 	renewed, err := RenewHostCerts(context.Background(), "target-1", sign, false)
 	must.Error(err, "expected the sign error to be returned")
-	is.Equal(0, renewed)
+	is.False(renewed)
 	is.Equal(1, calls)
 
 	// Nothing must have landed on disk.
-	_, statErr := os.Stat(paths.SoftwareHostKeyCert())
+	_, statErr := os.Stat(paths.HostKeyCert())
 	must.ErrorIs(statErr, os.ErrNotExist, "failed renewal must not write a certificate")
 	_, statErr = os.Stat(paths.UserCAFile())
 	must.ErrorIs(statErr, os.ErrNotExist, "failed renewal must not write the CA file")
@@ -324,12 +318,12 @@ func TestRenewHostCertsForce(t *testing.T) {
 	// A valid cert is not outdated, so a normal renew leaves it alone.
 	renewed, err := RenewHostCerts(context.Background(), "target-1", sign, false)
 	must.NoError(err, "renew (non-force)")
-	is.Equal(0, renewed, "non-force renewed %d certs, want 0", renewed)
+	is.False(renewed, "non-force renew rewrote a valid cert")
 
 	// Force re-signs even the valid cert, refetching the CA.
 	renewed, err = RenewHostCerts(context.Background(), "target-1", sign, true)
 	must.NoError(err, "renew (force)")
-	is.Equal(1, renewed, "force renewed %d certs, want 1", renewed)
+	is.True(renewed, "force renew left the cert alone")
 }
 
 func TestSaveCertificateRejectsMismatchedCA(t *testing.T) {
@@ -348,7 +342,7 @@ func TestSaveCertificateRejectsMismatchedCA(t *testing.T) {
 		SignedCertificate: &certStr,
 		CaPublicKey:       &caStr,
 	}
-	err := saveCertificate(res, filepath.Join(dir, "ssh_host_ed25519_key-cert.pub"))
+	err := saveCertificate(res, filepath.Join(dir, "ssh_host_ecdsa_key-cert.pub"))
 	must.Error(err, "saveCertificate accepted a cert signed by a different CA")
 	_, statErr := os.Stat(paths.UserCAFile())
 	must.ErrorIs(statErr, os.ErrNotExist, "mismatched CA must not write the CA file")
@@ -366,7 +360,7 @@ func TestSaveCertificateRetiresPreviousCA(t *testing.T) {
 	ca1 := newTestCA(t)
 	ca2 := newTestCA(t)
 	hostPub := writeHostKey(t, dir)
-	certPath := filepath.Join(dir, "ssh_host_ed25519_key-cert.pub")
+	certPath := filepath.Join(dir, "ssh_host_ecdsa_key-cert.pub")
 
 	save := func(ca testCA) {
 		t.Helper()
@@ -417,7 +411,7 @@ func writeCert(t testing.TB, dir string, data []byte) {
 	t.Helper()
 	must := require.New(t)
 	must.NoError(os.WriteFile(
-		filepath.Join(dir, "ssh_host_ed25519_key-cert.pub"),
+		filepath.Join(dir, "ssh_host_ecdsa_key-cert.pub"),
 		data,
 		0o644,
 	), "write certificate")

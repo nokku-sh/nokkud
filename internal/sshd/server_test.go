@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"maps"
 	"net"
+	"os"
 	"os/user"
 	"runtime"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
@@ -293,6 +295,33 @@ func TestHostKeysStable(t *testing.T) {
 	is.Equal(first, second)
 }
 
+// TestHostKeysDropStaleCert verifies a certificate issued for a previous
+// identity is removed on load, so the sync renews it for the current key
+// instead of leaving a stale certificate the server would reject.
+func TestHostKeysDropStaleCert(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
+
+	// Seed a public key for a different identity plus a certificate for it.
+	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
+	must.NoError(err, "generate other key")
+	sshPub, err := ssh.NewPublicKey(otherPub)
+	must.NoError(err, "encode other key")
+	must.NoError(os.WriteFile(
+		paths.HostKeyPub(), ssh.MarshalAuthorizedKey(sshPub), 0o644,
+	), "write stale public key")
+	must.NoError(os.WriteFile(paths.HostKeyCert(), []byte("stale"), 0o644), "write stale cert")
+
+	_, closers, err := loadHostKeys()
+	must.NoError(err, "load host keys")
+	for _, c := range closers {
+		defer func() { _ = c.Close() }()
+	}
+
+	_, err = os.Stat(paths.HostKeyCert())
+	must.ErrorIs(err, os.ErrNotExist, "certificate for a previous identity must be dropped")
+}
+
 // TestNewWithoutTrustedCA verifies the server starts with no trusted CA on
 // first boot (the CA file lands after the first certificate sync). Reload
 // picks it up. Without CAs, no login can succeed until then.
@@ -337,7 +366,7 @@ func TestServerLivePrincipals(t *testing.T) {
 	must.Error(err, "expected auth to fail before the principal is granted")
 
 	// Backend push lands in the shared cache: now allowed.
-	cache.Replace(map[string][]string{cur.Username: {testPrincipal}}, nil, 0)
+	cache.Replace(map[string][]string{cur.Username: {testPrincipal}}, nil, nil, 0)
 	client, err := dial(t, l.Addr().String(), cur.Username, userCert(t, ca, testPrincipal))
 	must.NoError(err, "dial after cache update")
 	defer client.Close()

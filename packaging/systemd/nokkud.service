@@ -11,5 +11,20 @@ Restart=on-failure
 RestartSec=5s
 LimitNOFILE=65536
 
+# Hardening (safe subset). Sessions run arbitrary user commands and the daemon
+# needs the TPM device, so these are deliberately left unset: ProtectSystem,
+# ProtectHome, PrivateDevices, PrivateTmp (sessions must write wherever the
+# target user can, and the TPM device must be reachable), NoNewPrivileges (a
+# root session must be able to run setuid tools such as sudo), and
+# CapabilityBoundingSet (tuning it requires exercising every session path).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+SystemCallArchitectures=native
+RestrictRealtime=yes
+TasksMax=8192
+
 [Install]
 WantedBy=multi-user.target

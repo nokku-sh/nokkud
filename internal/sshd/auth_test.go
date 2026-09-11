@@ -9,6 +9,40 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
+// TestServerRevokedPrincipal verifies a certificate issued before a
+// principal's revocation cutoff is refused, while one issued after it is
+// accepted (the revocation was lifted and access re-granted).
+func TestServerRevokedPrincipal(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+
+	const issuedAt = int64(1_700_000_000)
+	revokedBefore := issuedAt + 60
+
+	addr, closeFn := startTestServerOpts(t, ca, Options{
+		RevokedBefore: func(principal string) (int64, bool) {
+			if principal == testPrincipal {
+				return revokedBefore, true
+			}
+			return 0, false
+		},
+	})
+	defer closeFn()
+
+	old := userCertOpts(t, ca, func(c *ssh.Certificate) {
+		c.ValidAfter = uint64(issuedAt)
+	}, testPrincipal)
+	_, err := dial(t, addr, currentUser(t), old)
+	must.Error(err, "certificate issued before the revocation was accepted")
+
+	fresh := userCertOpts(t, ca, func(c *ssh.Certificate) {
+		c.ValidAfter = uint64(revokedBefore + 1)
+	}, testPrincipal)
+	client, err := dial(t, addr, currentUser(t), fresh)
+	must.NoError(err, "certificate issued after the revocation was refused")
+	_ = client.Close()
+}
+
 // TestServerSourceAddress verifies the source-address critical option is
 // enforced: logins from an allowed source succeed, others are refused.
 func TestServerSourceAddress(t *testing.T) {

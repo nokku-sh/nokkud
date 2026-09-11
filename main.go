@@ -1,5 +1,4 @@
-// Command nokkud is the Nokku daemon. It enrolls this host with the backend
-// and serves SSH through an embedded certificate-authenticated server.
+// Command nokkud enrolls this host with the backend and serves certificate-authenticated SSH.
 package main
 
 import (
@@ -8,12 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/user"
 	"strings"
 
 	"github.com/mizuchilabs/kata/buildinfo"
 	"github.com/mizuchilabs/kata/logx"
 	"github.com/mizuchilabs/kata/sigx"
+	"github.com/nokku-sh/mon/tpm"
 	"github.com/urfave/cli/v3"
 
 	"github.com/nokku-sh/nokkud/internal/client"
@@ -35,10 +34,9 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			logx.Init(cmd.Bool("debug"))
 
-			// The sshd-server and sftp-server harness subcommands run against
-			// caller-supplied state, so skip the default dir to keep
-			// non-root test runs away from /var/lib/nokkud.
-			if first := cmd.Args().First(); first != "sshd-server" && first != "sftp-server" {
+			// The sftp-server harness subcommand runs against a caller-supplied
+			// home, so keep it away from the default data dir.
+			if cmd.Args().First() != "sftp-server" {
 				if err := paths.Verify(); err != nil {
 					return nil, err
 				}
@@ -51,10 +49,8 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				return err
 			}
 
-			// Load the persisted config, then apply env/flag overrides only
-			// when one was explicitly provided. This keeps a bare default
-			// from clobbering a value the user already configured in
-			// config.json.
+			// Apply env/flag overrides only when one was explicitly provided,
+			// so a bare default cannot clobber a value from config.json.
 			cfg := state.NewConfig()
 			if err := cfg.Load(); err != nil {
 				return err
@@ -74,8 +70,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			}
 
 			// The client wires the recording sink before the server accepts a
-			// session. Deferred Shutdown is idempotent and covers exits that
-			// never see ctx cancellation (e.g. daemon rejected by backend).
+			// session. Deferred Shutdown is idempotent and always runs.
 			var sshSrv *sshd.Server
 			if cfg.SSHAddr != "" {
 				if err := util.IsRoot(); err != nil {
@@ -104,7 +99,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				}
 			}
 
-			slog.Info("Starting nokkud", "version", buildinfo.Version)
+			slog.Info("starting nokkud", "version", buildinfo.Version)
 			return cl.Run(ctx)
 		},
 		Commands: []*cli.Command{
@@ -118,76 +113,6 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 						return errors.New("usage: nokkud sftp-server <home>")
 					}
 					return sshd.ServeSFTP(args[0])
-				},
-			},
-			{
-				Name:   "sshd-server",
-				Usage:  "Run the embedded SSH server headless (CI interop harness)",
-				Hidden: true,
-				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "addr", Usage: "listen address", Value: "127.0.0.1:0"},
-					&cli.StringFlag{
-						Name:     "config-dir",
-						Usage:    "state directory holding cache.json, the host key and the trusted CA pubkey",
-						Required: true,
-					},
-					&cli.BoolFlag{
-						Name:   "allow-nonroot",
-						Usage:  "run as non-root; sessions restricted to the daemon's own account (tests only)",
-						Hidden: true,
-					},
-				},
-				Action: func(ctx context.Context, cmd *cli.Command) error {
-					// Root is required to drop sessions to the target user's
-					// privileges. --allow-nonroot is the test-harness escape
-					// hatch. Without privilege dropping every session runs as
-					// the daemon's own OS user, so the server is restricted
-					// to that user's account only.
-					nonRoot := cmd.Bool("allow-nonroot")
-					if !nonRoot {
-						if err := util.IsRoot(); err != nil {
-							return err
-						}
-					}
-					if err := os.Setenv("NOKKUD_DATA_DIR", cmd.String("config-dir")); err != nil {
-						return err
-					}
-					if err := paths.Verify(); err != nil {
-						return err
-					}
-
-					cache := state.NewCache()
-					if err := cache.Load(); err != nil {
-						return err
-					}
-
-					opts := sshd.OptionsFrom(cache, false)
-					if nonRoot {
-						self, err := user.Current()
-						if err != nil {
-							return fmt.Errorf("resolve current user: %w", err)
-						}
-						opts.Principals = func(username string) []string {
-							if username != self.Username {
-								return nil
-							}
-							return cache.GetUUIDs(username)
-						}
-					}
-
-					srv, err := sshd.New(opts)
-					if err != nil {
-						return fmt.Errorf("init ssh server: %w", err)
-					}
-
-					addr, err := srv.ListenAndServe(ctx, cmd.String("addr"))
-					if err != nil {
-						return fmt.Errorf("listen on %s: %w", cmd.String("addr"), err)
-					}
-					fmt.Println(addr.String())
-
-					<-ctx.Done()
-					return srv.Shutdown()
 				},
 			},
 			{
@@ -211,10 +136,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 						return err
 					}
 					if err = cl.DeleteDaemon(ctx); err != nil {
-						slog.Warn(
-							"failed to delete daemon from backend; local state is still removed",
-							"error", err,
-						)
+						slog.Warn("delete daemon from backend failed, local state removed", "error", err)
 					}
 					paths.Cleanup()
 					return nil
@@ -251,12 +173,6 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				Usage:   "SSH certificate authority uuid",
 				Sources: cli.EnvVars("NOKKUD_CA_ID"),
 			},
-			&cli.StringFlag{
-				Name:    "enroll",
-				Aliases: []string{"e"},
-				Usage:   "Enrollment token (first-time setup only)",
-				Sources: cli.EnvVars("NOKKUD_ENROLL_TOKEN"),
-			},
 		},
 	}
 
@@ -276,11 +192,17 @@ func newDaemonClient(
 	cl, err := client.New(ctx, cache, cfg, client.Options{
 		Insecure:    cmd.Bool("insecure"),
 		RequireTPM:  cmd.Bool("require-tpm"),
-		EnrollToken: cmd.String("enroll"),
+		EnrollToken: os.Getenv("NOKKUD_ENROLL_TOKEN"),
 		CAID:        cmd.String("ca"),
 	}, sshSrv)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize configuration: %w", err)
+		if errors.Is(err, tpm.ErrIdentityChanged) {
+			return nil, fmt.Errorf(
+				"the daemon signing key no longer matches this machine, re-enroll with `sudo nokkud --enroll <TOKEN>`: %w",
+				err,
+			)
+		}
+		return nil, fmt.Errorf("initialize daemon client: %w", err)
 	}
 	return cl, nil
 }

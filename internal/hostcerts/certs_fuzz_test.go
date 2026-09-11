@@ -62,7 +62,7 @@ func FuzzSaveCertificate(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, signedCert, caPub []byte) {
 		t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
-		certPath := paths.SoftwareHostKeyCert()
+		certPath := paths.HostKeyCert()
 
 		certStr, caStr := string(signedCert), string(caPub)
 		res := &nokkuv1.SignSSHCertificateResponse{

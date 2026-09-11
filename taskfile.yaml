@@ -1,8 +1,5 @@
 version: "3"
 
-env:
-  CGO_ENABLED: 0
-
 tasks:
   update:
     desc: Update dependencies
@@ -23,7 +20,7 @@ tasks:
   build:
     desc: Build binary
     cmds:
-      - go build -ldflags="-s -w" -trimpath -o nokkud
+      - CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o nokkud
       - sudo mv nokkud /usr/local/bin
 
   lint:
@@ -33,7 +30,7 @@ tasks:
       - go fmt ./...
       - go vet ./...
       - govulncheck ./...
-      - go test -cover ./...
+      - go test -race -count=1 -cover ./...
       - golangci-lint run --fix
 
   fuzz:

@@ -7,10 +7,11 @@ started is quick.
 
 - Go 1.x (see `go.mod`)
 - [Task](https://taskfile.dev)
-- [`buf`](https://buf.build) (protobuf generation)
+- [`buf`](https://buf.build) and
+  [`protoc-gen-connect-go`](https://connectrpc.com/docs/go/getting-started)
+  (protobuf generation)
 - [`golangci-lint`](https://golangci-lint.run)
 - [`govulncheck`](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)
-- `golines`
 - [GoReleaser](https://goreleaser.com) (snapshots/releases only)
 
 ## Building
@@ -19,7 +20,8 @@ started is quick.
 task build
 ```
 
-This produces the `nokkud` binary in the repo root (static, `CGO_ENABLED=0`).
+This builds the `nokkud` binary and installs it to `/usr/local/bin` (static,
+`CGO_ENABLED=0`). The move needs root, so the task calls `sudo`.
 
 ## Regenerating generated code
 
@@ -27,7 +29,9 @@ This produces the `nokkud` binary in the repo root (static, `CGO_ENABLED=0`).
 task gen
 ```
 
-This runs `buf generate` from the `.proto` sources used by the repo.
+This runs `buf generate` against the sibling `../protos/nokku` checkout, so
+clone [nokku-sh/protos](https://github.com/nokku-sh/protos) next to this repo
+first. The generated Go lives in `internal/gen/` and is committed.
 
 ## Code style
 
@@ -37,8 +41,8 @@ Follow the conventions already in the codebase. Before opening a PR, run:
 task lint
 ```
 
-which runs `go fmt`, `go vet`, `golines`, `govulncheck`, the test suite, and
-`golangci-lint`.
+which runs `go mod tidy`, `go fmt`, `go vet`, `govulncheck`, the test suite, and
+`golangci-lint run --fix` (the config enables golines formatting).
 
 ## Tests
 
@@ -64,5 +68,6 @@ task snapshot
 2. Make focused changes and run `task lint`.
 3. Open a pull request describing what and why.
 
-Keep changes small and scoped. If a change alters behavior, update the
-README and CHANGELOG accordingly.
+Keep changes small and scoped. If a change alters behavior, update the README
+accordingly. Release notes are generated from conventional commit messages with
+git-cliff, so prefix commits with `feat:`, `fix:`, and so on.

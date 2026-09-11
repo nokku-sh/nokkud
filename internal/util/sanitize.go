@@ -7,12 +7,12 @@ import (
 	"unicode"
 )
 
-var posixUserRE = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
-
 // maxSnakeCaseLen bounds the result so it always fits a single filename.
 const maxSnakeCaseLen = 64
 
-// ValidatePrincipal ensures the principal is a safe POSIX username.
+var posixUserRE = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// ValidatePrincipal checks that principal is a safe POSIX username.
 func ValidatePrincipal(principal string) error {
 	if principal == "" {
 		return fmt.Errorf("empty username")
@@ -23,12 +23,12 @@ func ValidatePrincipal(principal string) error {
 	return nil
 }
 
-// ToSnakeCase converts an arbitrary string into a safe, snake_case format.
+// ToSnakeCase converts s into a safe, snake_case filename component.
 func ToSnakeCase(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 
-	lastWasUnderscore := true // Start true to drop leading underscores
+	lastWasUnderscore := true // Start true so leading separators are dropped
 
 	for _, r := range s {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
@@ -48,7 +48,6 @@ func ToSnakeCase(s string) string {
 		res = res[:len(res)-1]
 	}
 
-	// Fallback if the string was entirely invalid characters
 	if res == "" {
 		return "untitled"
 	}

@@ -20,6 +20,10 @@ plugins:
       - paths=source_relative
       - simple
 inputs:
-  - git_repo: https://github.com/nokku-sh/protos.git
-    branch: main
-    subdir: nokku
+  # Temporary: generated from the local protos checkout so all three binaries
+  # see the same unreleased schema. Revert to the git_repo input below once
+  # nokku-sh/protos is pushed.
+  # - git_repo: https://github.com/nokku-sh/protos.git
+  #   branch: main
+  #   subdir: nokku
+  - directory: ../protos/nokku

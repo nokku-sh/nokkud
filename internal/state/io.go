@@ -7,15 +7,12 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/nokku-sh/nokkud/internal/util"
+	"github.com/nokku-sh/mon/fsutil"
 )
 
-// loadJSON reads a JSON file into v. A missing file is not an error. A
-// corrupted one is removed and corrupt is invoked so the caller can drop to a
-// clean state instead of a half-loaded one. Both Config and Cache use it so
-// the missing-file and corruption handling stays identical and lives in one
-// place.
-func loadJSON(path string, v any, corrupt func()) error {
+// loadJSON reads path into v. A missing file is a no-op. A corrupt file is
+// discarded and v reset to zero.
+func loadJSON[T any](path string, v *T) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -24,24 +21,21 @@ func loadJSON(path string, v any, corrupt func()) error {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
 	if err = json.Unmarshal(data, v); err != nil {
-		corrupt()
-		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			slog.Warn("remove corrupted state file", "path", path, "error", rmErr)
-		}
-		return nil
+		slog.Warn("discarding corrupted file", "path", path, "error", err)
+		var zero T
+		*v = zero
+		// Best effort. A leftover file only means the warning repeats next run.
+		_ = os.Remove(path)
 	}
 	return nil
 }
 
 // saveJSON marshals v and atomically writes it with the given permissions,
 // skipping unchanged content.
-func saveJSON(path string, v any, perm os.FileMode) error {
+func saveJSON[T any](path string, v T, perm os.FileMode) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("serializing state: %w", err)
 	}
-	if err = util.WriteIfChanged(path, data, perm); err != nil {
-		return fmt.Errorf("writing state: %w", err)
-	}
-	return nil
+	return fsutil.WriteIfChanged(path, data, perm)
 }

@@ -64,6 +64,42 @@ func TestServerDirectTCPIP(t *testing.T) {
 	is.Equal("ping", string(buf))
 }
 
+// TestServerMaxChannelsHeldForRelay verifies a live direct-tcpip relay keeps
+// its channel slot: with a cap of one, a second -L relay is refused until the
+// first one closes.
+func TestServerMaxChannelsHeldForRelay(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+	addr, closeFn := startTestServerOpts(t, ca, Options{
+		Tunables: Tunables{AllowForwarding: true, MaxChannels: 1},
+	})
+	defer closeFn()
+
+	echo := testEchoServer(t)
+	defer echo.Close()
+	_, portStr, _ := net.SplitHostPort(echo.Addr().String())
+
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err, "dial")
+	defer client.Close()
+
+	first, err := client.Dial("tcp", "127.0.0.1:"+portStr)
+	must.NoError(err, "first forward")
+
+	_, err = client.Dial("tcp", "127.0.0.1:"+portStr)
+	must.Error(err, "second forward accepted while the cap was held")
+
+	_ = first.Close()
+	must.Eventually(func() bool {
+		conn, derr := client.Dial("tcp", "127.0.0.1:"+portStr)
+		if derr != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, 5*time.Second, 20*time.Millisecond, "channel slot never released")
+}
+
 // TestServerDirectTCPIPDisabled verifies forwarding is rejected when off.
 func TestServerDirectTCPIPDisabled(t *testing.T) {
 	is := assert.New(t)

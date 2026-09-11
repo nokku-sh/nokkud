@@ -1,5 +1,4 @@
-// Package audit appends structured security events as JSON lines, with
-// size-based rotation and age-based retention.
+// Package audit writes security events as JSON lines with size-based rotation and age-based retention.
 package audit
 
 import (
@@ -10,12 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nokku-sh/nokkud/internal/util"
 )
 
-// EventType enumerates the kinds of security events emitted.
 type EventType string
 
 const (
@@ -25,6 +24,7 @@ const (
 	EventSessionEnd   EventType = "session_end"
 	EventCommand      EventType = "command"
 	EventForward      EventType = "forward"
+	EventDegraded     EventType = "audit_degraded"
 )
 
 const (
@@ -34,13 +34,14 @@ const (
 	MaxAge = 30 * 24 * time.Hour
 	// MaxTotalSize caps the total on-disk size of audit files.
 	MaxTotalSize = 1 << 30
-	// maxQueuedEvents bounds the events waiting for the writer goroutine.
-	// When the queue is full, Emit blocks: security events must never be
-	// dropped, so backpressure reaches the caller instead.
+	// maxQueuedEvents bounds the queue feeding the writer goroutine.
 	maxQueuedEvents = 1024
+	// emitWaitDefault is how long Emit waits for queue space before dropping.
+	emitWaitDefault = 2 * time.Second
+	// dropReportInterval is how often the writer reports dropped events.
+	dropReportInterval = 5 * time.Second
 )
 
-// Event is a single audit record.
 type Event struct {
 	Time      time.Time       `json:"time"`
 	Type      EventType       `json:"type"`
@@ -56,24 +57,28 @@ type Event struct {
 	Extra     json.RawMessage `json:"extra,omitempty"`
 }
 
-// Sink appends events to a rotation-managed JSONL log. Emit hands events
-// to a single writer goroutine, so disk I/O never runs on the caller's
-// (auth or session) goroutine. The queue is drained on Close.
+// Sink writes events to a rotation-managed JSONL log from a single writer
+// goroutine, so disk I/O never runs on the caller's auth or session goroutine.
+// Emit drops events when the queue stays full past emitWait, and the writer
+// goroutine reports the loss as an EventDegraded event.
 type Sink struct {
-	dir  string
-	ch   chan Event
-	done chan struct{}
-	wg   sync.WaitGroup
-	once sync.Once
+	dir      string
+	ch       chan Event
+	done     chan struct{}
+	emitWait time.Duration
+	wg       sync.WaitGroup
+	once     sync.Once
+
+	// dropped counts events discarded by Emit. Incremented by callers and
+	// drained by the writer goroutine.
+	dropped atomic.Int64
 
 	// Written only by the writer goroutine.
 	file *os.File
 	size int64
 }
 
-// New opens the audit sink under dir, creating it. Returns a nil,
-// error-free sink when the dir cannot be prepared so callers can ignore
-// audit failures.
+// New opens the audit sink under dir, creating it.
 func New(dir string) (*Sink, error) {
 	if dir == "" {
 		return nil, errors.New("audit: empty directory")
@@ -82,18 +87,19 @@ func New(dir string) (*Sink, error) {
 		return nil, fmt.Errorf("audit: create dir: %w", err)
 	}
 	s := &Sink{
-		dir:  dir,
-		ch:   make(chan Event, maxQueuedEvents),
-		done: make(chan struct{}),
+		dir:      dir,
+		ch:       make(chan Event, maxQueuedEvents),
+		done:     make(chan struct{}),
+		emitWait: emitWaitDefault,
 	}
 	s.wg.Add(1)
 	go s.run()
 	return s, nil
 }
 
-// Emit queues one event for the writer goroutine. It blocks while the
-// queue is full so no event is ever dropped; after Close it returns
-// without queueing.
+// Emit queues one event for the writer goroutine. A full queue waits up to
+// emitWait for space, then the event is dropped and counted for the writer to
+// report. After Close it returns without queueing.
 func (s *Sink) Emit(ev Event) {
 	if s == nil {
 		return
@@ -102,13 +108,29 @@ func (s *Sink) Emit(ev Event) {
 		ev.Time = time.Now()
 	}
 	select {
+	case <-s.done:
+		return
+	default:
+	}
+	// Fast path.
+	select {
+	case s.ch <- ev:
+		return
+	default:
+	}
+
+	t := time.NewTimer(s.emitWait)
+	defer t.Stop()
+	select {
 	case s.ch <- ev:
 	case <-s.done:
+	case <-t.C:
+		s.dropped.Add(1)
 	}
 }
 
-// Close stops accepting events, drains the queue and closes the current
-// audit file. Safe to call more than once and concurrently with Emit.
+// Close stops accepting events, drains the queue and closes the audit file.
+// Safe to call more than once and concurrently with Emit.
 func (s *Sink) Close() error {
 	if s == nil {
 		return nil
@@ -121,16 +143,21 @@ func (s *Sink) Close() error {
 }
 
 // run is the single writer goroutine. It owns the audit file, rotation and
-// retention until done is closed, then drains the queue and exits.
+// retention, reports dropped events periodically, then drains queued events
+// and exits on done.
 func (s *Sink) run() {
 	defer s.wg.Done()
 
-	// The log file is opened lazily on the first event.
+	ticker := time.NewTicker(dropReportInterval)
+	defer ticker.Stop()
+
 	s.enforceRetention()
 	for {
 		select {
 		case ev := <-s.ch:
 			s.write(ev)
+		case <-ticker.C:
+			s.reportDropped()
 		case <-s.done:
 			s.drain()
 			if s.file != nil {
@@ -141,44 +168,60 @@ func (s *Sink) run() {
 	}
 }
 
-// drain writes every event queued before done was closed.
+// drain writes every event queued before done was closed, then reports drops.
 func (s *Sink) drain() {
 	for {
 		select {
 		case ev := <-s.ch:
 			s.write(ev)
 		default:
+			s.reportDropped()
 			return
 		}
 	}
+}
+
+// reportDropped writes one EventDegraded event recording how many events Emit
+// discarded since the last report. Runs only on the writer goroutine.
+func (s *Sink) reportDropped() {
+	n := s.dropped.Swap(0)
+	if n == 0 {
+		return
+	}
+	s.write(Event{
+		Time:  time.Now(),
+		Type:  EventDegraded,
+		Error: "audit queue overflow",
+		Extra: json.RawMessage(fmt.Sprintf(`{"dropped":%d}`, n)),
+	})
 }
 
 // write appends one event, rotating and enforcing retention as needed.
 func (s *Sink) write(ev Event) {
 	data, err := json.Marshal(ev)
 	if err != nil {
-		slog.Debug("audit: marshal event", "error", err)
+		slog.Debug("marshal audit event", "error", err)
 		return
 	}
 	data = append(data, '\n')
 
 	if s.file == nil {
 		if err = s.rotate(); err != nil {
-			slog.Warn("audit: open log", "error", err)
+			slog.Warn("open audit log", "error", err)
 			return
 		}
 	}
 
 	if s.size+int64(len(data)) > MaxFileSize {
 		if err = s.rotate(); err != nil {
-			slog.Warn("audit: rotate", "error", err)
+			slog.Warn("rotate audit log", "error", err)
 			return
 		}
 	}
 
 	n, err := s.file.Write(data)
 	if err != nil {
-		slog.Warn("audit: write event", "error", err)
+		slog.Warn("write audit event", "error", err)
 		return
 	}
 	s.size += int64(n)
@@ -190,7 +233,7 @@ func (s *Sink) rotate() error {
 		_ = s.file.Close()
 	}
 
-	// Zero-padded UTC timestamp with nanosecond precision.
+	// Zero-padded UTC nanosecond timestamp.
 	name := filepath.Join(
 		s.dir,
 		time.Now().UTC().Format("audit-20060102T150405.000000000Z.jsonl"),
@@ -214,8 +257,7 @@ func (s *Sink) rotate() error {
 	return nil
 }
 
-// enforceRetention removes audit files older than MaxAge and, when the total
-// exceeds MaxTotalSize, the oldest files.
+// enforceRetention applies MaxAge and MaxTotalSize to the audit files.
 func (s *Sink) enforceRetention() {
 	matches, err := filepath.Glob(filepath.Join(s.dir, "audit-*.jsonl"))
 	if err != nil {

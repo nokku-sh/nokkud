@@ -8,6 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
+	"github.com/nokku-sh/nokkud/internal/sshd"
 )
 
 func TestSSHPort(t *testing.T) {
@@ -79,4 +82,56 @@ func TestCaMatches(t *testing.T) {
 	is.True(c.caMatches(key+"\n   "), "caMatches must tolerate surrounding whitespace")
 	is.False(c.caMatches(key[:len(key)-1]+"X"), "caMatches must reject a different CA")
 	is.True(c.caMatches(strings.TrimSpace(key)), "caMatches must ignore whitespace differences")
+}
+
+// TestOverlayConfigDefaults verifies a synced config that omits a field keeps
+// the daemon's compiled-in policy instead of zeroing it, so a partial backend
+// config cannot silently turn recording (or forwarding) off.
+func TestOverlayConfigDefaults(t *testing.T) {
+	t.Parallel()
+	is := assert.New(t)
+
+	defaults := sshd.Tunables{
+		Record:               true,
+		AllowForwarding:      true,
+		AllowAgentForwarding: true,
+		Banner:               true,
+		MaxSessions:          10,
+		MaxChannels:          50,
+		MaxStartups:          10,
+	}
+
+	// A config with no fields set at all keeps every default.
+	is.Equal(defaults, overlayConfig(defaults, &nokkuv1.DaemonConfig{}))
+
+	// An explicit false still overrides.
+	off := false
+	got := overlayConfig(defaults, &nokkuv1.DaemonConfig{RecordSessions: &off})
+	is.False(got.Record, "explicit record_sessions=false must disable recording")
+	is.True(got.Banner, "unset fields must keep their default")
+
+	// An explicit true overrides a default of false.
+	on := true
+	defaults.Banner = false
+	got = overlayConfig(defaults, &nokkuv1.DaemonConfig{Banner: &on})
+	is.True(got.Banner, "explicit banner=true must override the default")
+
+	// A numeric override applies while unset fields keep their default.
+	maxStartups := int32(25)
+	got = overlayConfig(defaults, &nokkuv1.DaemonConfig{MaxStartups: &maxStartups})
+	is.Equal(25, got.MaxStartups, "explicit max_startups must override the default")
+	is.Equal(10, got.MaxSessions, "unset max_sessions must keep its default")
+
+	// The hardening fields follow the same presence semantics.
+	maxChannels := int32(20)
+	dropRetired := true
+	got = overlayConfig(defaults, &nokkuv1.DaemonConfig{
+		MaxChannels:   &maxChannels,
+		DropRetiredCa: &dropRetired,
+	})
+	is.Equal(20, got.MaxChannels, "explicit max_channels must override the default")
+	is.True(got.DropRetiredCA, "explicit drop_retired_ca must override the default")
+
+	// A nil config leaves the defaults untouched.
+	is.Equal(defaults, overlayConfig(defaults, nil))
 }

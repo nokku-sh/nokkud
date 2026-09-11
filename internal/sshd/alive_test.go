@@ -76,6 +76,27 @@ func TestServerMaxStartups(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "pre-auth slot never released")
 }
 
+// TestServerMaxStartupsReleasedAfterHandshake verifies the pre-auth slot is
+// freed once the handshake completes. An authenticated, idle connection must
+// not consume a MaxStartups slot, which exists only to bound half-open peers.
+func TestServerMaxStartupsReleasedAfterHandshake(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxStartups: 1}})
+	defer closeFn()
+
+	auth := userCert(t, ca, testPrincipal)
+	user := currentUser(t)
+
+	first, err := dial(t, addr, user, auth)
+	must.NoError(err, "first connection")
+	defer first.Close()
+
+	second, err := dial(t, addr, user, auth)
+	must.NoError(err, "second connection while the first was authenticated and idle")
+	_ = second.Close()
+}
+
 // TestServerMaxSessionsPerUser verifies the per-principal session cap across
 // connections: one user cannot open more sessions than allowed, even over
 // many connections.
@@ -118,6 +139,41 @@ func TestServerMaxSessionsPerUser(t *testing.T) {
 		}
 		return false
 	}, 5*time.Second, 20*time.Millisecond, "per-user session cap never released")
+}
+
+// TestServerMaxChannels verifies the per-connection channel cap counts every
+// channel type: with two slots held by live sessions, a third channel is
+// refused, and closing one frees a slot.
+func TestServerMaxChannels(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
+	ca := newTestCA(t)
+	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxChannels: 2}})
+	defer closeFn()
+
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err, "dial")
+	defer client.Close()
+
+	s1, err := client.NewSession()
+	must.NoError(err, "session 1")
+	defer s1.Close()
+	s2, err := client.NewSession()
+	must.NoError(err, "session 2")
+	defer s2.Close()
+
+	_, err = client.NewSession()
+	must.ErrorContains(err, "too many channels")
+
+	// Closing a session frees its slot (the server notices asynchronously).
+	must.NoError(s1.Close(), "close s1")
+	var s3 *ssh.Session
+	is.Eventually(func() bool {
+		s3, err = client.NewSession()
+		return err == nil
+	}, 5*time.Second, 20*time.Millisecond)
+	must.NoError(err, "channel slot after close")
+	defer s3.Close()
 }
 
 // TestServerClientAlive verifies an unresponsive client is disconnected after

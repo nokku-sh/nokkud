@@ -28,6 +28,7 @@ type Uploader struct {
 	failed bool
 	closed bool
 	done   chan struct{}
+	cancel context.CancelFunc
 }
 
 type UploaderOptions struct {
@@ -41,12 +42,14 @@ func NewUploader(
 	client nokkuv1connect.RecordingServiceClient,
 	opts UploaderOptions,
 ) *Uploader {
+	ctx, cancel := context.WithCancel(ctx)
 	u := &Uploader{
 		client:    client,
 		sessionID: opts.SessionID,
 		username:  opts.Username,
 		chunks:    make(chan []byte, maxBufferedChunks),
 		done:      make(chan struct{}),
+		cancel:    cancel,
 	}
 	go u.sendLoop(ctx)
 	return u
@@ -68,17 +71,15 @@ func (u *Uploader) Write(p []byte) (int, error) {
 	select {
 	case u.chunks <- append([]byte(nil), p...):
 	default:
-		// Dropping middle chunks would corrupt the gzip stream for
-		// everything after them, so the whole upload is abandoned
-		// instead. The backend marks the recording truncated.
+		// Dropping middle chunks would corrupt the rest of the gzip stream,
+		// so the whole upload is abandoned instead.
 		u.failLocked("upload queue full", errors.New("queue full"))
 	}
 	return len(p), nil
 }
 
-// Close finalizes the upload. Safe to call after a failure or twice. The
-// wait for the backend is bounded by uploadCloseTimeout; on timeout the
-// stream is abandoned and the recording marked truncated server-side.
+// Close finalizes the upload, safe to call after a failure or twice. The wait
+// for the backend is bounded by uploadCloseTimeout.
 func (u *Uploader) Close() error {
 	u.mu.Lock()
 	if u.closed {
@@ -90,9 +91,8 @@ func (u *Uploader) Close() error {
 
 	close(u.chunks)
 
-	// The sender drains the queue, sends the final message, and closes the
-	// stream. Waiting here keeps a session that exits immediately from
-	// being cut off mid-upload.
+	// Wait for the sender to drain the queue and finalize the stream, so a
+	// session that exits immediately is not cut off mid-upload.
 	select {
 	case <-u.done:
 	case <-time.After(uploadCloseTimeout):
@@ -102,12 +102,14 @@ func (u *Uploader) Close() error {
 			"timeout", uploadCloseTimeout,
 		)
 	}
+	// Abort a send that outlived the drain window so the sender goroutine
+	// cannot hang forever on a stalled stream.
+	u.cancel()
 	return nil
 }
 
 // sendLoop sends queued chunks until Close drains the queue, then finalizes
-// the stream. Once the upload fails, remaining chunks are discarded so
-// writers never block.
+// the stream. After a failure chunks are discarded so writers never block.
 func (u *Uploader) sendLoop(ctx context.Context) {
 	defer close(u.done)
 
@@ -137,13 +139,12 @@ func (u *Uploader) sendLoop(ctx context.Context) {
 	if stream == nil || broken {
 		return
 	}
-	// Best-effort final message: a failed send still surfaces through
-	// CloseAndReceive's error.
+	// Best-effort final message: a failed send surfaces through CloseAndReceive.
 	_ = stream.Send(&nokkuv1.UploadRecordingRequest{
 		Msg: &nokkuv1.UploadRecordingRequest_Final{Final: &nokkuv1.RecordingFinal{}},
 	})
 	if _, err := stream.CloseAndReceive(); err != nil {
-		slog.Debug("recording upload closed", "session_id", u.sessionID, "error", err)
+		slog.Debug("recording upload close failed", "session_id", u.sessionID, "error", err)
 		return
 	}
 	slog.Debug("recording uploaded", "session_id", u.sessionID)
@@ -171,7 +172,7 @@ func (u *Uploader) open(ctx context.Context) (
 	return stream, nil
 }
 
-// fail records the failure. The stream is left as is, the backend marks the
+// fail records the failure. The stream is left open, the backend marks the
 // recording truncated.
 func (u *Uploader) fail(where string, err error) {
 	u.mu.Lock()

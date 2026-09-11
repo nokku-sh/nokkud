@@ -45,17 +45,14 @@ type Term struct {
 	Type string `json:"type,omitempty"`
 }
 
-// Options configures a recording. SessionID ties it to audit events.
+// Options configures a recording.
 type Options struct {
 	Width     int
 	Height    int
 	Title     string // stored in the asciicast header
 	Label     string // short human-usable label for the filename
 	SessionID string // correlates the recording with the session's audit events
-	Username  string // recorded in the upload metadata
-	// Sink, when set, receives every flushed batch of compressed data in
-	// addition to the local file. A failure inside the sink is logged and
-	// the sink is dropped: the local file must keep the data either way.
+	// Sink, when set, receives every flushed batch in addition to the local file.
 	Sink io.WriteCloser
 }
 
@@ -67,9 +64,8 @@ type Recorder struct {
 	enc       *json.Encoder
 	sink      io.WriteCloser
 	lastEvent time.Time
-	// msCarry carries the fractional-millisecond rounding error from one
-	// interval to the next, so the written intervals sum to the real time
-	// even after each is rounded to the nearest millisecond.
+	// msCarry carries the fractional-millisecond rounding error to the next
+	// interval so the written intervals sum to the real time.
 	msCarry float64
 	// exitCode is the session's exit status written last, so the x event
 	// stays the final event.
@@ -84,14 +80,32 @@ type countingWriter struct {
 	written int64
 }
 
+// sinkTee writes every batch to both the local file and the sink. A sink
+// failure is logged once and the sink is dropped, the file is never affected.
+type sinkTee struct {
+	w    io.Writer
+	sink io.WriteCloser
+}
+
 func (cw *countingWriter) Write(p []byte) (int, error) {
 	n, err := cw.w.Write(p)
 	cw.written += int64(n)
 	return n, err
 }
 
-// New starts a recording under the records dir, enforcing retention first.
-// Returns a nil no-op recorder when disk space is too low.
+func (t *sinkTee) Write(p []byte) (int, error) {
+	if t.sink != nil {
+		if _, err := t.sink.Write(p); err != nil {
+			slog.Warn("recording sink failed, keeping local copy", "error", err)
+			_ = t.sink.Close()
+			t.sink = nil
+		}
+	}
+	return t.w.Write(p)
+}
+
+// New starts a recording under the records dir, enforcing retention. It
+// returns a nil no-op recorder when disk space is too low.
 func New(opts Options) (*Recorder, error) {
 	if err := sysutil.CheckDiskSpace(paths.RecordsDir()); err != nil {
 		slog.Warn("low disk space, skipping recording", "error", err)
@@ -105,9 +119,8 @@ func New(opts Options) (*Recorder, error) {
 	safeLabel := util.ToSnakeCase(label)
 	filename := recordingFilename(time.Now(), safeLabel, opts.SessionID)
 
-	// The filename is fully self-constructed (timestamp, sanitized label,
-	// sanitized session id, pid), so joining it with the records dir carries
-	// no traversal risk.
+	// The filename is self-constructed (timestamp, sanitized label and
+	// session id, pid), so joining it carries no traversal risk.
 	path := filepath.Join(paths.RecordsDir(), filename)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600) // #nosec G304
 	if err != nil {
@@ -123,8 +136,6 @@ func New(opts Options) (*Recorder, error) {
 	cw := &countingWriter{w: f}
 	var w io.Writer = cw
 	if opts.Sink != nil {
-		// The sink must never take the recording down, a failing sink is
-		// disabled and logged, the file keeps receiving everything.
 		w = &sinkTee{w: cw, sink: opts.Sink}
 	}
 	gw := gzip.NewWriter(w)
@@ -172,27 +183,8 @@ func New(opts Options) (*Recorder, error) {
 	return rec, nil
 }
 
-// sinkTee writes every batch to both the local file and the sink. A sink
-// failure is logged once and the sink is dropped, the file is never affected.
-type sinkTee struct {
-	w    io.Writer
-	sink io.WriteCloser
-}
-
-func (t *sinkTee) Write(p []byte) (int, error) {
-	if t.sink != nil {
-		if _, err := t.sink.Write(p); err != nil {
-			slog.Warn("recording sink failed, keeping local copy", "error", err)
-			_ = t.sink.Close()
-			t.sink = nil
-		}
-	}
-	return t.w.Write(p)
-}
-
-// flushLoop flushes pending compressed data on a bounded interval while
-// the recording is active, so a crash loses at most one interval of the
-// tail no matter how the session interleaves bursts and idle time.
+// flushLoop flushes pending compressed data on a bounded interval so a crash
+// loses at most one interval of the tail of the recording.
 func (r *Recorder) flushLoop() {
 	ticker := time.NewTicker(maxFlushInterval)
 	defer ticker.Stop()
@@ -238,9 +230,8 @@ func (r *Recorder) event(eventType string, data []byte) {
 
 // emit writes one event line. Caller holds r.mu and has checked not closed.
 func (r *Recorder) emit(eventType string, data []byte) {
-	// asciicast v3 timestamps are intervals from the previous event. Real
-	// idle gaps longer than MaxIdleTime are clamped so playback does not
-	// dwell on terminal inactivity, matching the historical behavior.
+	// asciicast v3 timestamps are intervals from the previous event. Gaps
+	// longer than MaxIdleTime are clamped so playback skips idle time.
 	now := time.Now()
 	gap := min(now.Sub(r.lastEvent), MaxIdleTime)
 	r.lastEvent = now
@@ -255,9 +246,8 @@ func (r *Recorder) emit(eventType string, data []byte) {
 	r.dirty = true
 }
 
-// marshalEventData encodes a string as JSON without escaping <, >, and &,
-// matching the header encoder, so terminal output (pipes, redirects, Go
-// operators) stays readable in the raw cast.
+// marshalEventData encodes a string as JSON without escaping <, >, and &, so
+// terminal output stays readable in the raw cast.
 func marshalEventData(s string) []byte {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -268,9 +258,8 @@ func marshalEventData(s string) []byte {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 }
 
-// roundInterval renders a gap as a millisecond-precision interval, carrying
-// the rounding error into the next event (error diffusion) so the sum of the
-// written intervals tracks the real time instead of drifting.
+// roundInterval renders a gap as a millisecond interval, diffusing the
+// rounding error into the next event so written intervals track real time.
 func (r *Recorder) roundInterval(gap time.Duration) string {
 	r.msCarry += gap.Seconds() * 1000
 	ms := int64(math.Round(r.msCarry))
@@ -293,8 +282,7 @@ func (r *Recorder) RecordResize(width, height int) {
 	r.event("r", fmt.Appendf(nil, "%dx%d", width, height))
 }
 
-// RecordExit records the session's exit status in an exit ("x") event. It is
-// written as the last event during Close, after any held redaction tail.
+// RecordExit records the session's exit status in an exit ("x") event.
 func (r *Recorder) RecordExit(status int) {
 	if r == nil {
 		return
@@ -314,15 +302,12 @@ func (r *Recorder) closeLocked() {
 	r.closed = true
 	close(r.done)
 
-	// The exit status lands before the gzip footer, so the x event stays
-	// the final event.
 	if r.exitCode != nil {
 		r.emit("x", []byte(strconv.Itoa(*r.exitCode)))
 	}
 
-	// gw.Close flushes pending data and writes the gzip footer, so the
-	// file is complete and self-contained after Close. The sink receives
-	// the tail through the tee, then Close finalizes the upload.
+	// gw.Close flushes pending data and writes the gzip footer, so the file
+	// is complete after Close. The sink gets the tail through the tee.
 	if err := r.gw.Close(); err != nil {
 		slog.Error("close gzip writer", "error", err)
 	}
@@ -330,13 +315,17 @@ func (r *Recorder) closeLocked() {
 		slog.Error("close recording file", "error", err)
 	}
 	if r.sink != nil {
-		if err := r.sink.Close(); err != nil {
-			slog.Warn("close recording sink", "error", err)
-		}
+		// The sink is the uploader and its Close waits for the backend. Run
+		// it off the session path so the client is never held waiting on it.
+		go func() {
+			if err := r.sink.Close(); err != nil {
+				slog.Warn("close recording sink", "error", err)
+			}
+		}()
 	}
 }
 
-// Close flushes and closes the recording. Safe on a nil recorder.
+// Close flushes and closes the recording.
 func (r *Recorder) Close() {
 	if r == nil {
 		return

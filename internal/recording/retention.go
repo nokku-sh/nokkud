@@ -32,7 +32,6 @@ func EnforceRetention() error {
 
 	var files []os.FileInfo
 	for _, e := range entries {
-		// Check for .cast and .cast.gz files.
 		if e.IsDir() ||
 			(!strings.HasSuffix(e.Name(), ".cast") && !strings.HasSuffix(e.Name(), ".cast.gz")) {
 			continue
@@ -49,9 +48,8 @@ func EnforceRetention() error {
 	return nil
 }
 
-// recordingFilename builds a timestamped, sanitized filename. When a session
-// ID is present its first 8 characters are embedded so the recording can be
-// correlated with audit events by eye as well as through the header.
+// recordingFilename builds a timestamped, sanitized filename. A session ID's
+// first 8 characters are embedded so recordings correlate with audit events.
 func recordingFilename(now time.Time, safeLabel, sessionID string) string {
 	parts := []string{now.Format("20060102T150405Z"), safeLabel}
 	if id := shortSessionID(sessionID); id != "" {

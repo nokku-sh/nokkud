@@ -10,9 +10,8 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// newAuditSink opens the local JSONL audit log under the config dir. It
-// returns nil when the sink cannot be prepared so the server keeps running
-// without audit rather than failing to start.
+// newAuditSink opens the local JSONL audit log under the config dir. A nil
+// return keeps the server running without audit rather than failing to start.
 func newAuditSink() *audit.Sink {
 	s, err := audit.New(paths.AuditDir())
 	if err != nil {
@@ -22,8 +21,8 @@ func newAuditSink() *audit.Sink {
 	return s
 }
 
-// emit writes an audit event when an audit sink is configured. Safe to call
-// with a nil receiver, so emitters never fail a session.
+// emit writes an audit event when a sink is configured. Safe on a nil
+// receiver, so emitters never fail a session.
 func (s *Server) emit(ev audit.Event) {
 	if s == nil || s.audit == nil {
 		return
@@ -31,8 +30,6 @@ func (s *Server) emit(ev audit.Event) {
 	s.audit.Emit(ev)
 }
 
-// connEvent seeds a connection-related audit event with the common identity
-// fields.
 func connEvent(conn ssh.ConnMetadata) audit.Event {
 	return audit.Event{
 		User:   conn.User(),
@@ -48,7 +45,6 @@ func remoteString(a net.Addr) string {
 	return a.String()
 }
 
-// eventWith seeds an event's type and, when provided, principal and error.
 func eventWith(ev audit.Event, typ audit.EventType, principal, errMsg string) audit.Event {
 	ev.Type = typ
 	if principal != "" {

@@ -1,9 +1,10 @@
-// Package sysutil provides OS-level helpers for the SSH server, like user
-// resolution, session env, shells, and disk checks.
+// Package sysutil provides OS-level helpers for the SSH server: user resolution, session env, shells, disk.
 package sysutil
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,26 @@ import (
 	"strings"
 	"time"
 )
+
+// NologinFile is the maintenance lockout file, matching OpenSSH: only root may
+// log in while it exists.
+const NologinFile = "/etc/nologin"
+
+// LoginAllowed reports whether the user may log in. Root is never blocked, so
+// an operator can still get in to fix the machine.
+func LoginAllowed(u *user.User, nologinPath string) error {
+	if u != nil && u.Uid == "0" {
+		return nil
+	}
+	msg, err := os.ReadFile(nologinPath)
+	if err != nil {
+		return nil
+	}
+	if len(bytes.TrimSpace(msg)) == 0 {
+		return errors.New("logins are disabled by /etc/nologin")
+	}
+	return fmt.Errorf("logins are disabled: %s", strings.TrimSpace(string(msg)))
+}
 
 // LookupUser resolves a user by name, falling back to getent for NSS / LDAP
 // users invisible to static (CGO-less) builds.
@@ -56,8 +77,7 @@ func GroupIDs(u *user.User) ([]string, error) {
 }
 
 // CmdEnv builds the target user's session environment: a fresh HOME/USER/
-// SHELL/PATH plus a locale allowlist. Connection variables like SSH_AUTH_SOCK
-// are set per session by the caller, so sessions cannot leak the admin's agent.
+// SHELL/PATH plus a locale allowlist.
 func CmdEnv(sysUser *user.User, shell string) []string {
 	envMap := map[string]string{
 		"HOME":    sysUser.HomeDir,
@@ -68,10 +88,7 @@ func CmdEnv(sysUser *user.User, shell string) []string {
 	}
 
 	// Only innocuous locale/terminal variables are inherited. Connection
-	// variables are set per session by the caller, since inheriting them
-	// would leak the enrolling admin's agent socket and connection details
-	// into other users' sessions. DISPLAY and XAUTHORITY are never set
-	// because X11 is unsupported.
+	// variables are set per session, so the admin's agent socket cannot leak.
 	passThrough := []string{
 		"TERM",
 		"LANG",
@@ -98,8 +115,11 @@ func CmdEnv(sysUser *user.User, shell string) []string {
 	return env
 }
 
-// UserShell resolves the user's login shell (getent, then SHELL, then
-// /bin/sh, COMSPEC on Windows), only if it is executable.
+// UserShell returns the target user's login shell from the password database.
+// The shell is used verbatim, so a lock shell (nologin, false) or a bogus path
+// fails the session instead of silently becoming a shell. /bin/sh is used only
+// when the password entry carries no shell at all, and never the daemon's own
+// SHELL.
 func UserShell(u *user.User) string {
 	if runtime.GOOS == "windows" {
 		if shell := os.Getenv("COMSPEC"); shell != "" {
@@ -108,7 +128,6 @@ func UserShell(u *user.User) string {
 		return "cmd.exe"
 	}
 
-	// Resolve the target user's shell from the password database.
 	if u != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -118,24 +137,11 @@ func UserShell(u *user.User) string {
 		if err == nil {
 			parts := strings.Split(strings.TrimSpace(string(out)), ":")
 			if len(parts) >= 7 {
-				shell := strings.TrimSpace(parts[6])
-				if shell != "" && IsExecutable(shell) {
+				if shell := strings.TrimSpace(parts[6]); shell != "" {
 					return shell
 				}
 			}
 		}
 	}
-
-	// Fall back to the caller's SHELL, then /bin/sh.
-	if shell := os.Getenv("SHELL"); shell != "" {
-		return shell
-	}
 	return "/bin/sh"
-}
-
-// IsExecutable checks whether path is a regular file with execute permission.
-// Uses stat(2) because the path is always absolute.
-func IsExecutable(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0
 }

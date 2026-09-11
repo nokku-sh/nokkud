@@ -6,14 +6,18 @@ import (
 	"log/slog"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// SystemUsers returns up to 20 local usernames that could plausibly log in
-// over SSH (root and human accounts with a real shell). The backend uses the
-// list to offer principal mappings for this target.
+// maxReportedUsers caps how many local usernames the daemon reports. The list
+// is sorted before truncating, so only the tail can ever change between syncs.
+const maxReportedUsers = 200
+
+// SystemUsers returns local usernames that could plausibly log in over SSH
+// (root and human accounts with a real shell), capped at maxReportedUsers.
 func SystemUsers() []string {
 	switch runtime.GOOS {
 	case "linux", "freebsd", "openbsd", "netbsd":
@@ -42,30 +46,22 @@ func linuxUsers() []string {
 		if len(line) == 0 {
 			continue
 		}
-		if len(users) >= 20 {
-			break
-		}
 
 		parts := strings.Split(string(line), ":")
 		if len(parts) != 7 {
 			continue
 		}
 
-		username := parts[0]
-		uidStr := parts[2]
-		shell := parts[6]
-
-		var uid int
-		uid, err = strconv.Atoi(uidStr)
-		if err != nil {
+		uid, parseErr := strconv.Atoi(parts[2])
+		if parseErr != nil {
 			continue
 		}
 
-		if isValidSSHUser(uid, shell) {
-			users = append(users, username)
+		if isValidSSHUser(uid, parts[6]) {
+			users = append(users, parts[0])
 		}
 	}
-	return users
+	return capUsers(users)
 }
 
 func windowsUsers() []string {
@@ -92,17 +88,13 @@ func windowsUsers() []string {
 		}
 		if inUserList && line != "" && !strings.Contains(line, "---") {
 			for userField := range strings.FieldsSeq(line) {
-				if userField != "" && len(users) < 20 {
+				if userField != "" {
 					users = append(users, userField)
 				}
 			}
 		}
-
-		if len(users) >= 20 {
-			break
-		}
 	}
-	return users
+	return capUsers(users)
 }
 
 func darwinUsers() []string {
@@ -128,6 +120,15 @@ func darwinUsers() []string {
 		if !strings.HasPrefix(user, "_") && (uid == 0 || uid >= 501) {
 			users = append(users, user)
 		}
+	}
+	return capUsers(users)
+}
+
+// capUsers sorts and truncates so the backend always sees a stable head.
+func capUsers(users []string) []string {
+	sort.Strings(users)
+	if len(users) > maxReportedUsers {
+		return users[:maxReportedUsers]
 	}
 	return users
 }

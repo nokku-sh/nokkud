@@ -274,3 +274,53 @@ func TestNilRecorderIsNoOp(t *testing.T) {
 	var iface interface{ RecordResize(int, int) } = rec
 	iface.RecordResize(80, 24)
 }
+
+// slowSink blocks in Close until released, standing in for an upload stream
+// waiting on the backend.
+type slowSink struct {
+	release chan struct{}
+	done    chan struct{}
+}
+
+func (s *slowSink) Write(p []byte) (int, error) { return len(p), nil }
+
+func (s *slowSink) Close() error {
+	<-s.release
+	close(s.done)
+	return nil
+}
+
+// TestRecorderCloseDoesNotBlockOnSink verifies the session path is not held
+// waiting for the upload sink. Close must complete the local file immediately
+// and let the sink drain off the caller's goroutine.
+func TestRecorderCloseDoesNotBlockOnSink(t *testing.T) {
+	recordsDir := newRecordsDir(t)
+	is := assert.New(t)
+	must := require.New(t)
+
+	sink := &slowSink{release: make(chan struct{}), done: make(chan struct{})}
+	rec, err := New(Options{Width: 80, Height: 24, Title: "t", Sink: sink})
+	must.NoError(err, "new recorder")
+	rec.RecordOutput([]byte("hello"))
+
+	start := time.Now()
+	rec.Close()
+	is.Less(time.Since(start), time.Second, "Close blocked on the sink")
+
+	// The local file is complete and readable while the sink is still open.
+	entries, err := os.ReadDir(recordsDir)
+	must.NoError(err)
+	must.Len(entries, 1)
+	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
+	must.NoError(err)
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	must.NoError(err)
+	defer gz.Close()
+	data, err := io.ReadAll(gz)
+	must.NoError(err, "local recording must be complete after Close")
+	is.Contains(string(data), "hello")
+
+	close(sink.release)
+	<-sink.done
+}

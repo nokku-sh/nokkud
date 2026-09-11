@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -282,12 +284,23 @@ func TestPlainSessionRecorded(t *testing.T) {
 	must.NoError(err, "new session")
 	defer sess.Close()
 
-	out, err := sess.Output("printf hello-recorded")
-	must.NoError(err, "exec")
-	is.Equal("hello-recorded", string(out))
+	stdin, err := sess.StdinPipe()
+	must.NoError(err, "stdin pipe")
+	stdout, err := sess.StdoutPipe()
+	must.NoError(err, "stdout pipe")
+
+	must.NoError(sess.Start("cat"), "start")
+	_, err = io.WriteString(stdin, "piped-input\n")
+	must.NoError(err)
+	must.NoError(stdin.Close())
+
+	out, err := io.ReadAll(stdout)
+	must.NoError(err, "read stdout")
+	must.NoError(sess.Wait(), "wait")
+	is.Equal("piped-input\n", string(out))
 
 	// finish() closes the recorder before the exit status is sent, so the
-	// sink is complete by the time Output returns.
+	// sink is complete by the time Wait returns.
 	select {
 	case <-sink.closed:
 	case <-time.After(5 * time.Second):
@@ -298,76 +311,126 @@ func TestPlainSessionRecorded(t *testing.T) {
 	must.NoError(err, "sink data is not gzip")
 	cast, err := io.ReadAll(gr)
 	must.NoError(err, "read recording")
-	is.Contains(string(cast), `"o"`)
-	is.Contains(string(cast), "hello-recorded")
+	is.Contains(string(cast), `"o"`, "plain sessions must still record output")
+	is.NotContains(string(cast), `"i"`, "plain sessions must not record stdin")
 }
 
-// TestRecordingCorrelatesWebSessionID verifies an env NOKKU_SESSION_ID sent
-// before the session starts labels the recording, so web sessions riding
-// the SSH relay keep their backend session id on the recording.
-func TestRecordingCorrelatesWebSessionID(t *testing.T) {
+// TestSessionDeniedByNologin verifies /etc/nologin is honoured at session
+// start. Authentication still succeeds (it is certificate based); the
+// session channel is closed instead.
+func TestSessionDeniedByNologin(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, where /etc/nologin does not apply")
+	}
 	is := assert.New(t)
 	must := require.New(t)
-	dir := t.TempDir()
-	t.Setenv("NOKKUD_DATA_DIR", dir)
-	must.NoError(paths.Verify(), "verify paths")
 
-	const webSessionID = "0197a3f2-7c1b-7de1-9a2b-3f4c5d6e7f80"
+	nologin := filepath.Join(t.TempDir(), "nologin")
+	must.NoError(os.WriteFile(nologin, []byte("maintenance\n"), 0o644))
 
-	var mu sync.Mutex
-	var gotID string
-	sink := &captureSink{closed: make(chan struct{})}
-	factory := func(_ context.Context, sessionID, _ string) io.WriteCloser {
-		mu.Lock()
-		gotID = sessionID
-		mu.Unlock()
-		return sink
-	}
-
-	cur := currentUser(t)
 	ca := newTestCA(t)
-	principals := func(username string) []string {
-		if username == cur {
-			return []string{testPrincipal}
-		}
-		return nil
-	}
-	srv, err := New(Options{
-		Principals: principals,
-		TrustedCAs: []ssh.PublicKey{ca.pub},
-		Tunables:   Tunables{Record: true},
-	})
-	must.NoError(err, "new server")
-	srv.SetRecordingSinkFactory(factory)
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	must.NoError(err, "listen")
-	defer func() { _ = l.Close() }()
-	go func() { _ = srv.Serve(l) }()
+	addr, closeFn := startTestServerOpts(t, ca, Options{NologinFile: nologin})
+	defer closeFn()
 
-	client, err := dial(t, l.Addr().String(), cur, userCert(t, ca, testPrincipal))
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
 	must.NoError(err, "dial")
 	defer client.Close()
 
 	sess, err := client.NewSession()
-	must.NoError(err, "new session")
-	defer sess.Close()
-
-	ok, err := sess.SendRequest("env", true, ssh.Marshal(
-		struct{ Name, Value string }{"NOKKU_SESSION_ID", webSessionID},
-	))
-	must.NoError(err, "env request")
-	is.True(ok, "env request accepted")
-
-	_, err = sess.Output("printf env-recorded")
-	must.NoError(err, "exec")
-
-	select {
-	case <-sink.closed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("recording sink was never closed")
+	if err == nil {
+		err = sess.Run("true")
+		_ = sess.Close()
 	}
+	is.Error(err, "session started while /etc/nologin was present")
+}
 
-	mu.Lock()
-	defer mu.Unlock()
-	is.Equal(webSessionID, gotID, "recording must carry the env session id")
+// TestRecordingCorrelatesWebSessionID verifies the env NOKKU_SESSION_ID is
+// honoured only for certificates the control plane minted for a web terminal
+// session. A direct login must not be able to label its recording with
+// another session's id, so it falls back to the daemon-generated one.
+func TestRecordingCorrelatesWebSessionID(t *testing.T) {
+	const webSessionID = "0197a3f2-7c1b-7de1-9a2b-3f4c5d6e7f80"
+
+	cases := []struct {
+		name         string
+		keyID        string
+		wantPromoted bool
+	}{
+		{"web session", "nokku:web:session:" + webSessionID, true},
+		{"direct login", "nokku:login:user:" + testPrincipal, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			is := assert.New(t)
+			must := require.New(t)
+			t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
+			must.NoError(paths.Verify(), "verify paths")
+
+			var mu sync.Mutex
+			var gotID string
+			sink := &captureSink{closed: make(chan struct{})}
+			factory := func(_ context.Context, sessionID, _ string) io.WriteCloser {
+				mu.Lock()
+				gotID = sessionID
+				mu.Unlock()
+				return sink
+			}
+
+			cur := currentUser(t)
+			ca := newTestCA(t)
+			principals := func(username string) []string {
+				if username == cur {
+					return []string{testPrincipal}
+				}
+				return nil
+			}
+			srv, err := New(Options{
+				Principals: principals,
+				TrustedCAs: []ssh.PublicKey{ca.pub},
+				Tunables:   Tunables{Record: true},
+			})
+			must.NoError(err, "new server")
+			srv.SetRecordingSinkFactory(factory)
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			must.NoError(err, "listen")
+			defer func() { _ = l.Close() }()
+			go func() { _ = srv.Serve(l) }()
+
+			auth := userCertOpts(t, ca, func(c *ssh.Certificate) {
+				c.KeyId = tc.keyID
+			}, testPrincipal)
+			client, err := dial(t, l.Addr().String(), cur, auth)
+			must.NoError(err, "dial")
+			defer client.Close()
+
+			sess, err := client.NewSession()
+			must.NoError(err, "new session")
+			defer sess.Close()
+
+			ok, err := sess.SendRequest("env", true, ssh.Marshal(
+				struct{ Name, Value string }{"NOKKU_SESSION_ID", webSessionID},
+			))
+			must.NoError(err, "env request")
+			is.Equal(tc.wantPromoted, ok, "env request accepted")
+
+			_, err = sess.Output("printf env-recorded")
+			must.NoError(err, "exec")
+
+			select {
+			case <-sink.closed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("recording sink was never closed")
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if tc.wantPromoted {
+				is.Equal(webSessionID, gotID, "recording must carry the env session id")
+			} else {
+				is.NotEmpty(gotID, "recording must carry a session id")
+				is.NotEqual(webSessionID, gotID,
+					"a direct login must not hijack another session's recording id")
+			}
+		})
+	}
 }

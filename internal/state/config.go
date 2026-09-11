@@ -3,17 +3,14 @@ package state
 import "github.com/nokku-sh/nokkud/internal/paths"
 
 // Built-in defaults for the runtime options the daemon persists. They live
-// here rather than on the CLI flags so the persisted config is the single
-// source of truth and a bare default never clobbers a value the user already
-// configured in config.json.
+// here, not on the CLI flags, so a bare default never clobbers config.json.
 const (
 	DefaultAPIURL  = "https://app.nokku.sh"
 	DefaultSSHAddr = ":4022"
 )
 
-// Config is the persisted enrollment state: target/daemon IDs, API
-// endpoint and runtime options. The backend-synced daemon config (session
-// recording, recording key, caps) lives in the [Cache].
+// Config is the persisted enrollment state. The backend-synced daemon config
+// lives in [Cache].
 type Config struct {
 	WorkspaceID  string `json:"workspace_id,omitempty"`
 	TargetID     string `json:"target_id,omitempty"`
@@ -23,25 +20,20 @@ type Config struct {
 	SessionToken string `json:"session_token,omitempty"`
 }
 
-// NewConfig returns an empty config.
 func NewConfig() *Config {
 	return &Config{}
 }
 
-// Load reads the config from disk. A missing file is not an error. A
-// corrupted one is cleared so the daemon starts unenrolled, never
-// half-enrolled.
+// Load reads the config from disk. A missing file is not an error.
 func (c *Config) Load() error {
-	return loadJSON(paths.ConfigFile(), c, c.Clear)
+	return loadJSON(paths.ConfigFile(), c)
 }
 
-// Save writes the config atomically with 0600 perms, skipping unchanged
-// content.
+// Save writes the config atomically with 0600 perms.
 func (c *Config) Save() error {
 	return saveJSON(paths.ConfigFile(), c, 0o600)
 }
 
-// Clear resets the config to its zero state.
 func (c *Config) Clear() {
 	c.WorkspaceID = ""
 	c.TargetID = ""

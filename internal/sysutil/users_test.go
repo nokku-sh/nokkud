@@ -66,35 +66,30 @@ func TestLookupUserGetentFailure(t *testing.T) {
 
 func TestUserShell(t *testing.T) {
 	tests := []struct {
-		name     string
-		getent   string
-		shellEnv string
-		want     string
+		name   string
+		getent string
+		want   string
 	}{
 		{
-			name:     "shell from getent",
-			getent:   fakeGetentScript(0, "nokkud-test-alice:x:1001:1002::/home/alice:/bin/sh"),
-			shellEnv: "",
-			want:     "/bin/sh",
+			name:   "shell from getent",
+			getent: fakeGetentScript(0, "nokkud-test-alice:x:1001:1002::/home/alice:/bin/sh"),
+			want:   "/bin/sh",
 		},
 		{
-			name:     "getent shell not executable falls back to SHELL",
-			getent:   fakeGetentScript(0, "nokkud-test-alice:x:1001:1002::/home/alice:/nonexistent-shell"),
-			shellEnv: "/bin/sh",
-			want:     "/bin/sh",
+			name:   "a lock shell is used verbatim, not replaced",
+			getent: fakeGetentScript(0, "nokkud-test-alice:x:1001:1002::/home/alice:/nonexistent-shell"),
+			want:   "/nonexistent-shell",
 		},
 		{
-			name:     "malformed getent entry falls back to SHELL",
-			getent:   fakeGetentScript(0, "nokkud-test-alice:x:1001"),
-			shellEnv: "/bin/sh",
-			want:     "/bin/sh",
+			name:   "malformed getent entry falls back to /bin/sh",
+			getent: fakeGetentScript(0, "nokkud-test-alice:x:1001"),
+			want:   "/bin/sh",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			is := assert.New(t)
 			withFakeGetent(t, tt.getent)
-			t.Setenv("SHELL", tt.shellEnv)
 
 			u := &user.User{Username: "nokkud-test-alice"}
 			is.Equal(tt.want, UserShell(u))
@@ -142,31 +137,24 @@ func TestCmdEnv(t *testing.T) {
 	}
 }
 
-func TestIsExecutable(t *testing.T) {
+func TestLoginAllowed(t *testing.T) {
+	is := assert.New(t)
 	must := require.New(t)
-	dir := t.TempDir()
 
-	execFile := filepath.Join(dir, "exec")
-	must.NoError(os.WriteFile(execFile, []byte("#!/bin/sh\n"), 0o755))
-	plainFile := filepath.Join(dir, "plain")
-	must.NoError(os.WriteFile(plainFile, []byte("x"), 0o644))
+	path := filepath.Join(t.TempDir(), "nologin")
 
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{name: "executable file", path: execFile, want: true},
-		{name: "plain file", path: plainFile, want: false},
-		{name: "directory", path: dir, want: false},
-		{name: "missing file", path: filepath.Join(dir, "missing"), want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			is := assert.New(t)
-			is.Equal(tt.want, IsExecutable(tt.path))
-		})
-	}
+	nonRoot := &user.User{Username: "alice", Uid: "1000"}
+	root := &user.User{Username: "root", Uid: "0"}
+
+	is.NoError(LoginAllowed(nonRoot, path), "missing file must allow logins")
+	is.NoError(LoginAllowed(root, path), "missing file must allow root")
+
+	must.NoError(os.WriteFile(path, []byte("maintenance until 17:00\n"), 0o644))
+	err := LoginAllowed(nonRoot, path)
+	must.Error(err, "nologin must deny a non-root login")
+	is.Contains(err.Error(), "maintenance until 17:00")
+
+	is.NoError(LoginAllowed(root, path), "nologin must never block root")
 }
 
 func TestIsNoiseInterface(t *testing.T) {

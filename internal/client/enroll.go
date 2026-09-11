@@ -10,9 +10,7 @@ import (
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 )
 
-const (
-	enrollTimeout = 30 * time.Second
-)
+const enrollTimeout = 30 * time.Second
 
 func (c *Client) enroll(ctx context.Context, token, caid string) error {
 	if token == "" {
@@ -22,17 +20,15 @@ func (c *Client) enroll(ctx context.Context, token, caid string) error {
 	ctx, cancel := context.WithTimeout(ctx, enrollTimeout)
 	defer cancel()
 
-	// The auth interceptor signs the enrollment request with an unbound DPoP
-	// proof (no access token yet), proving the daemon's key to the server so
-	// the issued session is bound to it. The server issues a non-expiring
-	// DPoP-bound session and returns its token.
+	// No access token yet, so the interceptor signs with an unbound DPoP
+	// proof: the server binds the issued session to the daemon's key.
 	res, err := c.dc.EnrollDaemon(ctx, &nokkuv1.EnrollDaemonRequest{
 		Token: &token,
 		CaId:  &caid,
 	})
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeAlreadyExists {
-			return nil // ignore, already enrolled
+			return nil // already enrolled
 		}
 		return fmt.Errorf("failed to enroll: %w", err)
 	}

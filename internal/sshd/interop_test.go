@@ -17,14 +17,13 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// TestBinaryInterop drives the real nokkud binary's embedded SSH server end
-// to end. Build it, seed a CA + principal cache, launch `nokkud sshd-server`
-// headless, and run real clients (ssh, scp -O/-s, sftp, rsync, git, -L, -R,
-// -A) against it.
+// TestBinaryInterop drives the embedded SSH server end to end. Build the
+// headless test server, seed a CA + principal cache, launch it, and run real
+// clients (ssh, scp -O/-s, sftp, rsync, git, -L, -R, -A) against it.
 func TestBinaryInterop(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
-	bin := buildNokkud(t)
+	bin := buildTestServer(t)
 
 	ca := newTestCA(t)
 	configDir := t.TempDir()
@@ -37,7 +36,7 @@ func TestBinaryInterop(t *testing.T) {
 
 	// Launch the headless server and wait for it to print its address.
 	cmd := exec.Command(
-		bin, "sshd-server",
+		bin,
 		"--config-dir", configDir,
 		"--addr", "127.0.0.1:0",
 		"--allow-nonroot",
@@ -244,17 +243,17 @@ func writeCacheFile(configDir, username string, uuids []string) error {
 	return os.WriteFile(filepath.Join(configDir, "cache.json"), data, 0o600)
 }
 
-func buildNokkud(t *testing.T) string {
+func buildTestServer(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not installed")
 	}
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "nokkud")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	bin := filepath.Join(dir, "sshd-testserver")
+	cmd := exec.Command("go", "build", "-o", bin, "./internal/sshd/testserver")
 	cmd.Dir = repoRoot(t)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("cannot build nokkud binary: %v\n%s", err, out)
+		t.Skipf("cannot build the test ssh server: %v\n%s", err, out)
 	}
 	return bin
 }

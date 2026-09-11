@@ -40,8 +40,9 @@ The following are in scope for security reports:
   certificate authentication and session handling, and the authenticated
   outbound control stream to the backend.
 - Local state and configuration it writes, all under `/var/lib/nokkud/`:
-  `config.json`, `cache.json`, `state.json`, the SSH host key, host
-  certificate and trusted CA public key, `recordings/` and `audit/`.
+  `config.json`, `cache.json`, `state.json`, `ssh_host_signer.json` (the
+  TPM-backed or machine-wrapped host identity), the SSH host public key,
+  host certificate and trusted CA public key, `recordings/` and `audit/`.
 
 ### Out of scope
 
@@ -63,14 +64,31 @@ control stream to the backend.
 - Principal checks fall back to the last local cache when the backend is
   unreachable; new policy updates and certificate renewals require a
   reconnect.
-- **Session recordings** are written unredacted to `recordings/` and streamed to
-  the backend, which scrubs credentials server-side after the upload
-  completes. The daemon performs no redaction of its own, so anyone with
+- **Session recordings** are written unredacted to `recordings/` and uploaded
+  to the backend, which scrubs credential patterns server-side after the
+  upload completes. Scrubbing is best effort: a failure leaves the upload
+  as-is and raises a `recording.scrub_failed` audit event rather than
+  retrying. The daemon performs no redaction of its own, so anyone with
   access to the recordings directory or the backend's storage can read
-  whatever was on the terminal. Password prompts are exempt: input is only
-  recorded while the PTY has echo enabled.
-- Releases are built via GoReleaser and signed/checksummed. Verify downloads
-  against the published checksums and signatures.
+  whatever was on the terminal. Both interactive and non-interactive
+  sessions are byte-recorded. Interactive input is recorded only while the
+  PTY has echo enabled, so password prompts are exempt; a non-interactive
+  `exec` session has no echo signal, so only its output is captured.
+- **Machine identity.** Every signing identity is ECDSA P-256, TPM-resident
+  or a software key wrapped to the machine fingerprint. With a TPM, the
+  private key never leaves the device. The TPM primary is created without an
+  auth value or PCR policy, so any process that can open `/dev/tpmrm0` can use
+  the identity. Restrict the device to the daemon's uid. Without a TPM, the
+  software key is wrapped with a key derived from the machine's public
+  fingerprint: that only stops copying the state file to a different machine,
+  not reading it on the machine itself.
+- Releases are built via GoReleaser. Each release publishes
+  `nokkud_checksums.txt`, a cosign signature bundle for it
+  (`nokkud_checksums.txt.sigstore.json`), and a CycloneDX SBOM per archive.
+  `install.sh` verifies the SHA-256 of the tarball against the manifest,
+  verifies the manifest with cosign when it is available, and stops on a
+  mismatch. The manifest can also be checked by hand with `cosign verify-blob`
+  against the bundle and the GitHub Actions OIDC issuer.
 
 ### Embedded SSH server
 
@@ -94,11 +112,27 @@ control stream to the backend.
 - **Sessions run as the target OS user.** The daemon must run as root so it
   can drop privileges; it refuses to serve SSH unprivileged rather than
   silently running sessions as the wrong user.
+- **Per-connection channel cap.** Sessions plus port and agent forwards count
+  against `MaxChannels` for the life of each channel, so one authorized
+  connection cannot exhaust the daemon's file descriptors or goroutines.
+- **Retired CA grace window.** After a CA rollover the previous CA stays
+  trusted for a grace window so certificates it signed keep working. The
+  backend can set `drop_retired_ca` to stop trusting it immediately.
+- **`/etc/nologin` is honored.** When the file exists, logins are refused for
+  every user except root, matching OpenSSH, so a machine can be put into
+  maintenance.
+- **Account lock and expiry are the OS's job.** Sessions never go through PAM,
+  so `pam_limits`, `pam_access`, locked accounts, and password expiry are not
+  enforced by the daemon. The login shell from the password database is used
+  verbatim, so a `nologin` or `false` shell still ends the session. A granted
+  user runs with their own OS privileges and no session resource cap; bound
+  them with systemd slices or per-user limits if that matters for your threat
+  model.
 - **Audit and recording are local-first.** Security events (auth, session,
   command, forward) are appended as rotated JSONL under
   `/var/lib/nokkud/audit/`; interactive sessions are recorded as gzipped
   asciicast under `/var/lib/nokkud/recordings/`, correlated to audit events
-  via `session_id`. Non-interactive `exec` sessions are captured as `command`
-  audit events (command line, user, exit code) but not byte-recorded. Both
-  stores have size- and age-based retention; shipping them to the backend
-  when connected is planned and reads the same files.
+  via `session_id`. Non-interactive `exec` sessions are captured both as
+  `command` audit events (command line, user, exit code) and as recordings
+  (output only). Recordings are uploaded to the backend when connected.
+  Both stores have size- and age-based retention.

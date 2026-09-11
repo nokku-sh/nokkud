@@ -14,6 +14,11 @@ import (
 
 const heartbeatInterval = 5 * time.Minute
 
+type receiveResult struct {
+	msg *nokkuv1.ConnectResponse
+	err error
+}
+
 // recoverLog catches panics in goroutines so a single bug never kills the daemon.
 func recoverLog(where string) {
 	if r := recover(); r != nil {
@@ -21,11 +26,9 @@ func recoverLog(where string) {
 	}
 }
 
-// runControlStream keeps the control stream open until ctx is cancelled.
-// The stream is the daemon's only periodic contact. An immediate heartbeat
-// reports our state version, later heartbeats keep it alive, and the server
-// pushes state updates. A fatal error (daemon rejection) is returned so Run
-// can surface it instead of reconnecting.
+// runControlStream keeps the control stream open until ctx is cancelled. A
+// daemon rejection is returned as a fatal error so Run exits rather than
+// reconnecting.
 func (c *Client) runControlStream(ctx context.Context, onConnect func()) error {
 	controlCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -119,11 +122,6 @@ func (c *Client) pumpReceives(
 	}
 }
 
-type receiveResult struct {
-	msg *nokkuv1.ConnectResponse
-	err error
-}
-
 func (c *Client) handleServerMessage(
 	ctx context.Context,
 	msg *nokkuv1.ConnectResponse,
@@ -148,8 +146,7 @@ func (c *Client) reconcile(ctx context.Context, serverVersion int64) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, syncTimeout)
 	defer cancel()
-	// Do not log failures here; runControlStream logs the returned error
-	// once, so logging would duplicate the line.
+	// runControlStream logs the returned error, so logging here would duplicate it.
 	if err := c.syncDaemon(ctx); err != nil {
 		return fmt.Errorf("sync after state update: %w", err)
 	}

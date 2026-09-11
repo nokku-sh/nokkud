@@ -2,10 +2,13 @@ package sshd
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
@@ -16,11 +19,8 @@ const (
 	agentChannelType = "auth-agent@openssh.com"
 )
 
-// agentRequest handles the client's auth-agent-req@openssh.com session
-// request (ssh -A). When forwarding is allowed it is acknowledged and the
-// session's SSH_AUTH_SOCK is wired to a Unix socket that relays connections
-// to the client's agent over auth-agent@openssh.com channels. It reports
-// whether the request was accepted (so the caller starts serveAgent).
+// agentRequest handles the client's auth-agent-req@openssh.com request
+// (ssh -A), wiring the session's agent socket to the client's agent.
 func (sess *session) agentRequest(req *ssh.Request) bool {
 	if sess.handled {
 		_ = req.Reply(false, nil)
@@ -34,9 +34,9 @@ func (sess *session) agentRequest(req *ssh.Request) bool {
 		_ = req.Reply(true, nil)
 		return false
 	}
-	ln, sock, err := newAgentSock()
+	ln, sock, err := newAgentSock(sess.sysUser)
 	if err != nil {
-		sess.server.logger.Debug("sshd: agent socket", "error", err)
+		sess.server.logger.Debug("create agent socket", "error", err)
 		_ = req.Reply(false, nil)
 		return false
 	}
@@ -46,9 +46,9 @@ func (sess *session) agentRequest(req *ssh.Request) bool {
 	return true
 }
 
-// newAgentSock creates a temporary Unix socket and returns the listener and
-// its path.
-func newAgentSock() (net.Listener, string, error) {
+// newAgentSock creates a Unix socket owned by the target user. MkdirTemp
+// leaves a root-owned dir the dropped-privilege session cannot traverse.
+func newAgentSock(sysUser *user.User) (net.Listener, string, error) {
 	dir, err := os.MkdirTemp("", "auth-agent")
 	if err != nil {
 		return nil, "", err
@@ -60,11 +60,45 @@ func newAgentSock() (net.Listener, string, error) {
 		_ = os.RemoveAll(dir)
 		return nil, "", err
 	}
+
+	if os.Geteuid() == 0 {
+		uid, gid, idErr := userIDs(sysUser)
+		if idErr != nil {
+			_ = ln.Close()
+			_ = os.RemoveAll(dir)
+			return nil, "", idErr
+		}
+		for _, path := range []string{dir, sock} {
+			if err = os.Chown(path, uid, gid); err != nil {
+				_ = ln.Close()
+				_ = os.RemoveAll(dir)
+				return nil, "", fmt.Errorf("chown agent socket: %w", err)
+			}
+		}
+		// Only the session user may talk to the forwarded agent.
+		if err = os.Chmod(sock, 0o600); err != nil {
+			_ = ln.Close()
+			_ = os.RemoveAll(dir)
+			return nil, "", fmt.Errorf("chmod agent socket: %w", err)
+		}
+	}
 	return ln, sock, nil
 }
 
-// serveAgent relays connections on the agent socket to the client's agent
-// channel until the session ends. It runs for the lifetime of the session.
+func userIDs(u *user.User) (int, int, error) {
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse uid %q: %w", u.Uid, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse gid %q: %w", u.Gid, err)
+	}
+	return uid, gid, nil
+}
+
+// serveAgent relays agent socket connections to the client's agent channel for
+// the lifetime of the session.
 func (sess *session) serveAgent() {
 	defer sess.server.recoverAndLog("agent forwarding", func() {
 		_ = sess.agentLn.Close()
@@ -73,7 +107,6 @@ func (sess *session) serveAgent() {
 		_ = os.RemoveAll(filepath.Dir(sess.agentSock))
 	}()
 
-	// Stop accepting when the session ends.
 	go func() {
 		<-sess.ctx.Done()
 		_ = sess.agentLn.Close()
@@ -88,10 +121,13 @@ func (sess *session) serveAgent() {
 	}
 }
 
-// relayAgentConn proxies one agent socket connection to a fresh
-// auth-agent@openssh.com channel on the session's connection.
 func (sess *session) relayAgentConn(c net.Conn) {
 	defer sess.server.recoverAndLog("agent relay", func() { _ = c.Close() })
+	if !sess.st.acquireChannel(sess.server.tun.Load().MaxChannels) {
+		_ = c.Close()
+		return
+	}
+	defer sess.st.releaseChannel()
 	ch, reqs, err := sess.conn.OpenChannel(agentChannelType, nil)
 	if err != nil {
 		_ = c.Close()
