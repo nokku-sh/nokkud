@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/nokku-sh/mon/fsutil"
+
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/util"
@@ -104,12 +106,12 @@ func (c *Cache) Clear() {
 // Load reads the cache from disk, discarding a corrupted file so the next sync
 // rebuilds it. A missing file is not an error.
 func (c *Cache) Load() error {
-	return loadJSON(paths.CacheFile(), c)
+	return fsutil.LoadJSON(paths.CacheFile(), c)
 }
 
 // Save writes the cache atomically, skipping unchanged content.
 func (c *Cache) Save() error {
-	return saveJSON(paths.CacheFile(), c, 0o640)
+	return fsutil.SaveJSON(paths.CacheFile(), c, 0o640)
 }
 
 func (c *Cache) MarshalJSON() ([]byte, error) {

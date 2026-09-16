@@ -1,6 +1,10 @@
 package state
 
-import "github.com/nokku-sh/nokkud/internal/paths"
+import (
+	"github.com/nokku-sh/mon/fsutil"
+
+	"github.com/nokku-sh/nokkud/internal/paths"
+)
 
 // Built-in defaults for the runtime options the daemon persists. They live
 // here, not on the CLI flags, so a bare default never clobbers config.json.
@@ -26,12 +30,12 @@ func NewConfig() *Config {
 
 // Load reads the config from disk. A missing file is not an error.
 func (c *Config) Load() error {
-	return loadJSON(paths.ConfigFile(), c)
+	return fsutil.LoadJSON(paths.ConfigFile(), c)
 }
 
 // Save writes the config atomically with 0600 perms.
 func (c *Config) Save() error {
-	return saveJSON(paths.ConfigFile(), c, 0o600)
+	return fsutil.SaveJSON(paths.ConfigFile(), c, 0o600)
 }
 
 func (c *Config) Clear() {

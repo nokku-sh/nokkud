@@ -14,9 +14,11 @@ import (
 	"github.com/mizuchilabs/kata/buildinfo"
 
 	"github.com/nokku-sh/mon/dpopclient"
+	"github.com/nokku-sh/mon/tpm"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	nokkuv1connect "github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
+	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/state"
@@ -104,7 +106,13 @@ func (c *Client) setupClients(insecure, requireTPM bool) error {
 		return err
 	}
 
-	proofer, perr := newProofer(requireTPM)
+	// "nokku-daemon" is part of the salt registry documented in mon/README.md.
+	proofer, perr := dpopclient.NewProofer(
+		[]byte("nokku-daemon"),
+		paths.SignerStateFile(),
+		requireTPM,
+		tpm.FailOnIdentityChange,
+	)
 	if perr != nil {
 		return perr
 	}
