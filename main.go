@@ -14,6 +14,7 @@ import (
 	"github.com/mizuchilabs/kata/sigx"
 	"github.com/nokku-sh/mon/tpm"
 	"github.com/urfave/cli/v3"
+	"golang.org/x/term"
 
 	"github.com/nokku-sh/nokkud/internal/client"
 	"github.com/nokku-sh/nokkud/internal/paths"
@@ -88,7 +89,23 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				}
 			}()
 
-			cl, err := newDaemonClient(ctx, cmd, cache, cfg, sshSrv)
+			// Tokens never go on argv: read the env, or prompt when --enroll
+			// runs on a terminal.
+			token := os.Getenv("NOKKUD_ENROLL_TOKEN")
+			if cmd.Bool("enroll") && token == "" {
+				if !term.IsTerminal(int(os.Stdin.Fd())) {
+					return errors.New("no enrollment token: set NOKKUD_ENROLL_TOKEN or run --enroll on a terminal")
+				}
+				fmt.Fprint(os.Stderr, "Enrollment token: ")
+				secret, err := term.ReadPassword(int(os.Stdin.Fd()))
+				if err != nil {
+					return fmt.Errorf("read enrollment token: %w", err)
+				}
+				fmt.Fprintln(os.Stderr)
+				token = strings.TrimSpace(string(secret))
+			}
+
+			cl, err := newDaemonClient(ctx, cmd, token, cache, cfg, sshSrv)
 			if err != nil {
 				return err
 			}
@@ -131,7 +148,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					if err := cfg.Load(); err != nil {
 						return err
 					}
-					cl, err := newDaemonClient(ctx, cmd, cache, cfg, nil)
+					cl, err := newDaemonClient(ctx, cmd, "", cache, cfg, nil)
 					if err != nil {
 						return err
 					}
@@ -173,6 +190,10 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				Usage:   "SSH certificate authority uuid",
 				Sources: cli.EnvVars("NOKKUD_CA_ID"),
 			},
+			&cli.BoolFlag{
+				Name:  "enroll",
+				Usage: "Enroll this host. Prompts for the token unless NOKKUD_ENROLL_TOKEN is set",
+			},
 		},
 	}
 
@@ -185,6 +206,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 func newDaemonClient(
 	ctx context.Context,
 	cmd *cli.Command,
+	token string,
 	cache *state.Cache,
 	cfg *state.Config,
 	sshSrv *sshd.Server,
@@ -192,13 +214,13 @@ func newDaemonClient(
 	cl, err := client.New(ctx, cache, cfg, client.Options{
 		Insecure:    cmd.Bool("insecure"),
 		RequireTPM:  cmd.Bool("require-tpm"),
-		EnrollToken: os.Getenv("NOKKUD_ENROLL_TOKEN"),
+		EnrollToken: token,
 		CAID:        cmd.String("ca"),
 	}, sshSrv)
 	if err != nil {
 		if errors.Is(err, tpm.ErrIdentityChanged) {
 			return nil, fmt.Errorf(
-				"the daemon signing key no longer matches this machine, re-enroll with `sudo nokkud --enroll <TOKEN>`: %w",
+				"the daemon signing key no longer matches this machine, re-enroll with `sudo nokkud --enroll`: %w",
 				err,
 			)
 		}
