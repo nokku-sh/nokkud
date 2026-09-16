@@ -5,23 +5,17 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
-	"time"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/util"
 )
 
-// revocationWindow is longer than the backend's 7 day certificate lifetime cap,
-// so a cert minted just before a revocation is still refused for its whole life.
-const revocationWindow = 8 * 24 * time.Hour
-
 // Cache is the thread-safe, persisted state synced from the backend. It backs
 // SSH access decisions when the backend is unreachable.
 type Cache struct {
 	mu           sync.RWMutex
 	principals   map[string][]string
-	revocations  map[string]int64
 	stateVersion int64
 	daemonConfig *nokkuv1.DaemonConfig
 }
@@ -30,15 +24,13 @@ type Cache struct {
 // unexported so every access goes through the mutex.
 type cacheJSON struct {
 	Principals   map[string][]string   `json:"principals"`
-	Revocations  map[string]int64      `json:"revocations,omitempty"`
 	StateVersion int64                 `json:"state_version,omitempty"`
 	DaemonConfig *nokkuv1.DaemonConfig `json:"daemon_config,omitempty"`
 }
 
 func NewCache() *Cache {
 	return &Cache{
-		principals:  make(map[string][]string),
-		revocations: make(map[string]int64),
+		principals: make(map[string][]string),
 	}
 }
 
@@ -51,16 +43,6 @@ func (c *Cache) GetUUIDs(principal string) []string {
 	result := make([]string, len(uuids))
 	copy(result, uuids)
 	return result
-}
-
-// RevokedBefore returns the revocation cutoff for a principal. A certificate
-// with an earlier ValidAfter is refused.
-func (c *Cache) RevokedBefore(principal string) (int64, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	before, ok := c.revocations[principal]
-	return before, ok
 }
 
 func (c *Cache) GetStateVersion() int64 {
@@ -88,7 +70,6 @@ func (c *Cache) DaemonConfig() *nokkuv1.DaemonConfig {
 // an intermediate empty map and a concurrent login is not denied mid-sync.
 func (c *Cache) Replace(
 	principals map[string][]string,
-	revocations map[string]int64,
 	dc *nokkuv1.DaemonConfig,
 	version int64,
 ) {
@@ -106,17 +87,7 @@ func (c *Cache) Replace(
 		next[principal] = ids
 	}
 
-	cutoff := time.Now().Add(-revocationWindow).Unix()
-	nextRevocations := make(map[string]int64, len(revocations))
-	for principal, before := range revocations {
-		if before < cutoff {
-			continue
-		}
-		nextRevocations[principal] = before
-	}
-
 	c.principals = next
-	c.revocations = nextRevocations
 	c.daemonConfig = dc
 	c.stateVersion = version
 }
@@ -126,7 +97,6 @@ func (c *Cache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.principals = make(map[string][]string)
-	c.revocations = make(map[string]int64)
 	c.stateVersion = 0
 	c.daemonConfig = nil
 }
@@ -147,7 +117,6 @@ func (c *Cache) MarshalJSON() ([]byte, error) {
 	defer c.mu.RUnlock()
 	return json.Marshal(cacheJSON{
 		Principals:   c.principals,
-		Revocations:  c.revocations,
 		StateVersion: c.stateVersion,
 		DaemonConfig: c.daemonConfig,
 	})
@@ -165,11 +134,6 @@ func (c *Cache) UnmarshalJSON(data []byte) error {
 		c.principals = make(map[string][]string)
 	} else {
 		c.principals = dto.Principals
-	}
-	if dto.Revocations == nil {
-		c.revocations = make(map[string]int64)
-	} else {
-		c.revocations = dto.Revocations
 	}
 	c.stateVersion = dto.StateVersion
 	c.daemonConfig = dto.DaemonConfig

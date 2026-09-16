@@ -44,7 +44,6 @@ type Server struct {
 	logger      *slog.Logger
 	cfg         *ssh.ServerConfig
 	principals  PrincipalsFunc
-	revoked     func(principal string) (int64, bool)
 	audit       Audit
 	nologinFile string
 
@@ -132,10 +131,7 @@ type Tunables struct {
 type Options struct {
 	Logger     *slog.Logger
 	Principals PrincipalsFunc
-	// RevokedBefore reports a principal's revocation cutoff. Certificates whose
-	// ValidAfter is earlier than the cutoff are refused.
-	RevokedBefore func(principal string) (int64, bool)
-	Audit         Audit
+	Audit      Audit
 	// TrustedCAs lists the CA public keys that may sign user certificates. When
 	// empty, they are loaded from Paths.UserCAFile().
 	TrustedCAs []ssh.PublicKey
@@ -167,7 +163,6 @@ func OptionsFrom(cache *state.Cache, record bool) Options {
 		Principals: func(username string) []string {
 			return cache.GetUUIDs(username)
 		},
-		RevokedBefore: cache.RevokedBefore,
 		Tunables: Tunables{
 			Record:               record,
 			AllowForwarding:      true,
@@ -216,7 +211,6 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		logger:      logger,
 		principals:  opts.Principals,
-		revoked:     opts.RevokedBefore,
 		audit:       opts.Audit,
 		nologinFile: nologinFile,
 		trustedCAs:  caKeys(trusted),

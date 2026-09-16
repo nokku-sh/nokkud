@@ -366,7 +366,7 @@ func TestServerLivePrincipals(t *testing.T) {
 	must.Error(err, "expected auth to fail before the principal is granted")
 
 	// Backend push lands in the shared cache: now allowed.
-	cache.Replace(map[string][]string{cur.Username: {testPrincipal}}, nil, nil, 0)
+	cache.Replace(map[string][]string{cur.Username: {testPrincipal}}, nil, 0)
 	client, err := dial(t, l.Addr().String(), cur.Username, userCert(t, ca, testPrincipal))
 	must.NoError(err, "dial after cache update")
 	defer client.Close()

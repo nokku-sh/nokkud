@@ -138,14 +138,6 @@ func (s *Server) publicKeyCallback(
 		)
 	}
 
-	// Certificates minted before a principal's revocation cutoff are refused
-	// here. Later ones work again, so no serial tracking is needed.
-	if s.revoked != nil {
-		if before, revoked := s.revoked(matched); revoked && before > 0 && cert.ValidAfter < uint64(before) {
-			return nil, s.deny(conn, errors.New("sshd: certificate revoked"))
-		}
-	}
-
 	// Built per-auth so CA reloads apply to new connections immediately.
 	// x/crypto/ssh enforces the critical options, validity window, and CA
 	// signature.

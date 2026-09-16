@@ -72,11 +72,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 	for _, p := range res.GetPrincipals() {
 		principals[p.GetUsername()] = p.GetIds()
 	}
-	revocations := make(map[string]int64, len(res.GetRevokedPrincipals()))
-	for _, r := range res.GetRevokedPrincipals() {
-		revocations[r.GetPrincipal()] = r.GetRevokedBefore()
-	}
-	c.cache.Replace(principals, revocations, res.GetConfig(), res.GetStateVersion())
+	c.cache.Replace(principals, res.GetConfig(), res.GetStateVersion())
 
 	c.applyConfig()
 
