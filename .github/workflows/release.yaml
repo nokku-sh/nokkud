@@ -15,6 +15,8 @@ concurrency:
 jobs:
   tag:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
       bump: ${{ steps.version.outputs.bump }}
@@ -59,6 +61,10 @@ jobs:
     needs: tag
     if: startsWith(github.ref, 'refs/tags/') || needs.tag.outputs.bump == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
