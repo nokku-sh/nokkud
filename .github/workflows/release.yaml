@@ -33,13 +33,13 @@ jobs:
 
           echo "current: $CURRENT_TAG"
           echo "next:    $NEXT_TAG"
+          echo "version=${NEXT_TAG#v}" >> "$GITHUB_OUTPUT"
           if [ "$CURRENT_TAG" = "$NEXT_TAG" ]; then
             echo "No conventional commits warranting a release. Skipping."
             echo "bump=false" >> "$GITHUB_OUTPUT"
           else
             echo "Bumping $CURRENT_TAG to $NEXT_TAG"
             echo "bump=true" >> "$GITHUB_OUTPUT"
-            echo "version=${NEXT_TAG#v}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Tag and push
