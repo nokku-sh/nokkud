@@ -12,19 +12,23 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nokku-sh/nokkud/internal/util"
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 type EventType string
 
 const (
-	EventAuthSuccess  EventType = "auth_success"
-	EventAuthFailure  EventType = "auth_failure"
-	EventSessionStart EventType = "session_start"
-	EventSessionEnd   EventType = "session_end"
-	EventCommand      EventType = "command"
-	EventForward      EventType = "forward"
-	EventDegraded     EventType = "audit_degraded"
+	EventAuthSuccess   EventType = "auth_success"
+	EventAuthFailure   EventType = "auth_failure"
+	EventSessionStart  EventType = "session_start"
+	EventSessionEnd    EventType = "session_end"
+	EventCommand       EventType = "command"
+	EventSubsystem     EventType = "subsystem"
+	EventForward       EventType = "forward"
+	EventRemoteForward EventType = "remote_forward"
+	// EventRecordingDegraded marks a session that is not fully recorded.
+	EventRecordingDegraded EventType = "recording_degraded"
+	EventDegraded          EventType = "audit_degraded"
 )
 
 const (
@@ -92,8 +96,7 @@ func New(dir string) (*Sink, error) {
 		done:     make(chan struct{}),
 		emitWait: emitWaitDefault,
 	}
-	s.wg.Add(1)
-	go s.run()
+	s.wg.Go(s.run)
 	return s, nil
 }
 
@@ -146,8 +149,6 @@ func (s *Sink) Close() error {
 // retention, reports dropped events periodically, then drains queued events
 // and exits on done.
 func (s *Sink) run() {
-	defer s.wg.Done()
-
 	ticker := time.NewTicker(dropReportInterval)
 	defer ticker.Stop()
 
@@ -272,5 +273,5 @@ func (s *Sink) enforceRetention() {
 		}
 		files = append(files, fi)
 	}
-	util.PruneOldest(s.dir, files, MaxAge, MaxTotalSize)
+	sysutil.PruneOldest(s.dir, files, MaxAge, MaxTotalSize)
 }

@@ -1,8 +1,10 @@
 package recording
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -25,10 +27,11 @@ type Uploader struct {
 
 	chunks chan []byte
 	mu     sync.Mutex
-	failed bool
+	err    error // why the upload failed, nil while it is healthy
 	closed bool
 	done   chan struct{}
 	cancel context.CancelFunc
+	close  func() error
 }
 
 // NewUploader builds an Uploader and starts its sender goroutine.
@@ -46,6 +49,7 @@ func NewUploader(
 		done:      make(chan struct{}),
 		cancel:    cancel,
 	}
+	u.close = sync.OnceValue(u.finish)
 	go u.sendLoop(ctx)
 	return u
 }
@@ -59,7 +63,7 @@ func (u *Uploader) Write(p []byte) (int, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	if u.closed || u.failed {
+	if u.closed || u.err != nil {
 		return len(p), nil
 	}
 
@@ -73,14 +77,13 @@ func (u *Uploader) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Close finalizes the upload, safe to call after a failure or twice. The wait
-// for the backend is bounded by uploadCloseTimeout.
-func (u *Uploader) Close() error {
+// Close finalizes the upload and reports whether the backend has all of it.
+// Safe to call after a failure or twice. The wait for the backend is bounded
+// by uploadCloseTimeout.
+func (u *Uploader) Close() error { return u.close() }
+
+func (u *Uploader) finish() error {
 	u.mu.Lock()
-	if u.closed {
-		u.mu.Unlock()
-		return nil
-	}
 	u.closed = true
 	u.mu.Unlock()
 
@@ -88,19 +91,18 @@ func (u *Uploader) Close() error {
 
 	// Wait for the sender to drain the queue and finalize the stream, so a
 	// session that exits immediately is not cut off mid-upload.
+	var err error
 	select {
 	case <-u.done:
 	case <-time.After(uploadCloseTimeout):
-		slog.Warn(
-			"recording upload close timed out, the backend may mark the recording truncated",
-			"session_id", u.sessionID,
-			"timeout", uploadCloseTimeout,
-		)
+		err = errors.New("upload timed out")
 	}
 	// Abort a send that outlived the drain window so the sender goroutine
 	// cannot hang forever on a stalled stream.
 	u.cancel()
-	return nil
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return cmp.Or(u.err, err)
 }
 
 // sendLoop sends queued chunks until Close drains the queue, then finalizes
@@ -139,7 +141,7 @@ func (u *Uploader) sendLoop(ctx context.Context) {
 		Msg: &nokkuv1.UploadRecordingRequest_Final{Final: &nokkuv1.RecordingFinal{}},
 	})
 	if _, err := stream.CloseAndReceive(); err != nil {
-		slog.Debug("recording upload close failed", "session_id", u.sessionID, "error", err)
+		u.fail("finish upload", err)
 		return
 	}
 	slog.Debug("recording uploaded", "session_id", u.sessionID)
@@ -176,7 +178,10 @@ func (u *Uploader) fail(where string, err error) {
 }
 
 func (u *Uploader) failLocked(where string, err error) {
-	u.failed = true
+	if u.err != nil {
+		return
+	}
+	u.err = fmt.Errorf("%s: %w", where, err)
 	slog.Warn(
 		"recording upload failed, keeping local copy",
 		"session_id", u.sessionID,

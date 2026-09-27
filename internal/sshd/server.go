@@ -87,8 +87,6 @@ type Server struct {
 	cfg        *ssh.ServerConfig
 	trustedCAs map[string]struct{}
 	hostKey    io.Closer
-
-	connsWG sync.WaitGroup
 }
 
 // New loads the host key and trusted CAs. A missing CA file is fine on first
@@ -167,9 +165,10 @@ func (s *Server) Reload() error {
 		return err
 	}
 	cfg := &ssh.ServerConfig{
-		PublicKeyCallback: s.publicKeyCallback,
-		BannerCallback:    s.banner,
-		ServerVersion:     "SSH-2.0-nokkud",
+		PublicKeyCallback:         s.publicKeyCallback,
+		VerifiedPublicKeyCallback: s.verifiedPublicKey,
+		BannerCallback:            s.banner,
+		ServerVersion:             "SSH-2.0-nokkud",
 	}
 	cfg.AddHostKey(signer)
 
@@ -217,10 +216,10 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) {
 			_ = nc.Close()
 			continue
 		}
-		s.connsWG.Go(func() {
+		go func() {
 			defer func() { <-s.conns }()
 			s.handleConn(nc)
-		})
+		}()
 	}
 }
 

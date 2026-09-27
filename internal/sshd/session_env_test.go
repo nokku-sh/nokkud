@@ -3,11 +3,14 @@ package sshd
 import (
 	"context"
 	"io"
+	"os"
 	"os/user"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
 func TestEnvValueLastWins(t *testing.T) {
@@ -32,6 +35,7 @@ func TestEnvValueLastWins(t *testing.T) {
 
 func TestRecorderSessionIDFromEnv(t *testing.T) {
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
+	require.NoError(t, os.MkdirAll(paths.RecordsDir(), 0o700))
 
 	tests := []struct {
 		name string

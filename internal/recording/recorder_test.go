@@ -45,7 +45,7 @@ func TestRecorderCorrelatesSessionID(t *testing.T) {
 	entries, err := os.ReadDir(recordsDir)
 	must.NoError(err)
 	must.Len(entries, 1)
-	is.Contains(entries[0].Name(), "01234567")
+	is.Contains(entries[0].Name(), sessionID)
 
 	f, err := os.Open(filepath.Join(recordsDir, entries[0].Name()))
 	must.NoError(err)

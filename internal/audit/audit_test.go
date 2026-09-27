@@ -129,8 +129,7 @@ func TestReportDroppedWritesDegradedEvent(t *testing.T) {
 	s.Emit(Event{Type: EventCommand, Command: "ls"})
 	is.Equal(int64(1), s.dropped.Load())
 
-	s.wg.Add(1)
-	go s.run()
+	s.wg.Go(s.run)
 	must.NoError(s.Close())
 
 	matches, err := filepath.Glob(filepath.Join(dir, "audit-*.jsonl"))
