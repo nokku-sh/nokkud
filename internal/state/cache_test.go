@@ -109,7 +109,7 @@ func TestCacheClearDropsSyncedConfig(t *testing.T) {
 	is.False(c.DaemonConfig().GetRecordSessions())
 }
 
-func TestCacheLoadCorruptedClearsAndRemoves(t *testing.T) {
+func TestCacheLoadIgnoresCorruptedFile(t *testing.T) {
 	newTestDataDir(t)
 	is := assert.New(t)
 	must := require.New(t)
@@ -123,8 +123,12 @@ func TestCacheLoadCorruptedClearsAndRemoves(t *testing.T) {
 	must.NoError(loaded.Load())
 	is.Empty(loaded.GetUUIDs("alice"))
 
-	_, err := os.Stat(paths.CacheFile())
-	is.True(os.IsNotExist(err))
+	// The next save replaces the corrupt file.
+	loaded.Replace(map[string][]string{"bob": {"uuid-2"}}, nil, 0)
+	must.NoError(loaded.Save())
+	again := NewCache()
+	must.NoError(again.Load())
+	is.Equal([]string{"uuid-2"}, again.GetUUIDs("bob"))
 }
 
 func TestCacheClear(t *testing.T) {

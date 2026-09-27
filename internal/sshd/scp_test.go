@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 
@@ -16,9 +15,6 @@ import (
 // TestServerSCPLegacy exercises the legacy SCP protocol (scp -O) end to end,
 // using the real scp binary as the client. Skip when scp is unavailable.
 func TestServerSCPLegacy(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("scp not available")
-	}
 	if !isTestBinary() {
 		t.Skip("legacy scp test requires the test binary on PATH")
 	}

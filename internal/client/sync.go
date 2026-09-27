@@ -9,35 +9,20 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/hostcerts"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"
+	"github.com/nokku-sh/nokkud/internal/state"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
-const syncTimeout = 15 * time.Second
-
-func (c *Client) syncAll(ctx context.Context) error {
-	if c.config.DaemonID == "" {
-		return nil
-	}
-
+// syncDaemon pulls principals, config and CA from the backend and applies
+// them. A failed sync leaves the cache as it was, so auth keeps working.
+func (c *Client) syncDaemon(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, syncTimeout)
 	defer cancel()
-
-	if err := c.syncDaemon(ctx); err != nil {
-		return err
-	}
-	if err := c.renewHostCerts(ctx, false); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *Client) syncDaemon(ctx context.Context) error {
 	res, err := c.dc.SyncDaemon(ctx, &nokkuv1.SyncDaemonRequest{
 		PrivateIps: c.sshEndpoints(),
 		Users:      sysutil.SystemUsers(),
@@ -49,172 +34,70 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 
 	switch res.GetStatus() {
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_REJECTED:
-		// The backend revoked this daemon: clear the enrollment and stop.
-		c.config.Clear()
-		if saveErr := c.config.Save(); saveErr != nil {
-			slog.Error("persist cleared config on rejection", "error", saveErr)
-		}
+		// Drop the enrollment on disk only. The in-memory config is read
+		// concurrently and the process exits right after.
 		c.cache.Clear()
-		if saveErr := c.cache.Save(); saveErr != nil {
-			slog.Error("persist cleared synced state on rejection", "error", saveErr)
+		if err = c.cache.Save(); err != nil {
+			slog.Error("persist cleared cache on rejection", "error", err)
+		}
+		if err = (&state.Config{APIURL: c.config.APIURL}).Save(); err != nil {
+			slog.Error("persist cleared config on rejection", "error", err)
 		}
 		return errDaemonRejected
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED:
-		// Apply the synced state below.
-	case nokkuv1.DaemonStatus_DAEMON_STATUS_UNSPECIFIED,
-		nokkuv1.DaemonStatus_DAEMON_STATUS_PENDING:
+	case nokkuv1.DaemonStatus_DAEMON_STATUS_UNSPECIFIED, nokkuv1.DaemonStatus_DAEMON_STATUS_PENDING:
 		return nil
 	}
 
-	// Build and swap the new state atomically so auth reads never see an empty
-	// principal map mid-sync.
+	// Re-sign under a new CA before taking the new state. If that fails the
+	// cached version stays stale and the next heartbeat retries the sync.
+	if ca := res.GetCaPublicKey(); ca != "" && !caMatches(ca) {
+		if err = c.renewHostCerts(ctx, true); err != nil {
+			return fmt.Errorf("renew host cert after CA rollover: %w", err)
+		}
+	}
+
 	principals := make(map[string][]string, len(res.GetPrincipals()))
 	for _, p := range res.GetPrincipals() {
 		principals[p.GetUsername()] = p.GetIds()
 	}
 	c.cache.Replace(principals, res.GetConfig(), res.GetStateVersion())
-
-	c.applyConfig()
-
-	// CA rollover: re-sign the host certificate under the new authority and
-	// reload before acknowledging the new state.
-	if ca := res.GetCaPublicKey(); ca != "" && !c.caMatches(ca) {
-		if renewErr := c.renewHostCerts(ctx, true); renewErr != nil {
-			return fmt.Errorf("renew host certificates after CA rollover: %w", renewErr)
-		}
-	}
-
-	if saveErr := c.cache.Save(); saveErr != nil {
-		return saveErr
-	}
-
-	return nil
+	c.srv.SetPolicy(sshd.PolicyFrom(res.GetConfig()))
+	return c.cache.Save()
 }
 
-// caMatches reports whether the cached CA file already holds key.
-func (c *Client) caMatches(key string) bool {
+// caMatches reports whether the CA file on disk already holds key.
+func caMatches(key string) bool {
 	data, err := os.ReadFile(paths.UserCAFile())
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(bytes.TrimSpace(data), []byte(strings.TrimSpace(key)))
-}
-
-// applyConfig pushes the synced daemon config into the embedded SSH server.
-// Unset fields keep the server defaults so a partial config cannot silently
-// disable forwarding or leave the server uncapped.
-func (c *Client) applyConfig() {
-	if c.sshSrv == nil {
-		return
-	}
-	c.sshSrv.SetTunables(overlayConfig(c.sshSrv.DefaultTunables(), c.cache.DaemonConfig()))
-}
-
-// overlayConfig applies a synced daemon config on top of the compiled-in
-// policy. A proto field that was never set (editions 2023 has explicit
-// presence) keeps the daemon default; only an explicit value overrides it.
-func overlayConfig(t sshd.Tunables, cfg *nokkuv1.DaemonConfig) sshd.Tunables {
-	if cfg == nil {
-		return t
-	}
-	t.Record = boolField(cfg.RecordSessions, t.Record)
-	t.AllowForwarding = boolField(cfg.AllowForwarding, t.AllowForwarding)
-	t.AllowAgentForwarding = boolField(cfg.AllowAgentForwarding, t.AllowAgentForwarding)
-	t.GatewayPorts = boolField(cfg.GatewayPorts, t.GatewayPorts)
-	t.MaxSessions = intField(cfg.MaxSessions, t.MaxSessions)
-	t.MaxChannels = intField(cfg.MaxChannels, t.MaxChannels)
-	t.DropRetiredCA = boolField(cfg.DropRetiredCa, t.DropRetiredCA)
-	t.MaxConnections = intField(cfg.MaxConnections, t.MaxConnections)
-	t.MaxStartups = intField(cfg.MaxStartups, t.MaxStartups)
-	t.MaxSessionsPerUser = intField(cfg.MaxSessionsPerUser, t.MaxSessionsPerUser)
-	t.ConnRate = intField(cfg.ConnRate, t.ConnRate)
-	t.ConnRateBurst = intField(cfg.ConnRateBurst, t.ConnRateBurst)
-	t.Banner = boolField(cfg.Banner, t.Banner)
-	if d := cfg.GetClientAliveInterval(); d != nil {
-		t.ClientAliveInterval = d.AsDuration()
-	}
-	return t
-}
-
-func boolField(v *bool, def bool) bool {
-	if v != nil {
-		return *v
-	}
-	return def
-}
-
-func intField(v *int32, def int) int {
-	if v != nil {
-		return int(*v)
-	}
-	return def
+	return err == nil && bytes.Equal(bytes.TrimSpace(data), []byte(strings.TrimSpace(key)))
 }
 
 func (c *Client) renewHostCerts(ctx context.Context, force bool) error {
 	renewed, err := hostcerts.RenewHostCerts(ctx, c.config.TargetID, c.signHostCert, force)
-	if err != nil {
+	if err != nil || !renewed {
 		return err
 	}
-	slog.Debug("renew host certificates", "renewed", renewed, "force", force)
-	if renewed {
-		c.reloadSSH()
+	if err = c.srv.Reload(); err != nil {
+		slog.Warn("reload embedded ssh server", "error", err)
 	}
 	return nil
 }
 
-func (c *Client) reloadSSH() {
-	if c.sshSrv == nil {
-		return
-	}
-	if err := c.sshSrv.Reload(); err != nil {
-		slog.Warn("reload embedded ssh server", "error", err)
-	}
-}
-
-// signHostCert requests a fresh host certificate for kp from the backend.
-func (c *Client) signHostCert(
-	ctx context.Context,
-	kp hostcerts.KeyPair,
-) (*nokkuv1.SignSSHCertificateResponse, error) {
-	req := &nokkuv1.SignSSHCertificateRequest{
+func (c *Client) signHostCert(ctx context.Context, pub []byte) (*nokkuv1.SignSSHCertificateResponse, error) {
+	return c.cc.SignSSHCertificate(ctx, &nokkuv1.SignSSHCertificateRequest{
 		WorkspaceId: &c.config.WorkspaceID,
-		PublicKey:   new(string(kp.PublicKeyData)),
+		PublicKey:   new(string(pub)),
 		Type:        nokkuv1.SignSSHCertificateRequest_CERTIFICATE_TYPE_HOST.Enum(),
-	}
-	return c.cc.SignSSHCertificate(ctx, req)
+	})
 }
 
-// sshEndpoints combines each private IP with the SSH listen port, so the
-// backend knows how to reach the daemon.
+// sshEndpoints pairs each private IP with the SSH port, so the backend knows
+// how to reach this daemon directly.
 func (c *Client) sshEndpoints() []string {
-	port := sshPort(c.config.SSHAddr)
-	if port == "" {
-		return nil
-	}
-
-	ips := sysutil.PrivateIPs()
-	endpoints := make([]string, 0, len(ips))
-	for _, ip := range ips {
+	port := strconv.Itoa(int(c.sshAddr.Port()))
+	var endpoints []string
+	for _, ip := range sysutil.PrivateIPs() {
 		endpoints = append(endpoints, net.JoinHostPort(ip, port))
 	}
 	return endpoints
-}
-
-// sshPort extracts the TCP port from an SSH listen address.
-func sshPort(addr string) string {
-	if addr == "" {
-		return ""
-	}
-	if _, port, err := net.SplitHostPort(addr); err == nil {
-		return validPort(port)
-	}
-	return validPort(addr)
-}
-
-func validPort(port string) string {
-	n, err := strconv.ParseUint(port, 10, 16)
-	if err != nil || n == 0 {
-		return ""
-	}
-	return port
 }

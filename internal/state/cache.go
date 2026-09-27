@@ -4,9 +4,10 @@ package state
 import (
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"sync"
 
-	"github.com/nokku-sh/mon/fsutil"
+	"github.com/mizuchilabs/kata/fsutil"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/paths"
@@ -41,10 +42,7 @@ func (c *Cache) GetUUIDs(principal string) []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	uuids := c.principals[principal]
-	result := make([]string, len(uuids))
-	copy(result, uuids)
-	return result
+	return slices.Clone(c.principals[principal])
 }
 
 func (c *Cache) GetStateVersion() int64 {
@@ -75,23 +73,26 @@ func (c *Cache) Replace(
 	dc *nokkuv1.DaemonConfig,
 	version int64,
 ) {
+	next := validPrincipals(principals)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	next := make(map[string][]string, len(principals))
-	for principal, uuids := range principals {
-		if err := util.ValidatePrincipal(principal); err != nil {
-			slog.Debug("skipping invalid principal", "user", principal)
-			continue
-		}
-		ids := make([]string, len(uuids))
-		copy(ids, uuids)
-		next[principal] = ids
-	}
-
 	c.principals = next
 	c.daemonConfig = dc
 	c.stateVersion = version
+}
+
+// validPrincipals deep-copies m, dropping any name that is not a safe POSIX
+// username.
+func validPrincipals(m map[string][]string) map[string][]string {
+	next := make(map[string][]string, len(m))
+	for principal, uuids := range m {
+		if err := util.ValidatePrincipal(principal); err != nil {
+			slog.Debug("skipping invalid principal", "error", err)
+			continue
+		}
+		next[principal] = slices.Clone(uuids)
+	}
+	return next
 }
 
 // Clear drops all cached synced state, persisted on the next Save.
@@ -103,7 +104,7 @@ func (c *Cache) Clear() {
 	c.daemonConfig = nil
 }
 
-// Load reads the cache from disk, discarding a corrupted file so the next sync
+// Load reads the cache from disk, ignoring a corrupted file so the next sync
 // rebuilds it. A missing file is not an error.
 func (c *Cache) Load() error {
 	return fsutil.LoadJSON(paths.CacheFile(), c)
@@ -124,7 +125,8 @@ func (c *Cache) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// UnmarshalJSON always leaves usable, non-nil maps behind.
+// UnmarshalJSON validates like Replace, so a hand-edited file cannot sneak
+// in an unsafe name.
 func (c *Cache) UnmarshalJSON(data []byte) error {
 	var dto cacheJSON
 	if err := json.Unmarshal(data, &dto); err != nil {
@@ -132,11 +134,7 @@ func (c *Cache) UnmarshalJSON(data []byte) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if dto.Principals == nil {
-		c.principals = make(map[string][]string)
-	} else {
-		c.principals = dto.Principals
-	}
+	c.principals = validPrincipals(dto.Principals)
 	c.stateVersion = dto.StateVersion
 	c.daemonConfig = dto.DaemonConfig
 	return nil

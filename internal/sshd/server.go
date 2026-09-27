@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"runtime/debug"
@@ -13,623 +14,327 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/time/rate"
-
-	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/nokku-sh/nokkud/internal/audit"
-	"github.com/nokku-sh/nokkud/internal/state"
+	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
-// PrincipalsFunc reports the subject UUIDs allowed to log in as username. An
-// empty result denies access.
-type PrincipalsFunc func(username string) []string
+const (
+	maxConns    = 100
+	maxStartups = 10
+	// maxChannels caps the channels one connection holds open, sessions and
+	// forwards alike.
+	maxChannels      = 50
+	handshakeTimeout = 30 * time.Second
+	// aliveInterval is how often an idle client is probed. A probe left
+	// unanswered for three intervals drops the client, like OpenSSH.
+	aliveInterval = time.Minute
+	// acceptBackoff bounds the accept retry delay under fd exhaustion, so the
+	// loop does not spin a core and flood the log.
+	acceptBackoff = 10 * time.Millisecond
+)
 
-// Audit is the event sink for security events. Safe for concurrent use.
-type Audit interface {
-	Emit(event audit.Event)
-}
+var errBusy = errors.New("too many unauthenticated connections")
 
-// shutdownGrace bounds how long Shutdown waits for active connections to drain
-// before closing resources regardless. Deliberately not a context parameter.
-const shutdownGrace = 10 * time.Second
-
-// acceptBackoff bounds the accept retry delay on a live listener (EMFILE under
-// fd exhaustion). Without it the loop spins a core and floods the log.
-const acceptBackoff = 10 * time.Millisecond
-
-// Server is an SSH server. Construct with New and serve with Serve.
-type Server struct {
-	logger      *slog.Logger
-	cfg         *ssh.ServerConfig
-	principals  PrincipalsFunc
-	audit       Audit
-	nologinFile string
-
-	// tun is swapped atomically so a concurrent SetTunables takes effect
-	// without tearing down established connections.
-	tun atomic.Pointer[Tunables]
-	// defaults are the tunables the server was constructed with, which the
-	// client overlays a synced backend config on. Never mutated after New.
-	defaults Tunables
-
-	// certsMu guards trustedCAs, hostKeys and cfg so a reload can swap them
-	// without tearing down established connections.
-	certsMu sync.RWMutex
-	// trustedCAs holds the marshalled CA public keys so auth is a map lookup.
-	trustedCAs map[string]struct{}
-	hostKeys   []ssh.Signer
-	// hostKeyClosers release the swapped-out identity's resources (e.g. TPM handles).
-	hostKeyClosers []io.Closer
-
-	activeConns     atomic.Int64
-	unauthenticated atomic.Int64
-	closeOnce       sync.Once
-	connsWg         sync.WaitGroup
-
-	// principalSessions counts active sessions per principal (SSH username) so
-	// one user cannot exhaust the daemon across many connections.
-	principalMu       sync.Mutex
-	principalSessions map[string]int
-
-	// limiters is a bounded per-source-IP cache of connection rate limiters.
-	// Rate and burst come from the live tunables.
-	limiters *lru.Cache[string, *rate.Limiter]
-
-	// mu guards the listener installed by ListenAndServe so Close can stop it.
-	mu       sync.Mutex
-	listener net.Listener
-
-	// recordingSinkFactory builds the upload sink for a session's recorder.
-	// Nil disables uploading. The ctx must outlive the session teardown.
-	recordingSinkFactory func(ctx context.Context, sessionID, username string) io.WriteCloser
-}
-
-// Tunables is the live-adjustable subset of the server policy. A concurrent
-// SetTunables swaps them without touching established connections.
-type Tunables struct {
-	// Record enables session recording.
-	Record bool
-	// AllowForwarding enables port forwarding (-L/-D and -R).
-	AllowForwarding bool
-	// AllowAgentForwarding enables ssh-agent forwarding (SSH_AUTH_SOCK).
+// Policy is the backend-controlled part of the server config. It applies to
+// new sessions without a restart.
+type Policy struct {
+	Record               bool
+	AllowForwarding      bool
 	AllowAgentForwarding bool
-	// GatewayPorts allows remote (-R) forwards to bind non-loopback addresses.
-	// Like OpenSSH GatewayPorts=no, the default pins them to 127.0.0.1.
+	// GatewayPorts lets -R forwards bind non-loopback addresses.
 	GatewayPorts bool
-	// MaxSessions caps session channels per connection (OpenSSH MaxSessions).
-	// Zero means no cap.
-	MaxSessions int
-	// MaxChannels caps channels a single connection may hold open across all
-	// types. Zero means no cap.
-	MaxChannels int
-	// DropRetiredCA stops trusting a rotated-out CA immediately.
+	// DropRetiredCA stops trusting a rotated-out CA before its grace ends.
 	DropRetiredCA bool
-	// MaxConnections caps concurrent SSH connections. Zero means no cap.
-	// Over-cap connections are dropped immediately.
-	MaxConnections int
-	// MaxStartups caps concurrent pre-auth handshake connections (OpenSSH
-	// MaxStartups). Zero means no cap. Bounds brute-force and half-open floods.
-	MaxStartups int
-	// MaxSessionsPerUser caps concurrent sessions per authenticated principal
-	// across all connections. Zero means no per-user cap.
-	MaxSessionsPerUser int
-	// ClientAliveInterval is how often the server probes an idle client, which
-	// is dropped after 3 missed intervals (OpenSSH ClientAliveInterval). Zero
-	// disables probing.
-	ClientAliveInterval time.Duration
-	// ConnRate caps new connections per second per source IP. Zero disables
-	// rate limiting.
-	ConnRate int
-	// ConnRateBurst allows short bursts above ConnRate.
-	ConnRateBurst int
-	// Banner enables the pre-auth banner.
-	Banner bool
 }
+
+// DefaultPolicy applies until the backend sends a config, and to any field
+// the backend leaves unset.
+var DefaultPolicy = Policy{Record: true, AllowForwarding: true, AllowAgentForwarding: true}
+
+// RecordingSink opens the upload stream for one session's recording. The ctx
+// outlives the session teardown.
+type RecordingSink func(ctx context.Context, sessionID, username string) io.WriteCloser
 
 type Options struct {
-	Logger     *slog.Logger
-	Principals PrincipalsFunc
-	Audit      Audit
-	// TrustedCAs lists the CA public keys that may sign user certificates. When
-	// empty, they are loaded from Paths.UserCAFile().
+	// Principals returns the subject UUIDs allowed to log in as username.
+	Principals func(username string) []string
+	// Audit may be nil. The server closes it when Serve returns.
+	Audit         *audit.Sink
+	Policy        Policy
+	RecordingSink RecordingSink
+	// TrustedCAs seeds the CA set until Reload reads it from disk. Tests only.
 	TrustedCAs []ssh.PublicKey
-	// NologinFile is the maintenance lockout file. Defaults to
-	// sysutil.NologinFile (/etc/nologin).
+	// NologinFile defaults to /etc/nologin. Tests only.
 	NologinFile string
-	// Tunables is the compiled-in live-adjustable policy.
-	Tunables Tunables
 }
 
-// SetRecordingSinkFactory installs the factory used to create per-session
-// recording upload sinks. Set once by the client at startup.
-func (s *Server) SetRecordingSinkFactory(
-	fn func(ctx context.Context, sessionID, username string) io.WriteCloser,
-) {
-	s.recordingSinkFactory = fn
+type Server struct {
+	principals    func(username string) []string
+	audit         *audit.Sink
+	recordingSink RecordingSink
+	nologinFile   string
+	policy        atomic.Pointer[Policy]
+
+	// Limits live on the server so tests can shrink them.
+	conns         chan struct{}
+	startups      chan struct{}
+	maxChannels   int
+	aliveInterval time.Duration
+
+	mu         sync.RWMutex
+	cfg        *ssh.ServerConfig
+	trustedCAs map[string]struct{}
+	hostKey    io.Closer
+
+	connsWG sync.WaitGroup
 }
 
-// DefaultTunables returns the compiled-in tunables the server was constructed
-// with. The client overlays the backend's synced daemon config on top of these.
-func (s *Server) DefaultTunables() Tunables {
-	return s.defaults
-}
-
-// OptionsFrom returns the daemon's compiled-in SSH server policy, backed by the
-// shared cache with the local audit sink. record enables session recording.
-func OptionsFrom(cache *state.Cache, record bool) Options {
-	return Options{
-		Principals: func(username string) []string {
-			return cache.GetUUIDs(username)
-		},
-		Tunables: Tunables{
-			Record:               record,
-			AllowForwarding:      true,
-			AllowAgentForwarding: true,
-			MaxSessions:          10,
-			MaxChannels:          50,
-			MaxConnections:       100,
-			MaxStartups:          10,
-			ClientAliveInterval:  60 * time.Second,
-			ConnRate:             5,
-			ConnRateBurst:        20,
-			Banner:               true,
-		},
-		Audit: newAuditSink(),
-	}
-}
-
-// New builds a Server, loading host keys and wiring certificate auth.
+// New loads the host key and trusted CAs. A missing CA file is fine on first
+// boot, the first sync writes it and Reload picks it up.
 func New(opts Options) (*Server, error) {
 	if opts.Principals == nil {
-		return nil, errors.New("sshd: Principals callback is required")
+		return nil, errors.New("sshd: Principals is required")
 	}
-
-	logger := opts.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	// On first boot the CA file may not exist yet (the first certificate sync
-	// writes it). Start with whatever is available. Reload picks up the CA
-	// once it lands.
-	trusted := opts.TrustedCAs
-	if len(trusted) == 0 {
-		var err error
-		trusted, err = loadTrustedCAs(opts.Tunables.DropRetiredCA)
-		if err != nil {
-			logger.Debug("trusted CAs unavailable, waiting for sync", "error", err)
-		}
-	}
-
-	nologinFile := opts.NologinFile
-	if nologinFile == "" {
-		nologinFile = sysutil.NologinFile
-	}
-
 	s := &Server{
-		logger:      logger,
-		principals:  opts.Principals,
-		audit:       opts.Audit,
-		nologinFile: nologinFile,
-		trustedCAs:  caKeys(trusted),
-		limiters:    newLimiters(),
+		principals:    opts.Principals,
+		audit:         opts.Audit,
+		recordingSink: opts.RecordingSink,
+		nologinFile:   opts.NologinFile,
+		conns:         make(chan struct{}, maxConns),
+		startups:      make(chan struct{}, maxStartups),
+		maxChannels:   maxChannels,
+		aliveInterval: aliveInterval,
+		trustedCAs:    caKeys(opts.TrustedCAs),
 	}
-	s.defaults = opts.Tunables
-	s.tun.Store(&opts.Tunables)
-
-	hostKeys, hostClosers, err := loadHostKeys()
-	if err != nil {
+	if s.nologinFile == "" {
+		s.nologinFile = sysutil.NologinFile
+	}
+	s.policy.Store(&opts.Policy)
+	if err := s.Reload(); err != nil {
 		return nil, err
 	}
-	s.hostKeys = hostKeys
-	s.hostKeyClosers = hostClosers
-	s.cfg = s.serverConfig(hostKeys)
-
-	logger.Debug("server configured", "host_keys", len(hostKeys), "trusted_cas", len(trusted))
 	return s, nil
 }
 
-// SetTunables applies the runtime-tunable policy live, without restarting.
-func (s *Server) SetTunables(t Tunables) {
-	s.tun.Store(&t)
+// PolicyFrom overlays a synced daemon config on DefaultPolicy. Fields the
+// backend never set keep the default.
+func PolicyFrom(cfg *nokkuv1.DaemonConfig) Policy {
+	p := DefaultPolicy
+	if cfg == nil {
+		return p
+	}
+	// The raw pointers carry presence, the getters would flatten unset to
+	// false.
+	set := func(dst *bool, v *bool) {
+		if v != nil {
+			*dst = *v
+		}
+	}
+	set(&p.Record, cfg.RecordSessions)                     //nolint:protogetter // presence check
+	set(&p.AllowForwarding, cfg.AllowForwarding)           //nolint:protogetter // presence check
+	set(&p.AllowAgentForwarding, cfg.AllowAgentForwarding) //nolint:protogetter // presence check
+	set(&p.GatewayPorts, cfg.GatewayPorts)                 //nolint:protogetter // presence check
+	set(&p.DropRetiredCA, cfg.DropRetiredCa)               //nolint:protogetter // presence check
+	return p
 }
 
-// Reload refreshes the trusted CAs and host keys from disk while serving. New
-// connections use the fresh identity. Established connections are unaffected.
+func (s *Server) SetPolicy(p Policy) {
+	old := s.policy.Swap(&p)
+	if old.DropRetiredCA == p.DropRetiredCA {
+		return
+	}
+	if err := s.Reload(); err != nil {
+		slog.Warn("reload after policy change", "error", err)
+	}
+}
+
+// Reload rereads the trusted CAs and host key. Established connections keep
+// the identity they handshook with.
 func (s *Server) Reload() error {
-	dropRetired := s.tun.Load().DropRetiredCA
-	trusted, caErr := loadTrustedCAs(dropRetired)
-	if caErr != nil {
-		// Keep the last known good set: a transient read error or a stray
-		// unparseable line must not lock out every login until the next sync.
-		s.logger.Warn("reload trusted CAs failed, keeping previous set", "error", caErr)
+	trusted, caErr := loadTrustedCAs(s.policy.Load().DropRetiredCA)
+	switch {
+	case errors.Is(caErr, fs.ErrNotExist):
+		slog.Debug("trusted CAs not synced yet")
+	case caErr != nil:
+		// Keep the last good set: a bad line must not lock everyone out.
+		slog.Warn("reload trusted CAs failed, keeping previous set", "error", caErr)
 	}
 
-	hostKeys, hostClosers, err := loadHostKeys()
+	signer, closer, err := loadHostKey()
 	if err != nil {
 		return err
 	}
+	cfg := &ssh.ServerConfig{
+		PublicKeyCallback: s.publicKeyCallback,
+		BannerCallback:    s.banner,
+		ServerVersion:     "SSH-2.0-nokkud",
+	}
+	cfg.AddHostKey(signer)
 
-	s.certsMu.Lock()
-	oldClosers := s.hostKeyClosers
+	s.mu.Lock()
+	old := s.hostKey
 	if caErr == nil {
 		s.trustedCAs = caKeys(trusted)
 	}
-	s.hostKeys = hostKeys
-	s.hostKeyClosers = hostClosers
-	s.cfg = s.serverConfig(hostKeys)
-	s.certsMu.Unlock()
+	s.hostKey = closer
+	s.cfg = cfg
+	s.mu.Unlock()
 
-	// Release the swapped-out identity's resources (TPM handles) now that no
-	// handshake can pick them up anymore.
-	for _, c := range oldClosers {
-		if closeErr := c.Close(); closeErr != nil {
-			s.logger.Debug("close replaced host key", "error", closeErr)
-		}
+	if old != nil {
+		_ = old.Close()
 	}
-
-	s.logger.Debug(
-		"reloaded identity",
-		"host_keys",
-		len(hostKeys),
-		"trusted_cas",
-		len(trusted),
-	)
 	return nil
 }
 
-// Serve accepts connections on l until l is closed.
-func (s *Server) Serve(l net.Listener) error {
-	s.mu.Lock()
-	if s.listener == nil {
-		s.listener = l
-	}
-	s.mu.Unlock()
+// Serve accepts connections on l until ctx is done or l is closed, then
+// releases the audit sink and host key. Established sessions are left to die
+// with the process.
+func (s *Server) Serve(ctx context.Context, l net.Listener) {
+	stop := context.AfterFunc(ctx, func() { _ = l.Close() })
+	defer stop()
+	defer s.close()
 
 	var delay time.Duration
 	for {
 		nc, err := l.Accept()
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return nil
-			}
 			delay = min(2*delay+acceptBackoff, time.Second)
-			s.logger.Error("accept failed", "error", err, "retry_in", delay)
+			slog.Error("accept failed", "error", err, "retry_in", delay)
 			time.Sleep(delay)
 			continue
 		}
 		delay = 0
-		if !s.acquireConn() {
-			s.logger.Warn("dropping connection, at capacity", "remote", nc.RemoteAddr())
+
+		select {
+		case s.conns <- struct{}{}:
+		default:
+			slog.Warn("dropping connection, at capacity", "remote", nc.RemoteAddr())
 			_ = nc.Close()
 			continue
 		}
-		s.connsWg.Go(func() {
-			defer s.releaseConn()
-			s.HandleConn(nc)
+		s.connsWG.Go(func() {
+			defer func() { <-s.conns }()
+			s.handleConn(nc)
 		})
 	}
 }
 
-// acquireConn reserves a slot for a new connection when a cap is configured.
-// activeConns tracks the lifecycle regardless of the cap, keeping it live-adjustable.
-func (s *Server) acquireConn() bool {
-	limit := s.tun.Load().MaxConnections
-	if limit > 0 {
-		for {
-			cur := s.activeConns.Load()
-			if cur >= int64(limit) {
-				return false
-			}
-			if s.activeConns.CompareAndSwap(cur, cur+1) {
-				return true
-			}
-		}
-	}
-	s.activeConns.Add(1)
-	return true
-}
-
-func (s *Server) releaseConn() {
-	s.activeConns.Add(-1)
-}
-
-// acquireUnauthenticated reserves a slot for a connection still in the pre-auth
-// handshake, so a brute force cannot exhaust the daemon ahead of authentication.
-func (s *Server) acquireUnauthenticated() bool {
-	limit := s.tun.Load().MaxStartups
-	if limit <= 0 {
-		return true
-	}
-	for {
-		cur := s.unauthenticated.Load()
-		if cur >= int64(limit) {
-			return false
-		}
-		if s.unauthenticated.CompareAndSwap(cur, cur+1) {
-			return true
-		}
-	}
-}
-
-func (s *Server) releaseUnauthenticated() {
-	s.unauthenticated.Add(-1)
-}
-
-// acquirePrincipalSession reserves a session slot for a principal, capping
-// concurrent sessions per user across all connections. limit <= 0 disables it.
-func (s *Server) acquirePrincipalSession(principal string, limit int) bool {
-	if limit <= 0 {
-		return true
-	}
-	s.principalMu.Lock()
-	defer s.principalMu.Unlock()
-	if s.principalSessions == nil {
-		s.principalSessions = make(map[string]int)
-	}
-	if s.principalSessions[principal] >= limit {
-		return false
-	}
-	s.principalSessions[principal]++
-	return true
-}
-
-func (s *Server) releasePrincipalSession(principal string) {
-	s.principalMu.Lock()
-	defer s.principalMu.Unlock()
-	if n := s.principalSessions[principal]; n <= 1 {
-		delete(s.principalSessions, principal)
-	} else {
-		s.principalSessions[principal] = n - 1
-	}
-}
-
-// Shutdown closes the listener, waits up to shutdownGrace for active connections
-// to drain, then closes server resources. Safe to call more than once.
-func (s *Server) Shutdown() error {
+func (s *Server) close() {
+	_ = s.audit.Close()
 	s.mu.Lock()
-	l := s.listener
-	s.mu.Unlock()
-	if l != nil {
-		_ = l.Close()
+	defer s.mu.Unlock()
+	if s.hostKey != nil {
+		_ = s.hostKey.Close()
+		s.hostKey = nil
 	}
-
-	done := make(chan struct{})
-	go func() {
-		s.connsWg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(shutdownGrace):
-	}
-
-	return s.Close()
-}
-
-// Close stops the listener and closes the audit sink and host keys, without
-// killing active sessions. Safe to call more than once and concurrently with serving.
-func (s *Server) Close() error {
-	s.closeOnce.Do(func() {
-		s.mu.Lock()
-		l := s.listener
-		s.mu.Unlock()
-		if l != nil {
-			_ = l.Close()
-		}
-		if s.audit != nil {
-			if c, ok := s.audit.(interface{ Close() error }); ok {
-				_ = c.Close()
-			}
-		}
-		s.certsMu.RLock()
-		closers := append([]io.Closer(nil), s.hostKeyClosers...)
-		s.certsMu.RUnlock()
-		for _, c := range closers {
-			if err := c.Close(); err != nil {
-				s.logger.Debug("close host key", "error", err)
-			}
-		}
-	})
-	return nil
-}
-
-// ListenAndServe binds addr and serves on it, returning the bound address. It
-// does not own shutdown: the caller calls Shutdown, and Serve errors are logged.
-func (s *Server) ListenAndServe(ctx context.Context, addr string) (net.Addr, error) {
-	var lc net.ListenConfig
-	l, err := lc.Listen(ctx, "tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	s.listener = l
-	s.mu.Unlock()
-
-	go func() {
-		if serr := s.Serve(l); serr != nil {
-			s.logger.Error("serve failed", "error", serr)
-		}
-	}()
-
-	s.logger.Info("server listening", "addr", l.Addr().String())
-	return l.Addr(), nil
-}
-
-func (s *Server) serverConfig(hostKeys []ssh.Signer) *ssh.ServerConfig {
-	cfg := &ssh.ServerConfig{
-		PublicKeyCallback: s.publicKeyCallback,
-		BannerCallback: func(ssh.ConnMetadata) string {
-			return s.banner()
-		},
-		ServerVersion: "SSH-2.0-nokkud",
-	}
-	for _, k := range hostKeys {
-		cfg.AddHostKey(k)
-	}
-	return cfg
-}
-
-// currentConfig returns the current server config under the certs lock so a
-// concurrent Reload cannot race a handshake.
-func (s *Server) currentConfig() *ssh.ServerConfig {
-	s.certsMu.RLock()
-	defer s.certsMu.RUnlock()
-	return s.cfg
-}
-
-// HandleConn handles a single SSH connection on its own goroutine. A panic here
-// must not take the daemon down, so the entry point recovers and logs it.
-func (s *Server) HandleConn(nc net.Conn) {
-	defer s.recoverAndLog("connection", func() { _ = nc.Close() })
-	s.handleConn(nc)
 }
 
 func (s *Server) handleConn(nc net.Conn) {
 	defer nc.Close()
-
-	// Cap the connection rate per source IP first, so a slow-drip brute force
-	// never reaches the concurrency caps.
-	if !s.allowConn(remoteIP(nc.RemoteAddr())) {
-		s.logger.Warn(
-			"dropping connection, rate limit exceeded",
-			"remote",
-			nc.RemoteAddr(),
-		)
-		return
-	}
-
-	// Cap concurrent pre-auth connections (MaxStartups).
-	if !s.acquireUnauthenticated() {
-		s.logger.Warn(
-			"dropping connection, unauthenticated limit reached",
-			"remote",
-			nc.RemoteAddr(),
-		)
-		return
-	}
-
-	// Wrap the conn so inbound traffic refreshes a read deadline. The probing
-	// goroutine disconnects a client that never responds.
-	interval := s.tun.Load().ClientAliveInterval
-	var alive *aliveConn
-	if interval > 0 {
-		alive = &aliveConn{Conn: nc, timeout: 3 * interval}
-		nc = alive
-	}
+	defer recoverPanic("connection")
 
 	conn, chans, reqs, err := s.handshake(nc)
+	if errors.Is(err, errBusy) {
+		slog.Warn("dropping connection", "remote", nc.RemoteAddr(), "error", err)
+		return
+	}
 	if err != nil {
-		s.logger.Debug("handshake failed",
-			"remote", nc.RemoteAddr(), "error", err)
+		slog.Debug("handshake failed", "remote", nc.RemoteAddr(), "error", err)
 		return
 	}
-	if err = nc.SetDeadline(time.Time{}); err != nil {
-		_ = conn.Close()
-		return
-	}
-	var aliveDone chan struct{}
-	if alive != nil {
-		alive.activate()
-		aliveDone = make(chan struct{})
-		go s.clientAlive(conn, interval, aliveDone)
-	}
+	defer conn.Close()
+	slog.Info("connection established",
+		"user", conn.User(), "remote", conn.RemoteAddr(), "client", string(conn.ClientVersion()))
 
-	s.logger.Info(
-		"connection established",
-		"user", conn.User(),
-		"remote", conn.RemoteAddr(),
-		"client", string(conn.ClientVersion()),
-	)
-
-	// Global requests: remote forwarding (tcpip-forward) and keepalives.
-	st := newConnState(conn)
-	go func() {
-		defer s.recoverAndLog("global requests", nil)
-		s.handleGlobalRequests(conn, st, reqs)
-	}()
+	st := newConnState(conn, s.maxChannels)
+	defer st.close()
+	done := make(chan struct{})
+	defer close(done)
+	go s.keepAlive(conn, done)
+	go s.handleGlobalRequests(st, reqs)
 
 	var wg sync.WaitGroup
-	defer func() {
-		if aliveDone != nil {
-			close(aliveDone)
-		}
-		st.close()
-		wg.Wait()
-		_ = conn.Close()
-	}()
-
+	defer wg.Wait()
 	for newCh := range chans {
+		var serve func(*connState, ssh.NewChannel)
 		switch newCh.ChannelType() {
 		case "session":
-			// Cap the channels one connection holds open, across types.
-			if !st.acquireChannel(s.tun.Load().MaxChannels) {
-				_ = newCh.Reject(ssh.ResourceShortage, "too many channels")
-				continue
-			}
-			wg.Go(func() {
-				defer st.releaseChannel()
-				_ = serveSessionChannel(s, conn, st, newCh)
-			})
+			serve = s.serveSession
 		case "direct-tcpip":
-			// The handler owns the channel slot, since it must hold it for
-			// the whole relay and not just the open request.
-			wg.Go(func() { _ = serveDirectChannel(s, conn, st, newCh) })
+			serve = s.serveDirectTCPIP
 		default:
 			_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel type")
+			continue
 		}
+		if !st.acquireChannel() {
+			_ = newCh.Reject(ssh.ResourceShortage, "too many channels")
+			continue
+		}
+		wg.Go(func() {
+			defer st.releaseChannel()
+			defer recoverPanic(newCh.ChannelType())
+			serve(st, newCh)
+		})
 	}
 }
 
-// handshake completes the SSH handshake while holding a MaxStartups slot for
-// its duration only, and bounds a peer that never completes it with a deadline.
+// handshake holds a pre-auth slot only while the handshake runs, and bounds a
+// peer that never finishes it.
 func (s *Server) handshake(nc net.Conn) (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
-	defer s.releaseUnauthenticated()
-	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	select {
+	case s.startups <- struct{}{}:
+		defer func() { <-s.startups }()
+	default:
+		return nil, nil, nil, errBusy
+	}
+	if err := nc.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
 		return nil, nil, nil, err
 	}
-	return ssh.NewServerConn(nc, s.currentConfig())
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+	conn, chans, reqs, err := ssh.NewServerConn(nc, cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return conn, chans, reqs, nc.SetDeadline(time.Time{})
 }
 
-// serveDirectChannel runs the direct-tcpip handler with the same panic
-// containment as a session channel.
-func serveDirectChannel(
-	s *Server,
-	conn *ssh.ServerConn,
-	st *connState,
-	newCh ssh.NewChannel,
-) (ch ssh.Channel) {
-	defer s.recoverAndLog("channel direct-tcpip", func() {
-		if ch != nil {
-			_ = ch.Close()
+func (s *Server) keepAlive(conn *ssh.ServerConn, done <-chan struct{}) {
+	t := time.NewTicker(s.aliveInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+		}
+		kill := time.AfterFunc(3*s.aliveInterval, func() { _ = conn.Close() })
+		_, _, err := conn.SendRequest("keepalive@openssh.com", true, nil)
+		kill.Stop()
+		if err != nil {
 			return
 		}
-		_ = newCh.Reject(ssh.ConnectionFailed, "channel handler failed")
-	})
-	return serveDirectTCPIP(s, conn, st, newCh)
+	}
 }
 
-// recoverAndLog contains a panic on the current goroutine, logs it with a stack
-// trace, and runs cleanup. Every server goroutine defers it.
-func (s *Server) recoverAndLog(where string, cleanup func()) {
-	r := recover()
-	if r == nil {
-		return
+// banner tells the client before auth that the session is recorded.
+func (s *Server) banner(ssh.ConnMetadata) string {
+	if !s.policy.Load().Record {
+		return ""
 	}
-	s.logger.Error(
-		"recovered panic",
-		"where", where,
-		"panic", r,
-		"stack", string(debug.Stack()),
-	)
-	if cleanup != nil {
-		func() {
-			defer func() { _ = recover() }()
-			cleanup()
-		}()
+	return "This session is recorded and audited.\r\n"
+}
+
+// recoverPanic keeps one bad connection or channel from killing the daemon.
+// Deferred cleanup in the caller still runs.
+func recoverPanic(where string) {
+	if r := recover(); r != nil {
+		slog.Error("recovered panic", "where", where, "panic", r, "stack", string(debug.Stack()))
 	}
 }

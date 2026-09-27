@@ -4,8 +4,10 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -25,27 +27,28 @@ import (
 )
 
 const (
-	dialTimeout = 30 * time.Second
+	dialTimeout   = 30 * time.Second
+	enrollTimeout = 30 * time.Second
+	syncTimeout   = 15 * time.Second
 )
 
 var errDaemonRejected = errors.New("daemon rejected by backend")
 
-// Options carries the daemon's runtime configuration from main into the client.
 type Options struct {
 	Insecure    bool
 	RequireTPM  bool
 	EnrollToken string
-	CAID        string
 }
 
 type Client struct {
-	sessionSlots chan struct{}
-	sessionWG    sync.WaitGroup
-
-	sshSrv *sshd.Server
 	cache  *state.Cache
 	config *state.Config
 	dpop   *dpopclient.Client
+
+	// Set by Run before any goroutine starts.
+	srv     *sshd.Server
+	sshAddr netip.AddrPort
+	relays  sync.WaitGroup
 
 	cc  nokkuv1connect.CertificateServiceClient
 	rc  nokkuv1connect.RecordingServiceClient
@@ -54,169 +57,130 @@ type Client struct {
 	dss nokkuv1connect.DaemonSessionServiceClient
 }
 
-type nopWriteCloser struct{}
-
-func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
-func (nopWriteCloser) Close() error                { return nil }
-
-func New(
-	ctx context.Context,
-	cache *state.Cache,
-	config *state.Config,
-	opts Options,
-	sshSrv *sshd.Server,
-) (*Client, error) {
-	c := &Client{
-		cache:        cache,
-		config:       config,
-		sshSrv:       sshSrv,
-		sessionSlots: make(chan struct{}, maxConcurrentSessions),
+// New builds the backend clients and enrolls when opts carries a token.
+func New(ctx context.Context, cache *state.Cache, config *state.Config, opts Options) (*Client, error) {
+	httpc, err := dpopclient.NewHTTPClient(opts.Insecure, dialTimeout)
+	if err != nil {
+		return nil, err
 	}
-
-	if err := c.setupClients(opts.Insecure, opts.RequireTPM); err != nil {
+	proofer, err := dpopclient.NewProofer(
+		// Salt registry: see mon/README.md.
+		[]byte("nokku-daemon"),
+		paths.SignerStateFile(),
+		opts.RequireTPM,
+		tpm.FailOnIdentityChange,
+	)
+	if err != nil {
 		return nil, err
 	}
 
-	// The embedded SSH server records sessions through the same upload path as web sessions.
-	if sshSrv != nil {
-		sshSrv.SetRecordingSinkFactory(
-			func(ctx context.Context, sessionID, username string) io.WriteCloser {
-				if c.config.DaemonID == "" {
-					return nopWriteCloser{}
-				}
-				return recording.NewUploader(ctx, c.rc, recording.UploaderOptions{
-					SessionID: sessionID,
-					Username:  username,
-				})
-			},
-		)
-	}
+	c := &Client{cache: cache, config: config}
+	apiURL := config.APIURL
+	c.dpop = dpopclient.New(proofer, httpc, func() string { return config.SessionToken }, dpopclient.Options{
+		BaseURL:           apiURL,
+		UnboundProcedures: map[string]bool{nokkuv1connect.DaemonServiceEnrollDaemonProcedure: true},
+		UserAgent:         buildinfo.UserAgent("nokkud"),
+	})
+	interceptors := connect.WithInterceptors(c.dpop)
+	c.cc = nokkuv1connect.NewCertificateServiceClient(httpc, apiURL, interceptors)
+	c.rc = nokkuv1connect.NewRecordingServiceClient(httpc, apiURL, interceptors)
+	c.dc = nokkuv1connect.NewDaemonServiceClient(httpc, apiURL, interceptors)
+	c.dcs = nokkuv1connect.NewDaemonControlServiceClient(httpc, apiURL, interceptors)
+	c.dss = nokkuv1connect.NewDaemonSessionServiceClient(httpc, apiURL, interceptors)
 
-	if err := c.enroll(ctx, opts.EnrollToken, opts.CAID); err != nil {
-		return nil, err
+	if opts.EnrollToken != "" {
+		if err = c.enroll(ctx, opts.EnrollToken); err != nil {
+			return nil, err
+		}
 	}
-
 	return c, nil
 }
 
-// setupClients builds the shared HTTP client and the connect service clients.
-func (c *Client) setupClients(insecure, requireTPM bool) error {
-	httpc, err := dpopclient.NewHTTPClient(insecure, dialTimeout)
+// enroll trades the token for a daemon session. The DPoP proof is unbound,
+// the server binds the issued session to the daemon's key.
+func (c *Client) enroll(ctx context.Context, token string) error {
+	ctx, cancel := context.WithTimeout(ctx, enrollTimeout)
+	defer cancel()
+	res, err := c.dc.EnrollDaemon(ctx, &nokkuv1.EnrollDaemonRequest{Token: &token})
 	if err != nil {
+		return fmt.Errorf("enroll: %w", err)
+	}
+	if res.GetWorkspaceId() == "" || res.GetTargetId() == "" || res.GetId() == "" || res.GetAccessToken() == "" {
+		return errors.New("enroll: backend returned an incomplete enrollment")
+	}
+	c.config.WorkspaceID = res.GetWorkspaceId()
+	c.config.TargetID = res.GetTargetId()
+	c.config.DaemonID = res.GetId()
+	c.config.SessionToken = res.GetAccessToken()
+	c.cache.SetDaemonConfig(res.GetConfig())
+	if err = c.config.Save(); err != nil {
 		return err
 	}
-
-	// "nokku-daemon" is part of the salt registry documented in mon/README.md.
-	proofer, perr := dpopclient.NewProofer(
-		[]byte("nokku-daemon"),
-		paths.SignerStateFile(),
-		requireTPM,
-		tpm.FailOnIdentityChange,
-	)
-	if perr != nil {
-		return perr
-	}
-
-	apiURL := c.config.APIURL
-	c.dpop = dpopclient.New(
-		proofer,
-		httpc,
-		func() string { return c.config.SessionToken },
-		dpopclient.Options{
-			BaseURL: apiURL,
-			UnboundProcedures: map[string]bool{
-				nokkuv1connect.DaemonServiceEnrollDaemonProcedure: true,
-			},
-			UserAgent: buildinfo.UserAgent("nokkud"),
-		},
-	)
-
-	opts := connect.WithInterceptors(c.dpop)
-	c.cc = nokkuv1connect.NewCertificateServiceClient(httpc, apiURL, opts)
-	c.rc = nokkuv1connect.NewRecordingServiceClient(httpc, apiURL, opts)
-	c.dc = nokkuv1connect.NewDaemonServiceClient(httpc, apiURL, opts)
-	c.dcs = nokkuv1connect.NewDaemonControlServiceClient(httpc, apiURL, opts)
-	c.dss = nokkuv1connect.NewDaemonSessionServiceClient(httpc, apiURL, opts)
-	return nil
+	return c.cache.Save()
 }
 
-// Run keeps the control stream to the backend open until ctx is cancelled.
-func (c *Client) Run(ctx context.Context) error {
-	// Drain in-flight relay sessions on graceful shutdown.
-	defer func() {
-		if ctx.Err() != nil {
-			c.sessionWG.Wait()
-		}
-	}()
+// RecordingSink streams one session recording to the backend.
+func (c *Client) RecordingSink(ctx context.Context, sessionID, username string) io.WriteCloser {
+	return recording.NewUploader(ctx, c.rc, sessionID, username)
+}
 
+// Run syncs, keeps the host cert fresh, and holds the control stream open
+// until ctx is done or the backend rejects the daemon. sshAddr is where srv
+// listens.
+func (c *Client) Run(ctx context.Context, srv *sshd.Server, sshAddr netip.AddrPort) error {
 	if c.config.DaemonID == "" {
-		slog.Info("daemon not enrolled")
+		slog.Info("daemon not enrolled, run with --enroll")
 		return nil
 	}
+	c.srv = srv
+	c.sshAddr = sshAddr
+	// Deferred in this order so relays are canceled before they are joined.
+	defer c.relays.Wait()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	if err := c.syncAll(ctx); err != nil {
-		slog.Debug("initial sync failed", "error", err)
+	err := c.syncDaemon(ctx)
+	if errors.Is(err, errDaemonRejected) {
+		return err
 	}
-	c.startWatchers(ctx)
+	if err != nil {
+		slog.Warn("initial sync failed, serving from cache", "error", err)
+	}
+	go c.watchCertificates(ctx)
 
 	b := backoff.NewExponentialBackOff()
 	b.InitialInterval = time.Second
 	b.MaxInterval = time.Minute
-
-	var connected, warned, announced bool
-
+	warned := false
 	for {
-		err := c.runControlStream(ctx, func() {
-			b.Reset()
-			connected = true
-			warned = false
-			if !announced {
-				announced = true
-				slog.Info("control stream connected")
-			}
-		})
-
-		// A rejected stream may carry a fresh DPoP nonce: learn it before
-		// dialing again so the reconnect signs with a current one.
-		if err != nil && c.dpop != nil {
-			c.dpop.LearnFromError(err)
-		}
-
+		start := time.Now()
+		err = c.runControlStream(ctx)
 		if errors.Is(err, errDaemonRejected) {
 			return err
 		}
 		if ctx.Err() != nil {
 			return nil
 		}
+		// A rejected stream may carry a fresh DPoP nonce for the next dial.
+		c.dpop.LearnFromError(err)
 
-		next := b.NextBackOff()
-
-		// Warn once per outage, then debug each retry so a long outage does
-		// not spam the log.
-		switch {
-		case connected:
-			connected = false
-			slog.Warn("control stream disconnected, reconnecting in background", "error", err)
-			warned = true
-		case !warned:
-			slog.Warn("cannot connect to backend, retrying in background", "error", err)
-			warned = true
-		default:
-			slog.Debug(
-				"control stream reconnect attempt failed",
-				"error",
-				err,
-				"retry_in",
-				next.Round(time.Millisecond),
-			)
+		// Connect returns before the backend answers, so only a stream that
+		// stayed up proves the backend was reachable.
+		if time.Since(start) > 2*heartbeatInterval {
+			b.Reset()
+			warned = false
 		}
-
-		timer := time.NewTimer(next)
+		next := b.NextBackOff()
+		if !warned {
+			slog.Warn("control stream down, retrying in background", "error", err)
+			warned = true
+		} else {
+			slog.Debug("control stream retry failed", "error", err, "retry_in", next.Round(time.Millisecond))
+		}
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return nil
-		case <-timer.C:
+		case <-time.After(next):
 		}
 	}
 }
@@ -225,7 +189,6 @@ func (c *Client) Run(ctx context.Context) error {
 func (c *Client) DeleteDaemon(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-
 	_, err := c.dc.DeleteDaemon(ctx, &nokkuv1.DeleteDaemonRequest{})
 	return err
 }

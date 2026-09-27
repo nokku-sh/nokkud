@@ -40,7 +40,7 @@ func TestServerDirectTCPIP(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{AllowForwarding: true}})
 	defer closeFn()
 
 	echo := testEchoServer(t)
@@ -70,9 +70,8 @@ func TestServerDirectTCPIP(t *testing.T) {
 func TestServerMaxChannelsHeldForRelay(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{
-		Tunables: Tunables{AllowForwarding: true, MaxChannels: 1},
-	})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{AllowForwarding: true}},
+		func(s *Server) { s.maxChannels = 1 })
 	defer closeFn()
 
 	echo := testEchoServer(t)
@@ -125,7 +124,7 @@ func TestServerRemoteForward(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{AllowForwarding: true}})
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -165,39 +164,6 @@ func TestServerRemoteForward(t *testing.T) {
 	is.Equal("pong", string(buf))
 }
 
-// TestServerMaxSessions verifies the per-connection session cap.
-func TestServerMaxSessions(t *testing.T) {
-	is := assert.New(t)
-	must := require.New(t)
-	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxSessions: 2}})
-	defer closeFn()
-
-	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	must.NoError(err, "dial")
-	defer client.Close()
-
-	s1, err := client.NewSession()
-	must.NoError(err, "session 1")
-	defer s1.Close()
-	s2, err := client.NewSession()
-	must.NoError(err, "session 2")
-	defer s2.Close()
-
-	_, err = client.NewSession()
-	must.ErrorContains(err, "too many sessions")
-
-	// Closing one session frees a slot (the server notices asynchronously).
-	must.NoError(s1.Close(), "close s1")
-	var s3 *ssh.Session
-	is.Eventually(func() bool {
-		s3, err = client.NewSession()
-		return err == nil
-	}, 5*time.Second, 20*time.Millisecond)
-	must.NoError(err, "session after close")
-	defer s3.Close()
-}
-
 // TestServerRemoteForwardLocalhost verifies a -R forward requested on the
 // hostname "localhost" works: clients key their forward by the requested
 // address, so the server must report it back verbatim even though the listener
@@ -206,7 +172,7 @@ func TestServerRemoteForwardLocalhost(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{AllowForwarding: true}})
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -258,7 +224,7 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{AllowForwarding: true}})
 	defer closeFn()
 	host, port := hostPort(t, addr)
 
@@ -328,51 +294,33 @@ func slurpAfterKill(cmd *exec.Cmd, stderr io.Reader) string {
 	return string(b)
 }
 
-// TestRemoteBindAddr verifies remote forwards are pinned to loopback unless
+// TestForwardAddr verifies remote forwards are pinned to loopback unless
 // gateway ports are enabled, matching OpenSSH's GatewayPorts=no default.
-func TestRemoteBindAddr(t *testing.T) {
+func TestForwardAddr(t *testing.T) {
 	tests := []struct {
 		name      string
 		requested string
 		gateway   bool
 		want      string
 	}{
-		{"empty request pins loopback", "", false, "127.0.0.1"},
-		{"wildcard request pins loopback", "0.0.0.0", false, "127.0.0.1"},
-		{"lan request pins loopback", "192.168.1.5", false, "127.0.0.1"},
-		{"empty request with gateway binds wildcard", "", true, "0.0.0.0"},
-		{"lan request with gateway binds lan", "192.168.1.5", true, "192.168.1.5"},
+		{"empty request pins loopback", "", false, "127.0.0.1:22"},
+		{"wildcard request pins loopback", "0.0.0.0", false, "127.0.0.1:22"},
+		{"lan request pins loopback", "192.168.1.5", false, "127.0.0.1:22"},
+		{"empty request with gateway binds wildcard", "", true, "0.0.0.0:22"},
+		{"lan request with gateway binds lan", "192.168.1.5", true, "192.168.1.5:22"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			is := assert.New(t)
-			is.Equal(tt.want, remoteBindAddr(tt.requested, tt.gateway))
+			is.Equal(tt.want, forwardAddr(tcpipForwardData{BindAddr: tt.requested, BindPort: 22}, tt.gateway))
 		})
 	}
-}
-
-// TestServerGatewayPortsToggle verifies the runtime option flips the remote
-// forward bind policy.
-func TestServerGatewayPortsToggle(t *testing.T) {
-	is := assert.New(t)
-	must := require.New(t)
-	ca := newTestCA(t)
-	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
-	srv, err := New(Options{
-		Principals: func(string) []string { return nil },
-		TrustedCAs: []ssh.PublicKey{ca.pub},
-		Tunables:   Tunables{AllowForwarding: true},
-	})
-	must.NoError(err, "new server")
-	is.False(srv.tun.Load().GatewayPorts, "gateway ports enabled by default")
-	srv.SetTunables(Tunables{AllowForwarding: true, GatewayPorts: true})
-	is.True(srv.tun.Load().GatewayPorts, "SetTunables did not enable gateway ports")
 }
 
 func TestServerForwardingLargeTransfer(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{AllowForwarding: true}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{AllowForwarding: true}})
 	defer closeFn()
 
 	payload := bytes.Repeat([]byte("0123456789abcdef"), 512*1024) // 8 MiB
@@ -406,4 +354,21 @@ func TestServerForwardingLargeTransfer(t *testing.T) {
 	}
 	// The server side discards. Give it a moment, then confirm no error.
 	time.Sleep(200 * time.Millisecond)
+}
+
+// TestTCPIPForwardAfterClose verifies a forward request racing connection
+// teardown is refused instead of leaking a listener.
+func TestTCPIPForwardAfterClose(t *testing.T) {
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
+	srv, err := New(Options{Principals: func(string) []string { return nil }, Policy: Policy{AllowForwarding: true}})
+	require.NoError(t, err)
+	defer srv.close()
+
+	conn := &ssh.ServerConn{Permissions: &ssh.Permissions{
+		Extensions: map[string]string{"permit-port-forwarding": ""},
+	}}
+	st := newConnState(conn, 1)
+	st.close()
+	ok, _ := srv.tcpipForward(st, ssh.Marshal(tcpipForwardData{BindAddr: "127.0.0.1", BindPort: 0}))
+	assert.False(t, ok)
 }

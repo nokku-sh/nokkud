@@ -20,7 +20,9 @@ func TestServerAuditEvents(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	sink := &sliceAudit{}
+	dir := t.TempDir()
+	sink, err := audit.New(dir)
+	must.NoError(err)
 	addr, closeFn := startTestServerOpts(t, ca, Options{Audit: sink})
 	defer closeFn()
 
@@ -39,7 +41,8 @@ func TestServerAuditEvents(t *testing.T) {
 	_, err = dial(t, addr, currentUser(t), userCert(t, ca, "some-other-principal"))
 	must.Error(err, "login with wrong principal unexpectedly succeeded")
 
-	types := sink.types()
+	must.NoError(sink.Close())
+	types := readEventTypes(t, dir)
 	for _, want := range []audit.EventType{
 		audit.EventAuthSuccess,
 		audit.EventAuthFailure,
@@ -47,56 +50,25 @@ func TestServerAuditEvents(t *testing.T) {
 		audit.EventSessionEnd,
 		audit.EventCommand,
 	} {
-		is.True(containsEvent(types, want), "missing audit event %q in %v", want, types)
+		is.True(slices.Contains(types, want), "missing audit event %q in %v", want, types)
 	}
 }
 
-// TestAuditSinkFile verifies the JSONL audit sink writes parseable events.
-func TestAuditSinkFile(t *testing.T) {
-	is := assert.New(t)
-	must := require.New(t)
-	dir := t.TempDir()
-	s, err := audit.New(filepath.Join(dir, "audit"))
-	must.NoError(err)
-	defer s.Close()
-
-	s.Emit(audit.Event{Type: audit.EventAuthSuccess, User: "bob", Principal: "p1"})
-	s.Emit(audit.Event{Type: audit.EventSessionStart, User: "bob"})
-	must.NoError(s.Close())
-
-	matches, err := filepath.Glob(filepath.Join(dir, "audit", "audit-*.jsonl"))
-	must.NoError(err)
-	is.Len(matches, 1)
-	f, err := os.Open(matches[0])
-	must.NoError(err)
-	defer f.Close()
-	var events []audit.Event
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		var ev audit.Event
-		must.NoError(json.Unmarshal(sc.Bytes(), &ev))
-		events = append(events, ev)
+func readEventTypes(t *testing.T, dir string) []audit.EventType {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "audit-*.jsonl"))
+	require.NoError(t, err)
+	var types []audit.EventType
+	for _, path := range matches {
+		f, openErr := os.Open(path)
+		require.NoError(t, openErr)
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			var ev audit.Event
+			require.NoError(t, json.Unmarshal(sc.Bytes(), &ev))
+			types = append(types, ev.Type)
+		}
+		_ = f.Close()
 	}
-	must.NoError(sc.Err())
-	is.Len(events, 2)
-}
-
-type sliceAudit struct {
-	events []audit.Event
-}
-
-func (s *sliceAudit) Emit(ev audit.Event) {
-	s.events = append(s.events, ev)
-}
-
-func (s *sliceAudit) types() []audit.EventType {
-	var out []audit.EventType
-	for _, ev := range s.events {
-		out = append(out, ev.Type)
-	}
-	return out
-}
-
-func containsEvent(types []audit.EventType, want audit.EventType) bool {
-	return slices.Contains(types, want)
+	return types
 }

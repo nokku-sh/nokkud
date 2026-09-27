@@ -87,13 +87,13 @@ func writeHostKey(t testing.TB, dir string) ssh.PublicKey {
 	return pub
 }
 
-func TestOutdatedHostCerts(t *testing.T) {
+func TestNeedsRenewal(t *testing.T) {
 	now := time.Now()
 	tests := []struct {
 		name     string
 		setup    func(t *testing.T, dir string, ca testCA)
 		targetID string
-		want     int
+		want     bool
 	}{
 		{
 			name: "missing certificate is outdated",
@@ -101,7 +101,7 @@ func TestOutdatedHostCerts(t *testing.T) {
 				writeHostKey(t, dir)
 			},
 			targetID: "target-1",
-			want:     1,
+			want:     true,
 		},
 		{
 			name: "certificate for another principal is outdated",
@@ -111,7 +111,7 @@ func TestOutdatedHostCerts(t *testing.T) {
 				writeCert(t, dir, certText)
 			},
 			targetID: "target-1",
-			want:     1,
+			want:     true,
 		},
 		{
 			name: "expiring certificate is outdated",
@@ -123,7 +123,7 @@ func TestOutdatedHostCerts(t *testing.T) {
 				writeCert(t, dir, certText)
 			},
 			targetID: "target-1",
-			want:     1,
+			want:     true,
 		},
 		{
 			name: "expired certificate is outdated",
@@ -140,7 +140,7 @@ func TestOutdatedHostCerts(t *testing.T) {
 				writeCert(t, dir, certText)
 			},
 			targetID: "target-1",
-			want:     1,
+			want:     true,
 		},
 		{
 			name: "valid certificate is not outdated",
@@ -153,27 +153,25 @@ func TestOutdatedHostCerts(t *testing.T) {
 				writeCert(t, dir, certText)
 			},
 			targetID: "target-1",
-			want:     0,
+			want:     false,
 		},
 		{
 			name:     "no keys means nothing to renew",
 			setup:    func(_ *testing.T, _ string, _ testCA) {},
 			targetID: "target-1",
-			want:     0,
+			want:     false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			is := assert.New(t)
-			must := require.New(t)
 			dir := t.TempDir()
 			tt.setup(t, dir, newTestCA(t))
 
 			t.Setenv("NOKKUD_DATA_DIR", dir)
-			pairs, err := OutdatedHostCerts(tt.targetID)
-			must.NoError(err, "OutdatedHostCerts")
-			is.Len(pairs, tt.want)
+			_, got := needsRenewal(tt.targetID)
+			is.Equal(tt.want, got)
 		})
 	}
 }
@@ -272,7 +270,7 @@ func TestRenewHostCertsSignFailure(t *testing.T) {
 	t.Setenv("NOKKUD_DATA_DIR", dir)
 
 	calls := 0
-	sign := func(_ context.Context, _ KeyPair) (*nokkuv1.SignSSHCertificateResponse, error) {
+	sign := func(_ context.Context, _ []byte) (*nokkuv1.SignSSHCertificateResponse, error) {
 		calls++
 		return nil, errors.New("backend refused")
 	}
@@ -306,7 +304,7 @@ func TestRenewHostCertsForce(t *testing.T) {
 
 	t.Setenv("NOKKUD_DATA_DIR", dir)
 
-	sign := func(_ context.Context, _ KeyPair) (*nokkuv1.SignSSHCertificateResponse, error) {
+	sign := func(_ context.Context, _ []byte) (*nokkuv1.SignSSHCertificateResponse, error) {
 		cert, caPub := signHostCert(t, ca, hostPub, "target-1", 0, ssh.CertTimeInfinity)
 		certStr, caStr := string(cert), string(caPub)
 		return &nokkuv1.SignSSHCertificateResponse{

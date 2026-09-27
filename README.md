@@ -92,7 +92,6 @@ point.
 | --------------- | --------------------- | ---------------------------------------------------- |
 | `--api`         | `NOKKUD_API_URL`      | Backend URL                                          |
 | `--enroll`      | `NOKKUD_ENROLL_TOKEN` | Enroll this host. Prompts unless the env token is set |
-| `--ca`          | `NOKKUD_CA_ID`        | Certificate authority UUID                           |
 | `--ssh-addr`    | `NOKKUD_SSH_ADDR`     | Embedded SSH server listen address (default `:4022`) |
 | `--debug`       | `NOKKUD_DEBUG`        | Debug logging                                        |
 | `--insecure`    | none                  | Disable TLS verification (insecure!)                 |

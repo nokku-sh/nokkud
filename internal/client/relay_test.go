@@ -1,9 +1,9 @@
 package client
 
 import (
-	"context"
 	"io"
 	"net"
+	"net/netip"
 	"runtime"
 	"testing"
 	"time"
@@ -32,33 +32,15 @@ func (s *fakeRelayStream) Receive() (*nokkuv1.DaemonRelayResponse, error) {
 	return msg, nil
 }
 
-func TestRelayDialAddr(t *testing.T) {
+func TestLoopback(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		addr    string
-		want    string
-		wantErr string
-	}{
-		{addr: ":4022", want: "127.0.0.1:4022"},
-		{addr: "*:4022", want: "127.0.0.1:4022"},
-		{addr: "0.0.0.0:4022", want: "127.0.0.1:4022"},
-		{addr: "[::]:4022", want: "127.0.0.1:4022"},
-		{addr: "127.0.0.1:4022", want: "127.0.0.1:4022"},
-		{addr: "192.168.1.10:4022", want: "192.168.1.10:4022"},
-		{addr: "4022", want: "127.0.0.1:4022"},
-		{addr: "", wantErr: "not configured"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.addr, func(t *testing.T) {
-			is := assert.New(t)
-			got, err := relayDialAddr(tt.addr)
-			if tt.wantErr != "" {
-				require.ErrorContains(t, err, tt.wantErr)
-				return
-			}
-			require.NoError(t, err)
-			is.Equal(tt.want, got)
-		})
+	is := assert.New(t)
+	for addr, want := range map[string]string{
+		"[::]:4022":         "127.0.0.1:4022",
+		"0.0.0.0:4022":      "127.0.0.1:4022",
+		"192.168.1.10:4022": "192.168.1.10:4022",
+	} {
+		is.Equal(want, loopback(netip.MustParseAddrPort(addr)), addr)
 	}
 }
 
@@ -68,11 +50,9 @@ func TestPumpRelayOut(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close(); _ = sshd.Close() })
 
 	stream := &fakeRelayStream{sent: make(chan *nokkuv1.DaemonRelayRequest, 16)}
-	gate := make(chan struct{}, 1)
-	resetIdle := func() {}
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- pumpRelayOut(t.Context(), stream, conn, gate, resetIdle) }()
+	go func() { errCh <- pumpRelayOut(stream, conn) }()
 
 	_, err := sshd.Write([]byte("SSH-2.0-OpenSSH\r\n"))
 	require.NoError(t, err)
@@ -96,10 +76,9 @@ func TestPumpRelayOutConnClosed(t *testing.T) {
 	t.Cleanup(func() { _ = sshd.Close() })
 
 	stream := &fakeRelayStream{sent: make(chan *nokkuv1.DaemonRelayRequest, 16)}
-	gate := make(chan struct{}, 1)
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- pumpRelayOut(t.Context(), stream, conn, gate, func() {}) }()
+	go func() { errCh <- pumpRelayOut(stream, conn) }()
 
 	// Closing the read end unblocks the pump, the same way runRelay tears
 	// down on stream end.
@@ -112,45 +91,15 @@ func TestPumpRelayOutConnClosed(t *testing.T) {
 	}
 }
 
-func TestPumpRelayOutGateHeldCancel(t *testing.T) {
-	t.Parallel()
-	conn, sshd := net.Pipe()
-	t.Cleanup(func() { _ = conn.Close(); _ = sshd.Close() })
-
-	// A held gate blocks the pump in its select so cancel is the only exit.
-	gate := make(chan struct{}, 1)
-	gate <- struct{}{}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- pumpRelayOut(ctx, &fakeRelayStream{sent: make(chan *nokkuv1.DaemonRelayRequest, 1)}, conn, gate, func() {})
-	}()
-
-	// The pump only reaches the gate select after traffic arrives.
-	go func() {
-		_, _ = sshd.Write([]byte("ping"))
-	}()
-
-	cancel()
-	select {
-	case err := <-errCh:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(2 * time.Second):
-		t.Fatal("pump did not end while gate was held")
-	}
-}
-
 func TestPumpRelayIn(t *testing.T) {
 	t.Parallel()
 	conn, sshd := net.Pipe()
 	t.Cleanup(func() { _ = conn.Close(); _ = sshd.Close() })
 
 	stream := &fakeRelayStream{recv: make(chan *nokkuv1.DaemonRelayResponse, 8)}
-	resetIdle := func() {}
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- pumpRelayIn(stream, conn, resetIdle) }()
+	go func() { errCh <- pumpRelayIn(stream, conn) }()
 
 	stream.recv <- &nokkuv1.DaemonRelayResponse{
 		Msg: &nokkuv1.DaemonRelayResponse_Data{Data: []byte("banner line\n")},
@@ -179,7 +128,7 @@ func TestPumpRelayInReceiveError(t *testing.T) {
 
 	stream := &fakeRelayStream{recv: make(chan *nokkuv1.DaemonRelayResponse)}
 	errCh := make(chan error, 1)
-	go func() { errCh <- pumpRelayIn(stream, conn, func() {}) }()
+	go func() { errCh <- pumpRelayIn(stream, conn) }()
 
 	close(stream.recv)
 	select {
@@ -319,29 +268,5 @@ func TestRunRelayStreamDialFailure(t *testing.T) {
 		require.ErrorContains(t, err, "dial local sshd")
 	case <-time.After(3 * time.Second):
 		t.Fatal("relay did not fail fast on dial failure")
-	}
-}
-
-// TestRunRelayStreamUnconfiguredSSHD fails closed when the ssh listen
-// address was cleared instead of dialing a garbage target.
-func TestRunRelayStreamUnconfiguredSSHD(t *testing.T) {
-	t.Parallel()
-	stream := &fakeRelayStream{
-		sent: make(chan *nokkuv1.DaemonRelayRequest, 8),
-		recv: make(chan *nokkuv1.DaemonRelayResponse, 1),
-	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- runRelayStream(t.Context(), stream, "", "r4") }()
-
-	ready := <-stream.sent
-	require.NotNil(t, ready.GetReady())
-	closed := <-stream.sent
-	require.NotNil(t, closed.GetClosed())
-
-	select {
-	case err := <-errCh:
-		require.ErrorContains(t, err, "not configured")
-	case <-time.After(3 * time.Second):
-		t.Fatal("relay did not fail on unconfigured ssh address")
 	}
 }

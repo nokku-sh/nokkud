@@ -1,5 +1,3 @@
-//go:build linux
-
 package sysutil
 
 import "golang.org/x/sys/unix"

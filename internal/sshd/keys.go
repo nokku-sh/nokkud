@@ -6,50 +6,45 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/nokku-sh/mon/tpm"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
-
-	"golang.org/x/crypto/ssh"
 )
 
-var hostKeySalt = []byte("nokku-daemon-host")
-
-// loadHostKeys returns the host identity signer and its closers. The host key
-// is not the enrollment anchor, so an identity change is renewed by the sync.
-func loadHostKeys() ([]ssh.Signer, []io.Closer, error) {
+// loadHostKey returns the host signer, wrapped in the host certificate when
+// one matches. The host key is not the enrollment anchor, so an identity
+// change just gets a fresh key and the sync renews the cert.
+func loadHostKey() (ssh.Signer, io.Closer, error) {
 	signer, err := tpm.NewSigner(tpm.SignerOptions{
-		Salt:             hostKeySalt,
+		// Salt registry: see mon/README.md.
+		Salt:             []byte("nokku-daemon-host"),
 		StatePath:        paths.HostSignerStateFile(),
 		OnIdentityChange: tpm.RecreateIdentity,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-
 	if err = writeHostPubKey(signer); err != nil {
 		_ = signer.Close()
 		return nil, nil, err
 	}
-	removeLegacyHostKeys()
-
 	sshSigner, err := ssh.NewSignerFromSigner(signer)
 	if err != nil {
 		_ = signer.Close()
 		return nil, nil, fmt.Errorf("sshd: host key signer: %w", err)
 	}
 	if cert, certErr := parseHostCertFile(paths.HostKeyCert()); certErr == nil {
-		if cs, cerr := ssh.NewCertSigner(cert, sshSigner); cerr == nil {
+		if cs, csErr := ssh.NewCertSigner(cert, sshSigner); csErr == nil {
 			sshSigner = cs
 		}
 	}
-	return []ssh.Signer{sshSigner}, []io.Closer{signer}, nil
+	return sshSigner, signer, nil
 }
 
-// writeHostPubKey persists the public half for the certificate manager. A
-// stale certificate from a previous key is dropped and the sync renews it.
+// writeHostPubKey persists the public half for the cert renewal. A cert for a
+// previous key is dropped so the sync renews it.
 func writeHostPubKey(signer tpm.Signer) error {
 	pub, err := ssh.NewPublicKey(signer.Public())
 	if err != nil {
@@ -57,15 +52,12 @@ func writeHostPubKey(signer tpm.Signer) error {
 	}
 	pubData := ssh.MarshalAuthorizedKey(pub)
 
-	pubFile := paths.HostKeyPub()
-	old, readErr := os.ReadFile(filepath.Clean(pubFile))
+	old, readErr := os.ReadFile(paths.HostKeyPub())
 	if readErr == nil && bytes.Equal(bytes.TrimSpace(old), bytes.TrimSpace(pubData)) {
 		return nil
 	}
-
-	// #nosec G306 - the public half of the host key is world-readable
-	// by design, like any SSH host public key.
-	if err = os.WriteFile(pubFile, pubData, 0o644); err != nil {
+	// #nosec G306 - a host public key is world-readable by design.
+	if err = os.WriteFile(paths.HostKeyPub(), pubData, 0o644); err != nil {
 		return fmt.Errorf("sshd: write host public key: %w", err)
 	}
 	if readErr == nil {
@@ -74,16 +66,8 @@ func writeHostPubKey(signer tpm.Signer) error {
 	return nil
 }
 
-// removeLegacyHostKeys drops the pre-Signer ed25519 identity so it cannot be
-// renewed and presented as a second host key.
-func removeLegacyHostKeys() {
-	_ = os.Remove(paths.SoftwareHostKey())
-	_ = os.Remove(paths.SoftwareHostKeyPub())
-	_ = os.Remove(paths.SoftwareHostKeyCert())
-}
-
-func parseHostCertFile(certPath string) (*ssh.Certificate, error) {
-	data, err := os.ReadFile(filepath.Clean(certPath))
+func parseHostCertFile(path string) (*ssh.Certificate, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}

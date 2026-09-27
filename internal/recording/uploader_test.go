@@ -81,10 +81,7 @@ func TestUploaderStreamsPlaintext(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	u := NewUploader(context.Background(), ts.client, UploaderOptions{
-		SessionID: "s1",
-		Username:  "user",
-	})
+	u := NewUploader(context.Background(), ts.client, "s1", "user")
 
 	_, err := u.Write([]byte("terminal output"))
 	must.NoError(err)
@@ -110,10 +107,7 @@ func TestUploaderKeepsLocalOnFailure(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	u := NewUploader(context.Background(), ts.client, UploaderOptions{
-		SessionID: "s1",
-		Username:  "user",
-	})
+	u := NewUploader(context.Background(), ts.client, "s1", "user")
 
 	_, err := u.Write([]byte("first"))
 	must.NoError(err)
@@ -132,10 +126,7 @@ func TestUploaderZeroSlicesAreNoop(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	u := NewUploader(context.Background(), ts.client, UploaderOptions{
-		SessionID: "s1",
-		Username:  "user",
-	})
+	u := NewUploader(context.Background(), ts.client, "s1", "user")
 
 	n, err := u.Write(nil)
 	must.NoError(err)

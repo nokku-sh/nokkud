@@ -10,15 +10,14 @@ import (
 // maxSnakeCaseLen bounds the result so it always fits a single filename.
 const maxSnakeCaseLen = 64
 
-var posixUserRE = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+// posixUserRE matches the shadow-utils relaxed name rules, so LDAP and SSSD
+// names like john.doe pass. Keep in sync with the username pattern in protos.
+var posixUserRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]*\$?$`)
 
 // ValidatePrincipal checks that principal is a safe POSIX username.
 func ValidatePrincipal(principal string) error {
-	if principal == "" {
-		return fmt.Errorf("empty username")
-	}
-	if !posixUserRE.MatchString(principal) {
-		return fmt.Errorf("invalid username")
+	if len(principal) > 32 || !posixUserRE.MatchString(principal) {
+		return fmt.Errorf("invalid username %q", principal)
 	}
 	return nil
 }

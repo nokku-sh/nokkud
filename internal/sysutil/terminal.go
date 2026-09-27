@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -121,13 +120,6 @@ func CmdEnv(sysUser *user.User, shell string) []string {
 // when the password entry carries no shell at all, and never the daemon's own
 // SHELL.
 func UserShell(u *user.User) string {
-	if runtime.GOOS == "windows" {
-		if shell := os.Getenv("COMSPEC"); shell != "" {
-			return shell
-		}
-		return "cmd.exe"
-	}
-
 	if u != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

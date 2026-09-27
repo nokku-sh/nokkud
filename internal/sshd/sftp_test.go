@@ -21,9 +21,16 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+func init() {
+	sftpServerCmd = func(home string) (*exec.Cmd, error) {
+		cmd := exec.Command(os.Args[0], "-test.run=TestSFTPHelperProcess", "--", "sftp-server", home)
+		cmd.Env = append(os.Environ(), "GO_WANT_SFTP_HELPER_PROCESS=1")
+		return cmd, nil
+	}
+}
+
 // TestSFTPHelperProcess re-enters the test binary as the sftp-server
-// subprocess. It is spawned by the server under the `--` convention. See
-// sftpServerCommand.
+// subprocess, see the sftpServerCmd override in init.
 func TestSFTPHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_SFTP_HELPER_PROCESS") != "1" {
 		return
