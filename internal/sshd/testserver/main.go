@@ -16,7 +16,7 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/state"
-	"github.com/nokku-sh/nokkud/internal/util"
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 func main() {
@@ -44,7 +44,7 @@ func main() {
 		fail("config-dir is required")
 	}
 	if !*allowNonRoot {
-		if err := util.IsRoot(); err != nil {
+		if err := sysutil.IsRoot(); err != nil {
 			fail(err.Error())
 		}
 	}

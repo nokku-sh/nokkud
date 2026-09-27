@@ -2,6 +2,7 @@ package recording
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
@@ -9,18 +10,17 @@ import (
 	"log/slog"
 	"math"
 	"os"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
-	"github.com/nokku-sh/nokkud/internal/util"
 )
 
 const (
-	// MaxSize is the maximum uncompressed size of a recording.
+	// MaxSize caps a recording's compressed size on disk. Recording stops
+	// there and the session goes on, the cut is audited.
 	MaxSize = 50 << 20
 	// MaxIdleTime is the maximum gap between events recorded in the cast.
 	MaxIdleTime = 2 * time.Second
@@ -36,6 +36,7 @@ type Header struct {
 	Timestamp int64  `json:"timestamp,omitempty"`
 	Title     string `json:"title,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
+	User      string `json:"user,omitempty"`
 }
 
 // Term is the terminal info block of an asciicast v3 header.
@@ -52,13 +53,20 @@ type Options struct {
 	Title     string // stored in the asciicast header
 	Label     string // short human-usable label for the filename
 	SessionID string // correlates the recording with the session's audit events
+	User      string // the local account, needed to upload the file later
+	Term      string // the session's TERM
 	// Sink, when set, receives every flushed batch in addition to the local file.
+	// A nil error from its Close confirms the upload.
 	Sink io.WriteCloser
+	// OnLimit is called once when the recording stops at MaxSize.
+	OnLimit func()
 }
 
 // Recorder writes session events to a single gzipped asciicast v3 file.
 type Recorder struct {
 	mu        sync.Mutex
+	path      string
+	onLimit   func()
 	cw        *countingWriter
 	gw        *gzip.Writer
 	enc       *json.Encoder
@@ -104,28 +112,25 @@ func (t *sinkTee) Write(p []byte) (int, error) {
 	return t.w.Write(p)
 }
 
-// New starts a recording under the records dir, enforcing retention. It
-// returns a nil no-op recorder when disk space is too low.
+// New starts a recording under the records dir, enforcing retention. A nil
+// Recorder is a valid no-op, so callers may keep going after an error.
 func New(opts Options) (*Recorder, error) {
 	if err := sysutil.CheckDiskSpace(paths.RecordsDir()); err != nil {
-		slog.Warn("low disk space, skipping recording", "error", err)
-		return nil, nil //nolint:nilnil // intentional: nil recorder is a valid no-op
+		return nil, err
 	}
 
 	label := opts.Title
 	if opts.Label != "" {
 		label = opts.Label
 	}
-	safeLabel := util.ToSnakeCase(label)
-	filename := recordingFilename(time.Now(), safeLabel, opts.SessionID)
-
-	// The filename is self-constructed (timestamp, sanitized label and
-	// session id, pid), so joining it carries no traversal risk.
-	path := filepath.Join(paths.RecordsDir(), filename)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600) // #nosec G304
+	// CreateTemp adds a random part, so sessions started in the same second
+	// never collide. It also creates the file 0600.
+	pattern := recordingPattern(time.Now(), toSnakeCase(label), opts.SessionID)
+	f, err := os.CreateTemp(paths.RecordsDir(), pattern)
 	if err != nil {
 		return nil, fmt.Errorf("create recording file: %w", err)
 	}
+	path := f.Name()
 
 	if err = EnforceRetention(); err != nil {
 		_ = f.Close()
@@ -142,21 +147,17 @@ func New(opts Options) (*Recorder, error) {
 	enc := json.NewEncoder(gw)
 	enc.SetEscapeHTML(false)
 
-	term := os.Getenv("TERM")
-	if term == "" {
-		term = "xterm-256color"
-	}
-
 	if err = enc.Encode(Header{
 		Version: 3,
 		Term: Term{
 			Cols: opts.Width,
 			Rows: opts.Height,
-			Type: term,
+			Type: cmp.Or(opts.Term, "xterm-256color"),
 		},
 		Timestamp: time.Now().Unix(),
 		Title:     opts.Title,
 		SessionID: opts.SessionID,
+		User:      opts.User,
 	}); err != nil {
 		_ = gw.Close()
 		_ = f.Close()
@@ -172,6 +173,8 @@ func New(opts Options) (*Recorder, error) {
 	}
 
 	rec := &Recorder{
+		path:      path,
+		onLimit:   opts.OnLimit,
 		cw:        cw,
 		gw:        gw,
 		enc:       enc,
@@ -179,6 +182,7 @@ func New(opts Options) (*Recorder, error) {
 		lastEvent: time.Now(),
 		done:      make(chan struct{}),
 	}
+	active.Store(path, struct{}{})
 	go rec.flushLoop()
 	return rec, nil
 }
@@ -213,19 +217,22 @@ func (r *Recorder) event(eventType string, data []byte) {
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	if r.closed {
+		r.mu.Unlock()
 		return
 	}
-
-	if r.cw.written >= MaxSize {
-		slog.Warn("recording size limit reached, stopping", "size", MaxSize)
-		r.closeLocked()
+	if r.cw.written < MaxSize {
+		r.emit(eventType, data)
+		r.mu.Unlock()
 		return
 	}
+	r.closeLocked()
+	r.mu.Unlock()
 
-	r.emit(eventType, data)
+	slog.Warn("recording size limit reached, stopping", "size", MaxSize)
+	if r.onLimit != nil {
+		r.onLimit()
+	}
 }
 
 // emit writes one event line. Caller holds r.mu and has checked not closed.
@@ -314,15 +321,20 @@ func (r *Recorder) closeLocked() {
 	if err := r.cw.w.Close(); err != nil {
 		slog.Error("close recording file", "error", err)
 	}
-	if r.sink != nil {
-		// The sink is the uploader and its Close waits for the backend. Run
-		// it off the session path so the client is never held waiting on it.
-		go func() {
-			if err := r.sink.Close(); err != nil {
-				slog.Warn("close recording sink", "error", err)
-			}
-		}()
+	if r.sink == nil {
+		active.Delete(r.path)
+		return
 	}
+	// The sink is the uploader and its Close waits for the backend. Run it
+	// off the session path so the client is never held waiting on it.
+	go func() {
+		defer active.Delete(r.path)
+		if err := r.sink.Close(); err != nil {
+			slog.Warn("recording upload incomplete, retrying later", "error", err)
+			return
+		}
+		markUploaded(r.path)
+	}()
 }
 
 // Close flushes and closes the recording.

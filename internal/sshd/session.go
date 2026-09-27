@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"sync"
 	"uuid"
@@ -17,7 +18,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/audit"
-	"github.com/nokku-sh/nokkud/internal/ptysession"
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
@@ -270,6 +270,11 @@ func (sess *session) acceptSubsystem(req *ssh.Request) bool {
 		ssh.Unmarshal(req.Payload, &r) == nil && r.Name == "sftp"
 	sess.handled = sess.handled || ok
 	_ = req.Reply(ok, nil)
+	if ok {
+		ev := sess.event(audit.EventSubsystem)
+		ev.Command = r.Name
+		sess.server.audit.Emit(ev)
+	}
 	return ok
 }
 
@@ -312,6 +317,8 @@ func (sess *session) windowChange(req *ssh.Request) {
 	if ssh.Unmarshal(req.Payload, &w) == nil && sess.ptmx != nil {
 		if err := sess.ptmx.Resize(int(w.Cols), int(w.Rows)); err != nil {
 			slog.Debug("resize pty failed", "error", err)
+		} else {
+			sess.rec.RecordResize(int(w.Cols), int(w.Rows))
 		}
 	}
 	_ = req.Reply(true, nil)
@@ -433,32 +440,64 @@ func (sess *session) run() {
 	sess.runPlain()
 }
 
+// runPTY runs the login shell, or the command, in the session's pty and
+// relays bytes until it exits.
 func (sess *session) runPTY() {
 	cmd := sess.ptmx.Command(sess.shell)
-	if err := ptysession.Configure(
-		cmd,
-		sess.sysUser,
-		sess.shell,
-		sess.rawCmd,
-		sess.buildEnv(),
-	); err != nil {
+	cmd.Args[0] = "-" + filepath.Base(sess.shell) // login shell
+	if sess.rawCmd != "" {
+		cmd.Args = append(cmd.Args[:1], "-c", sess.rawCmd)
+	}
+	cmd.Dir = sess.sysUser.HomeDir
+	cmd.Env = sess.buildEnv()
+	attr, err := sysutil.SysProcAttr(sess.sysUser)
+	if err != nil {
 		sess.Exit(1)
 		return
 	}
+	cmd.SysProcAttr = attr
+	if err = cmd.Start(); err != nil {
+		slog.Debug("start pty command failed", "error", err)
+		sess.Exit(1)
+		return
+	}
+	sess.setProc(cmd.Process)
+	// Drop our slave end, so the master reports EOF once the child exits.
+	if u, ok := sess.ptmx.(pty.UnixPty); ok {
+		_ = u.Slave().Close()
+	}
 
-	ps, waitInput := ptysession.Run(ptysession.RunOptions{
-		Pty:     sess.ptmx,
-		Cmd:     cmd,
-		In:      sess,
-		Out:     sess,
-		Rec:     sess.rec,
-		OnStart: sess.setProc,
+	var input sync.WaitGroup
+	input.Go(func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := sess.Read(buf)
+			if n > 0 {
+				// Only echoed input is recorded, so password prompts never are.
+				if sess.rec != nil && sysutil.EchoEnabled(sess.ptmx.Fd()) {
+					sess.rec.RecordInput(buf[:n])
+				}
+				if _, writeErr := sess.ptmx.Write(buf[:n]); writeErr != nil {
+					return
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
 	})
 
-	// ExitProcess closes the session channel, which unblocks the input relay
-	// Run spawned; join it afterwards.
-	sess.ExitProcess(ps)
-	waitInput()
+	var out io.Writer = sess
+	if sess.rec != nil {
+		out = recOut{w: sess, rec: sess.rec}
+	}
+	_, _ = io.Copy(out, sess.ptmx)
+	_ = sess.ptmx.Close()
+	_ = cmd.Wait()
+
+	// ExitProcess closes the channel, which unblocks the input relay.
+	sess.ExitProcess(cmd.ProcessState)
+	input.Wait()
 }
 
 // runPlain runs the command without a pty, the non-interactive `ssh host
@@ -513,17 +552,35 @@ func (sess *session) startRecorder(width, height int) {
 			sess.sysUser.Username,
 		)
 	}
+	term, _ := sess.envValue("TERM")
 	rec, err := recording.New(recording.Options{
 		Width:     width,
 		Height:    height,
 		Title:     fmt.Sprintf("ssh-%s", sess.sysUser.Username),
 		Label:     sess.sysUser.Username,
 		SessionID: recSessionID,
+		User:      sess.sysUser.Username,
+		Term:      term,
 		Sink:      sink,
+		OnLimit:   func() { sess.recordingDegraded("size limit reached, rest of the session not recorded") },
 	})
-	if err == nil && rec != nil {
-		sess.rec = rec
+	if err != nil {
+		// Recording fails open so a full disk never locks admins out, but
+		// the gap is always on the audit trail.
+		slog.Warn("session not recorded", "session_id", sess.sessionID, "error", err)
+		if sink != nil {
+			_ = sink.Close()
+		}
+		sess.recordingDegraded("not recorded: " + err.Error())
+		return
 	}
+	sess.rec = rec
+}
+
+func (sess *session) recordingDegraded(reason string) {
+	ev := sess.event(audit.EventRecordingDegraded)
+	ev.Error = reason
+	sess.server.audit.Emit(ev)
 }
 
 // canonicalUUID reports whether s is a lowercase hyphenated 8-4-4-4-12 UUID,

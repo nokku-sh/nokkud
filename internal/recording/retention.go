@@ -1,13 +1,14 @@
 package recording
 
 import (
+	"errors"
+	"io/fs"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
-	"github.com/nokku-sh/nokkud/internal/util"
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 const (
@@ -22,11 +23,10 @@ const (
 func EnforceRetention() error {
 	recordsDir := paths.RecordsDir()
 	entries, err := os.ReadDir(recordsDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) || os.IsPermission(err) {
-			// The recordings dir is a sticky drop-box (no read bit)
-			return nil
-		}
 		return err
 	}
 
@@ -44,25 +44,17 @@ func EnforceRetention() error {
 		files = append(files, info)
 	}
 
-	util.PruneOldest(recordsDir, files, MaxAge, MaxTotalSpace)
+	sysutil.PruneOldest(recordsDir, files, MaxAge, MaxTotalSpace)
 	return nil
 }
 
-// recordingFilename builds a timestamped, sanitized filename. A session ID's
-// first 8 characters are embedded so recordings correlate with audit events.
-func recordingFilename(now time.Time, safeLabel, sessionID string) string {
+// recordingPattern builds a timestamped [os.CreateTemp] pattern. The session
+// ID correlates the recording with its audit events and is sanitized like the
+// label, so it can never smuggle a path separator in.
+func recordingPattern(now time.Time, safeLabel, sessionID string) string {
 	parts := []string{now.Format("20060102T150405Z"), safeLabel}
-	if id := shortSessionID(sessionID); id != "" {
-		// The ID must never smuggle path separators into the filename, so
-		// sanitize it exactly like the label.
-		parts = append(parts, util.ToSnakeCase(id))
+	if sessionID != "" {
+		parts = append(parts, toSnakeCase(sessionID))
 	}
-	parts = append(parts, strconv.Itoa(os.Getpid()))
-	return strings.Join(parts, "-") + ".cast.gz"
-}
-
-// shortSessionID trims a session ID to 8 characters for the filename. The
-// full ID always lives in the asciicast header.
-func shortSessionID(id string) string {
-	return id[:min(len(id), 8)]
+	return strings.Join(parts, "-") + "-*" + castSuffix
 }
