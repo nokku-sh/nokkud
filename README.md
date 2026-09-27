@@ -51,14 +51,16 @@ sudo firewall-cmd --reload
 Generate an enrollment token in the Nokku web app, then run:
 
 ```bash
-sudo systemctl stop nokkud
-sudo nokkud --enroll
-sudo systemctl start nokkud
+sudo nokkud enroll
+sudo systemctl restart nokkud
 ```
 
-`--enroll` prompts for the token without echoing it. For unattended installs set
-`NOKKUD_ENROLL_TOKEN` instead. The token is never taken from the command line,
-where any local user could read it from the process list.
+`nokkud enroll` prompts for the token without echoing it, enrolls, and exits.
+For unattended installs set `NOKKUD_ENROLL_TOKEN` instead. The token is never
+taken from the command line, where any local user could read it from the
+process list. Until the host is enrolled the service exits with a clear error
+and systemd does not restart it. Enrolling again moves the host to another
+workspace and drops everything the old one trusted.
 
 Everything `nokkud` owns lives under `/var/lib/nokkud/`. On a TPM machine the signing key never leaves the TPM; without one, the software key is stored wrapped to the machine fingerprint. The daemon authenticates with DPoP, and the session token it holds is bound to that key.
 
@@ -91,10 +93,9 @@ point.
 | Flag            | Environment           | Purpose                                              |
 | --------------- | --------------------- | ---------------------------------------------------- |
 | `--api`         | `NOKKUD_API_URL`      | Backend URL                                          |
-| `--enroll`      | `NOKKUD_ENROLL_TOKEN` | Enroll this host. Prompts unless the env token is set |
 | `--ssh-addr`    | `NOKKUD_SSH_ADDR`     | Embedded SSH server listen address (default `:4022`) |
 | `--debug`       | `NOKKUD_DEBUG`        | Debug logging                                        |
-| `--insecure`    | none                  | Disable TLS verification (insecure!)                 |
+| `--insecure`    | `NOKKUD_INSECURE`     | Disable TLS verification (insecure!)                 |
 | `--require-tpm` | `NOKKUD_REQUIRE_TPM`  | Require a TPM and refuse software fallback           |
 
 ## Operations
