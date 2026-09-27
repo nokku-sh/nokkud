@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // FuzzToSnakeCase checks the invariants the recorder relies on: the result
@@ -42,25 +45,28 @@ func FuzzToSnakeCase(f *testing.F) {
 	})
 }
 
-// FuzzValidatePrincipal checks the validator only accepts names the POSIX
-// regex matches: everything else must be rejected.
-func FuzzValidatePrincipal(f *testing.F) {
-	f.Add("")
-	f.Add("roxas")
-	f.Add("0abc")
-	f.Add("_")
-	f.Add("a-b_1")
-	f.Add(strings.Repeat("a", 32))
-	f.Add(strings.Repeat("a", 33))
-	f.Add("A")
-	f.Add("üser")
+func TestValidatePrincipal(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"root", "deploy", "_svc", "john.doe", "John", "ec2-user", "host$", strings.Repeat("a", 32)} {
+		require.NoError(t, ValidatePrincipal(name), name)
+	}
+	for _, name := range []string{"", ".", "..", "-rf", "0abc", "a/b", "a b", "üser", "a$b", strings.Repeat("a", 33)} {
+		assert.Error(t, ValidatePrincipal(name), name)
+	}
+}
 
+// FuzzValidatePrincipal checks an accepted name is always safe as a path
+// component.
+func FuzzValidatePrincipal(f *testing.F) {
+	f.Add("roxas")
+	f.Add("..")
+	f.Add("john.doe")
 	f.Fuzz(func(t *testing.T, principal string) {
-		if err := ValidatePrincipal(principal); err != nil {
+		if ValidatePrincipal(principal) != nil {
 			return
 		}
-		if !posixUserRE.MatchString(principal) {
-			t.Fatalf("ValidatePrincipal(%q) accepted a non-POSIX name", principal)
+		if principal == "." || principal == ".." || strings.ContainsAny(principal, "/\x00") {
+			t.Fatalf("ValidatePrincipal(%q) accepted an unsafe name", principal)
 		}
 	})
 }

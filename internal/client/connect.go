@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -12,143 +11,61 @@ import (
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 )
 
-const heartbeatInterval = 5 * time.Minute
+// heartbeatInterval keeps the stream alive through proxies that close idle
+// streams after 60s. The backend drops a stream silent for 2 minutes, and
+// pokes a StateUpdate when the heartbeat's version is stale.
+const heartbeatInterval = 30 * time.Second
 
-type receiveResult struct {
-	msg *nokkuv1.ConnectResponse
-	err error
-}
+type controlStream = connect.BidiStreamForClientSimple[nokkuv1.ConnectRequest, nokkuv1.ConnectResponse]
 
-// recoverLog catches panics in goroutines so a single bug never kills the daemon.
-func recoverLog(where string) {
-	if r := recover(); r != nil {
-		slog.Error("goroutine panicked", "where", where, "panic", r)
-	}
-}
-
-// runControlStream keeps the control stream open until ctx is cancelled. A
-// daemon rejection is returned as a fatal error so Run exits rather than
-// reconnecting.
-func (c *Client) runControlStream(ctx context.Context, onConnect func()) error {
-	controlCtx, cancel := context.WithCancel(ctx)
+// runControlStream serves one control stream until it breaks. Only a daemon
+// rejection is fatal to the caller.
+func (c *Client) runControlStream(ctx context.Context) error {
+	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	stream, err := c.dcs.Connect(controlCtx)
+	stream, err := c.dcs.Connect(streamCtx)
 	if err != nil {
 		return err
 	}
-
-	if onConnect != nil {
-		onConnect()
-	}
-
-	go func() {
-		defer recoverLog("heartbeat sender")
-		c.sendHeartbeats(controlCtx, stream)
-	}()
-
-	recvCh := make(chan receiveResult, 1)
-	go func() {
-		defer recoverLog("control stream receiver")
-		c.pumpReceives(controlCtx, stream, recvCh)
-	}()
+	go c.sendHeartbeats(streamCtx, stream)
 
 	for {
-		select {
-		case <-controlCtx.Done():
-			if ctx.Err() != nil {
-				return ctx.Err()
+		msg, recvErr := stream.Receive()
+		if recvErr != nil {
+			return recvErr
+		}
+		switch m := msg.GetMsg().(type) {
+		case *nokkuv1.ConnectResponse_StateUpdate:
+			err = c.syncDaemon(ctx)
+			if errors.Is(err, errDaemonRejected) {
+				return err
 			}
-			return context.Canceled
-		case r := <-recvCh:
-			if r.err != nil {
-				return r.err
+			if err != nil {
+				slog.Warn("sync after state update failed", "error", err)
 			}
-			if handleErr := c.handleServerMessage(ctx, r.msg); handleErr != nil {
-				if errors.Is(handleErr, errDaemonRejected) {
-					cancel()
-					return handleErr
-				}
-				slog.Warn("failed to handle server message", "error", handleErr)
-			}
+		case *nokkuv1.ConnectResponse_RelayOpen:
+			// Relays get ctx, not streamCtx, so a stream reconnect does not
+			// cut live web sessions.
+			c.relays.Go(func() { c.runRelay(ctx, m.RelayOpen) })
 		}
 	}
 }
 
-// sendHeartbeats sends an immediate heartbeat and then keeps the stream alive.
-func (c *Client) sendHeartbeats(
-	ctx context.Context,
-	stream *connect.BidiStreamForClientSimple[nokkuv1.ConnectRequest, nokkuv1.ConnectResponse],
-) {
-	ticker := time.NewTicker(heartbeatInterval)
-	defer ticker.Stop()
-
-	send := func() bool {
+func (c *Client) sendHeartbeats(ctx context.Context, stream *controlStream) {
+	t := time.NewTicker(heartbeatInterval)
+	defer t.Stop()
+	for {
 		version := c.cache.GetStateVersion()
-		return stream.Send(&nokkuv1.ConnectRequest{
-			Msg: &nokkuv1.ConnectRequest_Heartbeat{
-				Heartbeat: &nokkuv1.Heartbeat{StateVersion: &version},
-			},
-		}) == nil
-	}
-
-	send()
-	for {
+		err := stream.Send(&nokkuv1.ConnectRequest{
+			Msg: &nokkuv1.ConnectRequest_Heartbeat{Heartbeat: &nokkuv1.Heartbeat{StateVersion: &version}},
+		})
+		if err != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if !send() {
-				return
-			}
+		case <-t.C:
 		}
 	}
-}
-
-// pumpReceives forwards stream messages to recvCh so the run loop can
-// select on context cancellation alongside incoming messages.
-func (c *Client) pumpReceives(
-	ctx context.Context,
-	stream *connect.BidiStreamForClientSimple[nokkuv1.ConnectRequest, nokkuv1.ConnectResponse],
-	recvCh chan receiveResult,
-) {
-	for {
-		msg, err := stream.Receive()
-		select {
-		case recvCh <- receiveResult{msg, err}:
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (c *Client) handleServerMessage(
-	ctx context.Context,
-	msg *nokkuv1.ConnectResponse,
-) error {
-	switch m := msg.GetMsg().(type) {
-	case *nokkuv1.ConnectResponse_HeartbeatAck:
-		return c.reconcile(ctx, m.HeartbeatAck.GetStateVersion())
-	case *nokkuv1.ConnectResponse_StateUpdate:
-		return c.reconcile(ctx, m.StateUpdate.GetStateVersion())
-	case *nokkuv1.ConnectResponse_RelayOpen:
-		c.sessionWG.Go(func() { c.startRelay(ctx, m.RelayOpen) })
-	default:
-		slog.Debug("unexpected server message", "type", fmt.Sprintf("%T", msg.GetMsg()))
-	}
-	return nil
-}
-
-// reconcile re-syncs when the server's state version differs from ours.
-func (c *Client) reconcile(ctx context.Context, serverVersion int64) error {
-	if serverVersion == c.cache.GetStateVersion() {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, syncTimeout)
-	defer cancel()
-	// runControlStream logs the returned error, so logging here would duplicate it.
-	if err := c.syncDaemon(ctx); err != nil {
-		return fmt.Errorf("sync after state update: %w", err)
-	}
-	return nil
 }

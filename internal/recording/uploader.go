@@ -31,22 +31,17 @@ type Uploader struct {
 	cancel context.CancelFunc
 }
 
-type UploaderOptions struct {
-	SessionID string
-	Username  string
-}
-
 // NewUploader builds an Uploader and starts its sender goroutine.
 func NewUploader(
 	ctx context.Context,
 	client nokkuv1connect.RecordingServiceClient,
-	opts UploaderOptions,
+	sessionID, username string,
 ) *Uploader {
 	ctx, cancel := context.WithCancel(ctx)
 	u := &Uploader{
 		client:    client,
-		sessionID: opts.SessionID,
-		username:  opts.Username,
+		sessionID: sessionID,
+		username:  username,
 		chunks:    make(chan []byte, maxBufferedChunks),
 		done:      make(chan struct{}),
 		cancel:    cancel,

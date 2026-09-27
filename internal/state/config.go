@@ -1,17 +1,13 @@
 package state
 
 import (
-	"github.com/nokku-sh/mon/fsutil"
+	"github.com/mizuchilabs/kata/fsutil"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// Built-in defaults for the runtime options the daemon persists. They live
-// here, not on the CLI flags, so a bare default never clobbers config.json.
-const (
-	DefaultAPIURL  = "https://app.nokku.sh"
-	DefaultSSHAddr = ":4022"
-)
+// DefaultAPIURL applies until --api or config.json says otherwise.
+const DefaultAPIURL = "https://app.nokku.sh"
 
 // Config is the persisted enrollment state. The backend-synced daemon config
 // lives in [Cache].
@@ -20,7 +16,6 @@ type Config struct {
 	TargetID     string `json:"target_id,omitempty"`
 	DaemonID     string `json:"daemon_id,omitempty"`
 	APIURL       string `json:"api_url,omitempty"`
-	SSHAddr      string `json:"ssh_addr,omitempty"`
 	SessionToken string `json:"session_token,omitempty"`
 }
 
@@ -39,10 +34,5 @@ func (c *Config) Save() error {
 }
 
 func (c *Config) Clear() {
-	c.WorkspaceID = ""
-	c.TargetID = ""
-	c.DaemonID = ""
-	c.APIURL = ""
-	c.SSHAddr = ""
-	c.SessionToken = ""
+	*c = Config{}
 }

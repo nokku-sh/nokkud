@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"os/user"
-	"runtime"
 	"testing"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
+	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/state"
 )
@@ -94,7 +94,12 @@ func startTestServer(t *testing.T, ca testCA) (addr string, closeFn func()) {
 }
 
 // startTestServerOpts is startTestServer with extra Options applied.
-func startTestServerOpts(t *testing.T, ca testCA, extra Options) (addr string, closeFn func()) {
+func startTestServerOpts(
+	t *testing.T,
+	ca testCA,
+	extra Options,
+	tweaks ...func(*Server),
+) (addr string, closeFn func()) {
 	t.Helper()
 	cur, err := user.Current()
 	require.NoError(t, err, "current user")
@@ -110,9 +115,12 @@ func startTestServerOpts(t *testing.T, ca testCA, extra Options) (addr string, c
 	extra.TrustedCAs = []ssh.PublicKey{ca.pub}
 	srv, err := New(extra)
 	require.NoError(t, err, "new server")
+	for _, tweak := range tweaks {
+		tweak(srv)
+	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err, "listen")
-	go func() { _ = srv.Serve(l) }()
+	go srv.Serve(t.Context(), l)
 	return l.Addr().String(), func() { _ = l.Close() }
 }
 
@@ -169,10 +177,6 @@ func TestServerExecExitStatus(t *testing.T) {
 }
 
 func TestServerExecExitSignal(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no POSIX signals on windows")
-	}
-
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -278,20 +282,15 @@ func TestHostKeysStable(t *testing.T) {
 	must := require.New(t)
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 
-	s1, c1, err := loadHostKeys()
-	must.NoError(err, "load host keys")
-	for _, c := range c1 {
-		defer func() { _ = c.Close() }()
-	}
-	is.NotEmpty(s1, "expected at least one host key")
-	first := s1[0].PublicKey().Marshal()
+	s1, c1, err := loadHostKey()
+	must.NoError(err, "load host key")
+	defer c1.Close()
+	first := s1.PublicKey().Marshal()
 
-	s2, c2, err := loadHostKeys()
-	must.NoError(err, "reload host keys")
-	for _, c := range c2 {
-		defer func() { _ = c.Close() }()
-	}
-	second := s2[0].PublicKey().Marshal()
+	s2, c2, err := loadHostKey()
+	must.NoError(err, "reload host key")
+	defer c2.Close()
+	second := s2.PublicKey().Marshal()
 	is.Equal(first, second)
 }
 
@@ -312,11 +311,9 @@ func TestHostKeysDropStaleCert(t *testing.T) {
 	), "write stale public key")
 	must.NoError(os.WriteFile(paths.HostKeyCert(), []byte("stale"), 0o644), "write stale cert")
 
-	_, closers, err := loadHostKeys()
-	must.NoError(err, "load host keys")
-	for _, c := range closers {
-		defer func() { _ = c.Close() }()
-	}
+	_, closer, err := loadHostKey()
+	must.NoError(err, "load host key")
+	defer closer.Close()
 
 	_, err = os.Stat(paths.HostKeyCert())
 	must.ErrorIs(err, os.ErrNotExist, "certificate for a previous identity must be dropped")
@@ -358,7 +355,7 @@ func TestServerLivePrincipals(t *testing.T) {
 	must.NoError(err, "new server")
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	must.NoError(err, "listen")
-	go func() { _ = srv.Serve(l) }()
+	go srv.Serve(t.Context(), l)
 	defer l.Close()
 
 	// No rules yet: denied.
@@ -376,4 +373,18 @@ func TestServerLivePrincipals(t *testing.T) {
 	defer sess.Close()
 	_, err = sess.Output("printf live")
 	must.NoError(err, "exec")
+}
+
+// TestPolicyFrom verifies a field the backend never set keeps the default, so
+// a partial config cannot silently turn recording off.
+func TestPolicyFrom(t *testing.T) {
+	t.Parallel()
+	is := assert.New(t)
+	is.Equal(DefaultPolicy, PolicyFrom(nil))
+	is.Equal(DefaultPolicy, PolicyFrom(&nokkuv1.DaemonConfig{}))
+
+	got := PolicyFrom(&nokkuv1.DaemonConfig{RecordSessions: new(false), GatewayPorts: new(true)})
+	is.False(got.Record)
+	is.True(got.GatewayPorts)
+	is.True(got.AllowForwarding, "unset field lost its default")
 }

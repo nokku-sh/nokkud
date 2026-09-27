@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 const (
@@ -19,32 +18,13 @@ const (
 	recordsDir          = "recordings"
 	auditDir            = "audit"
 	hostKeyName         = "ssh_host_ecdsa_key"
-	softwareHostKeyName = "ssh_host_ed25519_key"
 )
 
 func dataDir() string {
 	if dir := os.Getenv("NOKKUD_DATA_DIR"); dir != "" {
 		return dir
 	}
-
-	switch runtime.GOOS {
-	case "windows":
-		pd := os.Getenv("ProgramData")
-		if pd == "" {
-			drive := os.Getenv("SystemDrive")
-			if drive == "" {
-				drive = "C:"
-			}
-			pd = filepath.Join(drive, "ProgramData")
-		}
-		return filepath.Join(pd, "Nokkud")
-
-	case "darwin":
-		return "/Library/Application Support/Nokkud"
-
-	default:
-		return "/var/lib/nokkud"
-	}
+	return "/var/lib/nokkud"
 }
 
 func RecordsDir() string { return filepath.Join(dataDir(), recordsDir) }
@@ -70,18 +50,6 @@ func HostKeyPub() string { return filepath.Join(dataDir(), hostKeyName+".pub") }
 
 // HostKeyCert is the host certificate the embedded SSH server presents.
 func HostKeyCert() string { return filepath.Join(dataDir(), hostKeyName+"-cert.pub") }
-
-// SoftwareHostKey is the legacy pre-Signer ed25519 private key path, removed
-// on upgrade.
-func SoftwareHostKey() string { return filepath.Join(dataDir(), softwareHostKeyName) }
-
-// SoftwareHostKeyPub is the legacy pre-Signer ed25519 public key path, removed
-// on upgrade.
-func SoftwareHostKeyPub() string { return SoftwareHostKey() + ".pub" }
-
-// SoftwareHostKeyCert is the legacy pre-Signer ed25519 host certificate path,
-// removed on upgrade.
-func SoftwareHostKeyCert() string { return SoftwareHostKey() + "-cert.pub" }
 
 // Verify creates the owned directories with 0700 perms. MkdirAll leaves an
 // existing directory's mode alone, so the mode is applied explicitly.

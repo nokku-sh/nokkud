@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -24,6 +25,9 @@ import (
 // webSessionKeyIDPrefix marks control-plane user certificates for a web
 // terminal session. Must stay in sync with the backend's mintSessionCert.
 const webSessionKeyIDPrefix = "nokku:web:session:"
+
+// maxClientEnv caps env requests per session.
+const maxClientEnv = 64
 
 // session handles a single "session" channel.
 type session struct {
@@ -73,74 +77,26 @@ type recOut struct {
 	rec *recording.Recorder
 }
 
-// serveSessionChannel accepts a "session" channel and serves its request
-// stream. Session caps are enforced before the channel is accepted.
-func serveSessionChannel(
-	s *Server,
-	conn *ssh.ServerConn,
-	st *connState,
-	newCh ssh.NewChannel,
-) (ch ssh.Channel) {
-	defer s.recoverAndLog("channel session", func() {
-		if ch != nil {
-			_ = ch.Close()
-			return
-		}
-		_ = newCh.Reject(ssh.ConnectionFailed, "channel handler failed")
-	})
-
-	if !st.acquireSession(s.tun.Load().MaxSessions) {
-		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions")
-		return nil
-	}
-	defer st.releaseSession()
-
-	if !s.acquirePrincipalSession(conn.User(), s.tun.Load().MaxSessionsPerUser) {
-		_ = newCh.Reject(ssh.ResourceShortage, "too many sessions for user")
-		return nil
-	}
-	defer s.releasePrincipalSession(conn.User())
-
-	c, reqs, err := newCh.Accept()
+func (s *Server) serveSession(st *connState, newCh ssh.NewChannel) {
+	conn := st.conn
+	ch, reqs, err := newCh.Accept()
 	if err != nil {
-		s.logger.Debug("accept session channel failed", "error", err)
-		return nil
+		slog.Debug("accept session channel failed", "error", err)
+		return
 	}
-	ch = c
-	s.serveSession(conn, st, c, reqs)
-	return c
-}
+	defer ch.Close()
 
-func (s *Server) serveSession(
-	conn *ssh.ServerConn,
-	st *connState,
-	ch ssh.Channel,
-	reqs <-chan *ssh.Request,
-) {
 	sysUser, err := sysutil.LookupUser(conn.User())
+	if err == nil {
+		err = sysutil.LoginAllowed(sysUser, s.nologinFile)
+	}
 	if err != nil {
-		s.emit(
-			eventWith(
-				connEvent(conn),
-				audit.EventAuthFailure,
-				"",
-				fmt.Sprintf("user %q not found", conn.User()),
-			),
-		)
-		s.authFailure(conn, fmt.Errorf("user %q not found", conn.User()))
-		_ = ch.Close()
+		_ = s.deny(conn, err)
 		return
 	}
 
-	if loginErr := sysutil.LoginAllowed(sysUser, s.nologinFile); loginErr != nil {
-		s.emit(eventWith(connEvent(conn), audit.EventAuthFailure, "", loginErr.Error()))
-		s.authFailure(conn, loginErr)
-		_ = ch.Close()
-		return
-	}
-
-	sessionID := uuid.NewV7().String()
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	sess := &session{
 		Channel:   ch,
 		server:    s,
@@ -151,73 +107,50 @@ func (s *Server) serveSession(
 		shell:     sysutil.UserShell(sysUser),
 		ctx:       ctx,
 		cancel:    cancel,
-		sessionID: sessionID,
+		sessionID: uuid.NewV7().String(),
 	}
-
-	ev := eventWith(connEvent(conn), audit.EventSessionStart, "", "")
-	ev.SessionID = sessionID
-	ev.User = sysUser.Username
-	s.emit(ev)
-
-	defer cancel()
+	s.audit.Emit(sess.event(audit.EventSessionStart))
 	sess.handleRequests()
 }
 
-// handleRequests services the request stream, running shell/exec/subsystem
-// work in a handler goroutine. On stream end the process is reaped and joined.
+func (sess *session) event(typ audit.EventType) audit.Event {
+	ev := connEvent(sess.conn, typ)
+	ev.SessionID = sess.sessionID
+	ev.User = sess.sysUser.Username
+	return ev
+}
+
+// handleRequests serves the request stream and runs shell, exec or subsystem
+// work in one handler goroutine. When the stream ends the process is killed
+// and the handler joined.
 func (sess *session) handleRequests() {
-	handlerDone := make(chan struct{})
-	var started bool
-	var start sync.Once
+	var handlerDone chan struct{}
 	startHandler := func(fn func()) {
-		start.Do(func() {
-			started = true
-			go func() {
-				defer close(handlerDone)
-				defer sess.server.recoverAndLog("session handler", nil)
-				fn()
-			}()
-		})
+		handlerDone = make(chan struct{})
+		go func() {
+			defer close(handlerDone)
+			defer recoverPanic("session handler")
+			fn()
+		}()
 	}
 
 	for req := range sess.reqs {
 		switch req.Type {
 		case "shell", "exec":
 			if sess.handleCommand(req) {
-				startHandler(func() { sess.run() })
+				startHandler(sess.run)
 			}
 		case "subsystem":
-			if name, ok := sess.acceptSubsystem(req); ok {
-				startHandler(func() { sess.Exit(int(sess.runSubsystem(name))) })
+			if sess.acceptSubsystem(req) {
+				startHandler(sess.runSFTP)
 			}
 		case "env":
-			if sess.handled {
-				_ = req.Reply(false, nil)
-				continue
-			}
-			var e struct{ Name, Value string }
-			if ssh.Unmarshal(req.Payload, &e) != nil {
-				_ = req.Reply(false, nil)
-				continue
-			}
-			if !sess.acceptEnv(e.Name) {
-				_ = req.Reply(false, nil)
-				continue
-			}
-			sess.env = append(sess.env, e.Name+"="+e.Value)
-			_ = req.Reply(true, nil)
+			_ = req.Reply(sess.setClientEnv(req.Payload), nil)
 		case "pty-req":
-			if sess.handled {
-				_ = req.Reply(false, nil)
-				continue
-			}
 			sess.ptyReq(req)
 		case agentRequestType:
 			if sess.agentRequest(req) {
-				go func() {
-					defer sess.server.recoverAndLog("agent forwarding", nil)
-					sess.serveAgent()
-				}()
+				go sess.serveAgent()
 			}
 		case "window-change":
 			sess.windowChange(req)
@@ -228,11 +161,17 @@ func (sess *session) handleRequests() {
 		}
 	}
 
-	// Client disconnected or the channel closed: reap the process, then wait
-	// for the handler to wind down. Nothing to join if none ever started.
 	sess.killProc()
-	if started {
+	if handlerDone != nil {
 		<-handlerDone
+		return
+	}
+	// No command ever ran, so nothing else releases what pty-req opened.
+	if sess.ptmx != nil {
+		_ = sess.ptmx.Close()
+	}
+	if sess.rec != nil {
+		sess.rec.Close()
 	}
 }
 
@@ -241,9 +180,7 @@ func (sess *session) handleCommand(req *ssh.Request) bool {
 		_ = req.Reply(false, nil)
 		return false
 	}
-
-	// A certificate force-command critical option replaces whatever the
-	// client asked for (matching sshd). The requested command is ignored.
+	// A force-command replaces whatever the client asked for, like sshd.
 	if fc := sess.forceCommand(); fc != "" {
 		sess.rawCmd = fc
 	} else if req.Type == "exec" {
@@ -257,123 +194,88 @@ func (sess *session) handleCommand(req *ssh.Request) bool {
 	sess.handled = true
 	_ = req.Reply(true, nil)
 
-	ev := eventWith(connEvent(sess.conn), audit.EventCommand, "", "")
-	ev.SessionID = sess.sessionID
-	ev.User = sess.sysUser.Username
+	ev := sess.event(audit.EventCommand)
 	ev.Command = sess.rawCmd
-	sess.server.emit(ev)
+	sess.server.audit.Emit(ev)
 	return true
 }
 
 func (sess *session) forceCommand() string {
-	if sess.conn == nil || sess.conn.Permissions == nil {
-		return ""
-	}
 	return sess.conn.Permissions.Extensions["force-command"]
 }
 
-// webSession reports whether the session authenticated with a control-plane
-// web-terminal certificate. The key id is signed, so it is trustworthy.
+// webSession reports whether the session logged in with a control-plane web
+// terminal cert. The key id is signed by the CA, so it is trustworthy.
 func (sess *session) webSession() bool {
-	if sess.conn == nil || sess.conn.Permissions == nil {
-		return false
-	}
-	return strings.HasPrefix(
-		sess.conn.Permissions.Extensions["nokku-cert-key-id"],
-		webSessionKeyIDPrefix,
-	)
+	return strings.HasPrefix(sess.conn.Permissions.Extensions["nokku-cert-key-id"], webSessionKeyIDPrefix)
 }
 
-// acceptEnv is the client environment whitelist. A force-command refuses
-// client env, so BASH_ENV or LD_PRELOAD cannot override a restricted command.
-func (sess *session) acceptEnv(name string) bool {
-	if sess.forceCommand() != "" {
+// setClientEnv applies an env request if the whitelist admits it. A
+// force-command refuses all client env, so BASH_ENV or LD_PRELOAD cannot
+// bend a restricted command.
+func (sess *session) setClientEnv(payload []byte) bool {
+	var e struct{ Name, Value string }
+	if sess.handled || len(sess.env) >= maxClientEnv || sess.forceCommand() != "" ||
+		ssh.Unmarshal(payload, &e) != nil {
 		return false
 	}
-	// The recording label is only accepted from a web session, else a client
-	// could label its recording with another session's id.
-	if name == "NOKKU_SESSION_ID" {
-		return sess.webSession()
+	// Only a web session may label its recording, else a client could claim
+	// another session's recording id.
+	if e.Name == "NOKKU_SESSION_ID" && !sess.webSession() {
+		return false
 	}
-	return allowedEnv(name)
+	if !allowedEnv(e.Name) {
+		return false
+	}
+	sess.setEnv(e.Name, e.Value)
+	return true
 }
 
 // allowedEnv admits only locale and terminal hints. PATH, LD_*, BASH_ENV, ENV
-// and SSH_* are refused: they could steer program loading or shell startup.
+// and SSH_* could steer program loading or shell startup.
 func allowedEnv(name string) bool {
 	switch name {
-	case "TERM", "LANG", "TZ", "TERM_PROGRAM", "COLORTERM":
-		return true
-	// Reserved daemon metadata, no shell effect.
-	case "NOKKU_SESSION_ID":
+	case "TERM", "LANG", "TZ", "TERM_PROGRAM", "COLORTERM", "NOKKU_SESSION_ID":
 		return true
 	}
 	return strings.HasPrefix(name, "LC_")
 }
 
-// envValue returns the last value set for key, matching the child environment.
+// envValue returns the value set for key, if any.
 func (sess *session) envValue(key string) (string, bool) {
-	kv := key + "="
-	var value string
-	found := false
 	for _, e := range sess.env {
-		if after, ok := strings.CutPrefix(e, kv); ok {
-			value, found = after, true
+		if v, ok := strings.CutPrefix(e, key+"="); ok {
+			return v, true
 		}
 	}
-	return value, found
+	return "", false
 }
 
-// setEnv replaces any existing entry so the last-set value wins.
+// setEnv replaces an existing entry, so each key appears once.
 func (sess *session) setEnv(key, value string) {
-	kv := key + "="
+	kv := key + "=" + value
 	for i, e := range sess.env {
-		if strings.HasPrefix(e, kv) {
-			sess.env[i] = kv + value
+		if strings.HasPrefix(e, key+"=") {
+			sess.env[i] = kv
 			return
 		}
 	}
-	sess.env = append(sess.env, kv+value)
+	sess.env = append(sess.env, kv)
 }
 
-func (sess *session) acceptSubsystem(req *ssh.Request) (string, bool) {
-	if sess.handled {
-		_ = req.Reply(false, nil)
-		return "", false
-	}
-	if sess.forceCommand() != "" {
-		// A force-command takes precedence over subsystems, matching sshd.
-		_ = req.Reply(false, nil)
-		return "", false
-	}
+func (sess *session) acceptSubsystem(req *ssh.Request) bool {
 	var r struct{ Name string }
-	if ssh.Unmarshal(req.Payload, &r) != nil {
-		_ = req.Reply(false, nil)
-		return "", false
-	}
-	if r.Name != sftpSubsystem {
-		_ = req.Reply(false, nil)
-		return "", false
-	}
-	sess.handled = true
-	_ = req.Reply(true, nil)
-	return r.Name, true
-}
-
-func (sess *session) runSubsystem(name string) uint32 {
-	if name == sftpSubsystem {
-		return sess.runSFTP()
-	}
-	return 1
+	// A force-command takes precedence over subsystems, like sshd.
+	ok := !sess.handled && sess.forceCommand() == "" &&
+		ssh.Unmarshal(req.Payload, &r) == nil && r.Name == "sftp"
+	sess.handled = sess.handled || ok
+	_ = req.Reply(ok, nil)
+	return ok
 }
 
 // pty-req: string TERM, uint32 width, uint32 height, uint32 width_px,
 // uint32 height_px, string modes.
 func (sess *session) ptyReq(req *ssh.Request) {
-	if !certExt(sess.conn, "permit-pty") {
-		_ = req.Reply(false, nil)
-		return
-	}
 	var r struct {
 		Term     string
 		Width    uint32
@@ -382,14 +284,14 @@ func (sess *session) ptyReq(req *ssh.Request) {
 		HeightPx uint32
 		Modes    []byte
 	}
-	if ssh.Unmarshal(req.Payload, &r) != nil {
+	if sess.handled || sess.ptmx != nil || !certExt(sess.conn, "permit-pty") ||
+		ssh.Unmarshal(req.Payload, &r) != nil {
 		_ = req.Reply(false, nil)
 		return
 	}
-
 	ptmx, err := pty.New()
 	if err != nil {
-		sess.server.logger.Debug("open pty failed", "error", err)
+		slog.Debug("open pty failed", "error", err)
 		_ = req.Reply(false, nil)
 		return
 	}
@@ -400,7 +302,6 @@ func (sess *session) ptyReq(req *ssh.Request) {
 	}
 	sess.ptmx = ptmx
 	sess.setEnv("TERM", r.Term)
-
 	sess.startRecorder(int(r.Width), int(r.Height))
 	_ = req.Reply(true, nil)
 }
@@ -410,7 +311,7 @@ func (sess *session) windowChange(req *ssh.Request) {
 	var w struct{ Cols, Rows, W, H uint32 }
 	if ssh.Unmarshal(req.Payload, &w) == nil && sess.ptmx != nil {
 		if err := sess.ptmx.Resize(int(w.Cols), int(w.Rows)); err != nil {
-			sess.server.logger.Debug("resize pty failed", "error", err)
+			slog.Debug("resize pty failed", "error", err)
 		}
 	}
 	_ = req.Reply(true, nil)
@@ -516,11 +417,9 @@ func (sess *session) finish(code int, send func()) {
 		sess.rec.Close()
 	}
 
-	ev := eventWith(connEvent(sess.conn), audit.EventSessionEnd, "", "")
-	ev.SessionID = sess.sessionID
-	ev.User = sess.sysUser.Username
+	ev := sess.event(audit.EventSessionEnd)
 	ev.ExitCode = code
-	sess.server.emit(ev)
+	sess.server.audit.Emit(ev)
 
 	send()
 	_ = sess.Close()
@@ -586,15 +485,16 @@ func (sess *session) runPlain() {
 	// sensitive output (cat, curl, git) leaves the machine.
 	sess.startRecorder(80, 24)
 
-	// Stderr goes to the extended data stream (like sshd), not the data
-	// stream: length-prefixed protocols break if stderr bytes interleave.
-	sess.runProcess(cmd, sess.Stderr())
+	// Stderr goes to the extended data stream like sshd. Length-prefixed
+	// protocols break if stderr bytes interleave with stdout.
+	cmd.Stderr = sess.Stderr()
+	sess.runProcess(cmd)
 }
 
 // startRecorder builds the recorder when recording is on. No-op when off or
 // one already exists (pty-req creates it earlier). width/height size the header.
 func (sess *session) startRecorder(width, height int) {
-	if sess.rec != nil || !sess.server.tun.Load().Record {
+	if sess.rec != nil || !sess.server.policy.Load().Record {
 		return
 	}
 	// Only a canonical UUID is promoted from the reserved env: a free-form
@@ -604,10 +504,10 @@ func (sess *session) startRecorder(width, height int) {
 		recSessionID = id
 	}
 	var sink io.WriteCloser
-	if sess.server.recordingSinkFactory != nil {
+	if sess.server.recordingSink != nil {
 		// WithoutCancel: the upload stream must outlive the session
 		// context, which is canceled while the session tears down.
-		sink = sess.server.recordingSinkFactory(
+		sink = sess.server.recordingSink(
 			context.WithoutCancel(sess.ctx),
 			recSessionID,
 			sess.sysUser.Username,
@@ -638,33 +538,29 @@ func (t recOut) Write(p []byte) (int, error) {
 	return t.w.Write(p)
 }
 
-// runProcess relays the channel to cmd's stdin/stdout then reports the exit via
-// ExitProcess. The caller configures cmd first. errW, if set, is the process stderr.
-func (sess *session) runProcess(cmd *exec.Cmd, errW io.Writer) *os.ProcessState {
-	if errW != nil {
-		cmd.Stderr = errW
-	}
-
+// runProcess relays the channel to cmd's stdin and stdout, then reports the
+// exit. The caller configures cmd first.
+func (sess *session) runProcess(cmd *exec.Cmd) {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		sess.server.logger.Debug("process stdin pipe failed", "error", err)
+		slog.Debug("process stdin pipe failed", "error", err)
 		sess.Exit(1)
-		return nil
+		return
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		sess.server.logger.Debug("process stdout pipe failed", "error", err)
+		slog.Debug("process stdout pipe failed", "error", err)
 		sess.Exit(1)
-		return nil
+		return
 	}
 
 	if err = cmd.Start(); err != nil {
-		sess.server.logger.Debug("start command failed", "error", err)
+		slog.Debug("start command failed", "error", err)
 		_ = stdin.Close()
 		_ = stdout.Close()
 		sess.Exit(1)
-		return nil
+		return
 	}
 	sess.setProc(cmd.Process)
 
@@ -694,14 +590,13 @@ func (sess *session) runProcess(cmd *exec.Cmd, errW io.Writer) *os.ProcessState 
 	// which would truncate output the relay has not yet copied.
 	<-stdoutDone
 	if waitErr := cmd.Wait(); waitErr != nil {
-		sess.server.logger.Debug("command exited", "error", waitErr)
+		slog.Debug("command exited", "error", waitErr)
 	}
 
 	// cmd.Wait() closed the pipes, but the client-side relay is still blocked
 	// reading the channel. ExitProcess closes it, then the relays are joined.
 	sess.ExitProcess(cmd.ProcessState)
 	relay.Wait()
-	return cmd.ProcessState
 }
 
 func (sess *session) buildEnv() []string {

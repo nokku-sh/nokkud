@@ -3,15 +3,17 @@ package sshd
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net"
+	"net/netip"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/audit"
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 // tcpipChannelData is the payload of a direct-tcpip (RFC 4254 7.2) or
@@ -28,66 +30,33 @@ type tcpipForwardData struct {
 	BindPort uint32
 }
 
-type tcpipForwardSuccess struct {
-	BindPort uint32
-}
-
-// connState tracks per-connection resources and the open session count.
+// connState tracks one connection's -R listeners and channel slots.
 type connState struct {
-	conn *ssh.ServerConn
+	conn     *ssh.ServerConn
+	channels chan struct{}
 
 	mu       sync.Mutex
 	forwards map[string]net.Listener
-
-	sessions atomic.Int64
-	channels atomic.Int64
 }
 
-func newConnState(conn *ssh.ServerConn) *connState {
-	return &connState{conn: conn, forwards: make(map[string]net.Listener)}
+func newConnState(conn *ssh.ServerConn, limit int) *connState {
+	return &connState{
+		conn:     conn,
+		channels: make(chan struct{}, limit),
+		forwards: make(map[string]net.Listener),
+	}
 }
 
-// acquireSession counts a session against the cap. Zero means unlimited, and
-// an over-cap call returns false without consuming a slot.
-func (st *connState) acquireSession(limit int) bool {
-	if limit <= 0 {
+func (st *connState) acquireChannel() bool {
+	select {
+	case st.channels <- struct{}{}:
 		return true
-	}
-	for {
-		n := st.sessions.Load()
-		if n >= int64(limit) {
-			return false
-		}
-		if st.sessions.CompareAndSwap(n, n+1) {
-			return true
-		}
+	default:
+		return false
 	}
 }
 
-func (st *connState) releaseSession() {
-	st.sessions.Add(-1)
-}
-
-// acquireChannel counts an open channel against the cap. Zero means unlimited,
-// and an over-cap call returns false without consuming a slot.
-func (st *connState) acquireChannel(limit int) bool {
-	if limit <= 0 {
-		return true
-	}
-	for {
-		n := st.channels.Load()
-		if n >= int64(limit) {
-			return false
-		}
-		if st.channels.CompareAndSwap(n, n+1) {
-			return true
-		}
-	}
-}
-
-func (st *connState) releaseChannel() {
-	st.channels.Add(-1)
-}
+func (st *connState) releaseChannel() { <-st.channels }
 
 func (st *connState) close() {
 	st.mu.Lock()
@@ -98,63 +67,51 @@ func (st *connState) close() {
 	st.forwards = nil
 }
 
-// serveDirectTCPIP serves a direct-tcpip channel (-L/-D), relaying bytes
-// between the client and the requested destination.
-func serveDirectTCPIP(
-	s *Server,
-	conn *ssh.ServerConn,
-	st *connState,
-	newCh ssh.NewChannel,
-) ssh.Channel {
+func (s *Server) forwardingAllowed(conn *ssh.ServerConn) bool {
+	return s.policy.Load().AllowForwarding && certExt(conn, "permit-port-forwarding")
+}
+
+// serveDirectTCPIP relays a -L/-D channel to its destination.
+func (s *Server) serveDirectTCPIP(st *connState, newCh ssh.NewChannel) {
 	var d tcpipChannelData
 	if err := ssh.Unmarshal(newCh.ExtraData(), &d); err != nil {
 		_ = newCh.Reject(ssh.ConnectionFailed, "bad direct-tcpip request")
-		return nil
+		return
 	}
-
-	if !s.tun.Load().AllowForwarding || !certExt(conn, "permit-port-forwarding") {
+	if !s.forwardingAllowed(st.conn) {
 		_ = newCh.Reject(ssh.Prohibited, "port forwarding is disabled")
-		return nil
+		return
 	}
-	// Hold the channel slot for the relay, not just for the open request.
-	if !st.acquireChannel(s.tun.Load().MaxChannels) {
-		_ = newCh.Reject(ssh.ResourceShortage, "too many channels")
-		return nil
-	}
-	defer st.releaseChannel()
 
 	dest := net.JoinHostPort(d.DestAddr, strconv.FormatUint(uint64(d.DestPort), 10))
-	// A black-holed destination must not hang the channel open forever.
 	dialer := net.Dialer{Timeout: 5 * time.Second}
 	dconn, err := dialer.DialContext(context.Background(), "tcp", dest)
 	if err != nil {
-		s.logger.Debug("direct-tcpip dial failed", "addr", dest, "error", err)
+		slog.Debug("direct-tcpip dial failed", "addr", dest, "error", err)
 		_ = newCh.Reject(ssh.ConnectionFailed, err.Error())
-		return nil
+		return
 	}
 
-	ev := eventWith(connEvent(st.conn), audit.EventForward, "", "")
+	ev := connEvent(st.conn, audit.EventForward)
 	ev.Target = dest
-	s.emit(ev)
+	s.audit.Emit(ev)
 
-	c, reqs, err := newCh.Accept()
+	ch, reqs, err := newCh.Accept()
 	if err != nil {
 		_ = dconn.Close()
-		return nil
+		return
 	}
 	go ssh.DiscardRequests(reqs)
-
-	proxyForward(s, c, dconn)
-	return c
+	proxy(ch, dconn)
 }
 
-func (s *Server) handleGlobalRequests(_ *ssh.ServerConn, st *connState, reqs <-chan *ssh.Request) {
+func (s *Server) handleGlobalRequests(st *connState, reqs <-chan *ssh.Request) {
 	for req := range reqs {
 		switch req.Type {
 		case "tcpip-forward":
-			s.tcpipForward(st, req)
+			_ = req.Reply(s.tcpipForward(st, req.Payload))
 		case "cancel-tcpip-forward":
-			s.cancelTCPIPForward(st, req)
+			_ = req.Reply(s.cancelTCPIPForward(st, req.Payload), nil)
 		case "keepalive@openssh.com":
 			_ = req.Reply(true, nil)
 		default:
@@ -163,134 +120,119 @@ func (s *Server) handleGlobalRequests(_ *ssh.ServerConn, st *connState, reqs <-c
 	}
 }
 
-// tcpipForward binds the listener for a client -R request and accepts
-// connections into forwarded-tcpip channels back to the client.
-func (s *Server) tcpipForward(st *connState, req *ssh.Request) {
-	if !s.tun.Load().AllowForwarding || !certExt(st.conn, "permit-port-forwarding") {
-		_ = req.Reply(false, []byte("port forwarding is disabled"))
-		return
-	}
+// tcpipForward binds the listener for a client -R request.
+func (s *Server) tcpipForward(st *connState, payload []byte) (bool, []byte) {
 	var f tcpipForwardData
-	if err := ssh.Unmarshal(req.Payload, &f); err != nil {
-		_ = req.Reply(false, nil)
-		return
+	if !s.forwardingAllowed(st.conn) || ssh.Unmarshal(payload, &f) != nil || f.BindPort > 65535 {
+		return false, nil
 	}
-	// Bind policy-controlled: loopback unless gateway ports are enabled.
-	// OpenSSH keys -R forwards by the verbatim requested address.
-	bindAddr := remoteBindAddr(f.BindAddr, s.tun.Load().GatewayPorts)
-	addr := net.JoinHostPort(bindAddr, strconv.FormatUint(uint64(f.BindPort), 10))
-
-	st.mu.Lock()
-	_, exists := st.forwards[addr]
-	if !exists {
-		var lc net.ListenConfig
-		if ln, err := lc.Listen(context.Background(), "tcp", addr); err == nil {
-			st.forwards[addr] = ln
-			go s.acceptForwarded(st, ln, f.BindAddr)
-			st.mu.Unlock()
-			_ = req.Reply(true, ssh.Marshal(tcpipForwardSuccess{BindPort: portOfListener(ln)}))
-			return
+	// Like OpenSSH, only root may bind a privileged port. The daemon itself
+	// runs as root, so this has to be checked by hand.
+	if f.BindPort != 0 && f.BindPort < 1024 {
+		u, err := sysutil.LookupUser(st.conn.User())
+		if err != nil || u.Uid != "0" {
+			return false, nil
 		}
 	}
-	st.mu.Unlock()
-	_ = req.Reply(false, nil)
-}
-
-// remoteBindAddr pins the listener to loopback unless OpenSSH's GatewayPorts
-// is enabled, so a user cannot expose a service on the server's interfaces.
-func remoteBindAddr(requested string, gateway bool) string {
-	if !gateway {
-		return "127.0.0.1"
-	}
-	if requested == "" {
-		return "0.0.0.0"
-	}
-	return requested
-}
-
-func (s *Server) cancelTCPIPForward(st *connState, req *ssh.Request) {
-	var f tcpipForwardData
-	if err := ssh.Unmarshal(req.Payload, &f); err != nil {
-		_ = req.Reply(false, nil)
-		return
-	}
-	addr := net.JoinHostPort(
-		remoteBindAddr(f.BindAddr, s.tun.Load().GatewayPorts),
-		strconv.FormatUint(uint64(f.BindPort), 10),
-	)
+	addr := forwardAddr(f, s.policy.Load().GatewayPorts)
 
 	st.mu.Lock()
+	defer st.mu.Unlock()
+	// A nil map means the connection is already tearing down.
+	if st.forwards == nil || st.forwards[addr] != nil {
+		return false, nil
+	}
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		return false, nil
+	}
+	st.forwards[addr] = ln
+	go s.acceptForwarded(st, ln, f.BindAddr)
+	return true, ssh.Marshal(struct{ Port uint32 }{uint32(addrPort(ln.Addr()).Port())})
+}
+
+func (s *Server) cancelTCPIPForward(st *connState, payload []byte) bool {
+	var f tcpipForwardData
+	if ssh.Unmarshal(payload, &f) != nil {
+		return false
+	}
+	addr := forwardAddr(f, s.policy.Load().GatewayPorts)
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	ln, ok := st.forwards[addr]
 	if ok {
 		delete(st.forwards, addr)
 		_ = ln.Close()
 	}
-	st.mu.Unlock()
-	_ = req.Reply(ok, nil)
+	return ok
 }
 
-// acceptForwarded sends listener connections to the client as forwarded-tcpip
-// channels, reporting destAddr verbatim so the client matches its -R forward.
-func (s *Server) acceptForwarded(st *connState, ln net.Listener, destAddr string) {
+// forwardAddr pins -R listeners to loopback unless gateway ports are on, so a
+// user cannot expose a service on the host's interfaces.
+func forwardAddr(f tcpipForwardData, gateway bool) string {
+	host := "127.0.0.1"
+	if gateway {
+		host = f.BindAddr
+		if host == "" {
+			host = "0.0.0.0"
+		}
+	}
+	return net.JoinHostPort(host, strconv.FormatUint(uint64(f.BindPort), 10))
+}
+
+// acceptForwarded hands listener connections to the client as forwarded-tcpip
+// channels, echoing bindAddr so the client matches its -R forward.
+func (s *Server) acceptForwarded(st *connState, ln net.Listener, bindAddr string) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
+		if !st.acquireChannel() {
+			_ = c.Close()
+			continue
+		}
 		go func() {
-			defer s.recoverAndLog("forwarded-tcpip accept", func() { _ = c.Close() })
-			if !st.acquireChannel(s.tun.Load().MaxChannels) {
+			defer st.releaseChannel()
+			origin := addrPort(c.RemoteAddr())
+			ch, reqs, openErr := st.conn.OpenChannel("forwarded-tcpip", ssh.Marshal(tcpipChannelData{
+				DestAddr:   bindAddr,
+				DestPort:   uint32(addrPort(ln.Addr()).Port()),
+				OriginAddr: origin.Addr().String(),
+				OriginPort: uint32(origin.Port()),
+			}))
+			if openErr != nil {
+				slog.Debug("open forwarded-tcpip channel failed", "error", openErr)
 				_ = c.Close()
 				return
 			}
-			defer st.releaseChannel()
-			originAddr, originPortStr, _ := net.SplitHostPort(c.RemoteAddr().String())
-			originPort, _ := strconv.ParseUint(originPortStr, 10, 32)
-			payload := ssh.Marshal(tcpipChannelData{
-				DestAddr:   destAddr,
-				DestPort:   portOfListener(ln),
-				OriginAddr: originAddr,
-				OriginPort: uint32(originPort),
-			})
-			ch, reqs, openErr := st.conn.OpenChannel("forwarded-tcpip", payload)
-			if openErr != nil {
-				s.logger.Debug("open forwarded-tcpip channel failed", "error", openErr)
-				return
-			}
 			go ssh.DiscardRequests(reqs)
-			proxyForward(s, ch, c)
+			proxy(ch, c)
 		}()
 	}
 }
 
-func proxyForward(s *Server, ch ssh.Channel, c net.Conn) {
+// proxy copies both ways and closes both ends once either side finishes.
+func proxy(ch ssh.Channel, c net.Conn) {
+	closeBoth := sync.OnceFunc(func() {
+		_ = ch.Close()
+		_ = c.Close()
+	})
 	var wg sync.WaitGroup
-	done := make(chan struct{})
-	closeBoth := func() {
-		select {
-		case <-done:
-		default:
-			close(done)
-			_ = ch.Close()
-			_ = c.Close()
-		}
-	}
-
 	wg.Go(func() {
-		defer s.recoverAndLog("forward relay", closeBoth)
 		_, _ = io.Copy(ch, c)
 		closeBoth()
 	})
 	wg.Go(func() {
-		defer s.recoverAndLog("forward relay", closeBoth)
 		_, _ = io.Copy(c, ch)
 		closeBoth()
 	})
 	wg.Wait()
 }
 
-func portOfListener(ln net.Listener) uint32 {
-	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
-	port, _ := strconv.ParseUint(portStr, 10, 32)
-	return uint32(port)
+func addrPort(a net.Addr) netip.AddrPort {
+	ap, _ := netip.ParseAddrPort(a.String())
+	return ap
 }

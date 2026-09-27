@@ -12,11 +12,10 @@ import (
 
 func TestEnvValueLastWins(t *testing.T) {
 	t.Parallel()
-	sess := &session{env: []string{
-		"NOKKU_SESSION_ID=first",
-		"TERM=xterm",
-		"NOKKU_SESSION_ID=second",
-	}}
+	sess := &session{}
+	sess.setEnv("NOKKU_SESSION_ID", "first")
+	sess.setEnv("TERM", "xterm")
+	sess.setEnv("NOKKU_SESSION_ID", "second")
 	is := assert.New(t)
 
 	v, ok := sess.envValue("NOKKU_SESSION_ID")
@@ -65,8 +64,8 @@ func TestRecorderSessionIDFromEnv(t *testing.T) {
 			t.Parallel()
 			captured := make(chan string, 1)
 			srv := &Server{}
-			srv.tun.Store(&Tunables{Record: true})
-			srv.recordingSinkFactory = func(_ context.Context, sessionID, _ string) io.WriteCloser {
+			srv.policy.Store(&Policy{Record: true})
+			srv.recordingSink = func(_ context.Context, sessionID, _ string) io.WriteCloser {
 				captured <- sessionID
 				return nopSink{}
 			}

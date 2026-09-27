@@ -10,55 +10,35 @@ import (
 	"github.com/nokku-sh/nokkud/internal/hostcerts"
 )
 
-const defaultDelay = 30 * time.Second
-
-func (c *Client) startWatchers(ctx context.Context) {
-	go c.watchCertificates(ctx)
-}
+// minRenewDelay is the poll interval while no host cert exists yet.
+const minRenewDelay = 30 * time.Second
 
 // watchCertificates keeps the host certificate renewed.
 func (c *Client) watchCertificates(ctx context.Context) {
 	b := backoff.NewExponentialBackOff()
-	b.InitialInterval = defaultDelay
+	b.InitialInterval = minRenewDelay
 	b.MaxInterval = 30 * time.Minute
-
-	var retrying bool
-
+	failing := false
 	for {
 		var delay time.Duration
-
-		err := c.renewHostCerts(ctx, false)
-		if err != nil {
+		if err := c.renewHostCerts(ctx, false); err != nil {
 			delay = b.NextBackOff()
-			if !retrying {
-				slog.Warn("certificate renewal failed, will retry in background", "error", err)
-				retrying = true
-			} else {
-				slog.Debug(
-					"certificate renewal retry failed",
-					"error",
-					err,
-					"retry_in",
-					delay.Round(time.Second),
-				)
+			if !failing {
+				slog.Warn("host cert renewal failed, retrying in background", "error", err)
 			}
+			failing = true
 		} else {
-			if retrying {
-				slog.Info("host certificate renewed successfully")
-				retrying = false
+			if failing {
+				slog.Info("host cert renewed")
 			}
+			failing = false
 			b.Reset()
-			// Sleep until the renewal deadline. Poll at a minimum
-			// interval when no certificate exists yet.
-			delay = max(time.Until(hostcerts.NextRenewal(c.config.TargetID)), defaultDelay)
+			delay = max(time.Until(hostcerts.NextRenewal(c.config.TargetID)), minRenewDelay)
 		}
-
-		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-time.After(delay):
 		}
 	}
 }

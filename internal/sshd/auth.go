@@ -93,8 +93,8 @@ func caKeys(keys []ssh.PublicKey) map[string]struct{} {
 }
 
 func (s *Server) trustedCA(key ssh.PublicKey) bool {
-	s.certsMu.RLock()
-	defer s.certsMu.RUnlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	_, ok := s.trustedCAs[string(key.Marshal())]
 	return ok
 }
@@ -166,7 +166,9 @@ func (s *Server) publicKeyCallback(
 		perms.Extensions["force-command"] = fc
 	}
 
-	s.emit(eventWith(connEvent(conn), audit.EventAuthSuccess, matched, ""))
+	ev := connEvent(conn, audit.EventAuthSuccess)
+	ev.Principal = matched
+	s.audit.Emit(ev)
 	return perms, nil
 }
 
@@ -180,21 +182,12 @@ func certExt(conn *ssh.ServerConn, name string) bool {
 	return ok
 }
 
-// deny logs a rejected auth attempt and returns err. Every denial flows
-// through here, so audit and logging share one site.
+// deny audits and logs a rejected login, then returns err.
 func (s *Server) deny(conn ssh.ConnMetadata, err error) error {
-	ev := eventWith(connEvent(conn), audit.EventAuthFailure, "", err.Error())
-	s.emit(ev)
-	s.authFailure(conn, err)
+	ev := connEvent(conn, audit.EventAuthFailure)
+	ev.Error = err.Error()
+	s.audit.Emit(ev)
+	slog.Warn("auth denied",
+		"user", conn.User(), "remote", conn.RemoteAddr(), "client", string(conn.ClientVersion()), "error", err)
 	return err
-}
-
-func (s *Server) authFailure(conn ssh.ConnMetadata, err error) {
-	s.logger.Warn(
-		"auth denied",
-		"user", conn.User(),
-		"remote", conn.RemoteAddr(),
-		"client", string(conn.ClientVersion()),
-		"error", err,
-	)
 }

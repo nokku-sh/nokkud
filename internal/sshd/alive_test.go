@@ -16,7 +16,7 @@ func TestServerMaxConnections(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxConnections: 1}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.conns = make(chan struct{}, 1) })
 	defer closeFn()
 
 	auth := userCert(t, ca, testPrincipal)
@@ -49,7 +49,7 @@ func TestServerMaxStartups(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxStartups: 1}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.startups = make(chan struct{}, 1) })
 	defer closeFn()
 
 	// A raw TCP connection that never completes the SSH handshake holds the
@@ -82,7 +82,7 @@ func TestServerMaxStartups(t *testing.T) {
 func TestServerMaxStartupsReleasedAfterHandshake(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxStartups: 1}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.startups = make(chan struct{}, 1) })
 	defer closeFn()
 
 	auth := userCert(t, ca, testPrincipal)
@@ -97,50 +97,6 @@ func TestServerMaxStartupsReleasedAfterHandshake(t *testing.T) {
 	_ = second.Close()
 }
 
-// TestServerMaxSessionsPerUser verifies the per-principal session cap across
-// connections: one user cannot open more sessions than allowed, even over
-// many connections.
-func TestServerMaxSessionsPerUser(t *testing.T) {
-	is := assert.New(t)
-	must := require.New(t)
-	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxSessionsPerUser: 1}})
-	defer closeFn()
-
-	auth := userCert(t, ca, testPrincipal)
-	user := currentUser(t)
-
-	c1, err := dial(t, addr, user, auth)
-	must.NoError(err, "first connection")
-	defer c1.Close()
-
-	// The first session holds the user's single slot.
-	s1, err := c1.NewSession()
-	must.NoError(err, "first session")
-	defer s1.Close()
-
-	// A second connection by the same user must be refused a session.
-	c2, err := dial(t, addr, user, auth)
-	must.NoError(err, "second connection")
-	defer c2.Close()
-	s2, err := c2.NewSession()
-	if s2 != nil {
-		s2.Close()
-	}
-	must.Error(err, "second session for the same user unexpectedly accepted")
-
-	// Freeing the first session releases the user's slot.
-	s1.Close()
-	is.Eventually(func() bool {
-		s3, serr := c2.NewSession()
-		if serr == nil {
-			s3.Close()
-			return true
-		}
-		return false
-	}, 5*time.Second, 20*time.Millisecond, "per-user session cap never released")
-}
-
 // TestServerMaxChannels verifies the per-connection channel cap counts every
 // channel type: with two slots held by live sessions, a third channel is
 // refused, and closing one frees a slot.
@@ -148,7 +104,7 @@ func TestServerMaxChannels(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Tunables: Tunables{MaxChannels: 2}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.maxChannels = 2 })
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -177,7 +133,7 @@ func TestServerMaxChannels(t *testing.T) {
 }
 
 // TestServerClientAlive verifies an unresponsive client is disconnected after
-// ClientAliveInterval*3 of silence, while a responsive one survives.
+// three alive intervals of silence, while a responsive one survives.
 func TestServerClientAlive(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -185,7 +141,8 @@ func TestServerClientAlive(t *testing.T) {
 	addr, closeFn := startTestServerOpts(
 		t,
 		ca,
-		Options{Tunables: Tunables{ClientAliveInterval: 100 * time.Millisecond}},
+		Options{},
+		func(s *Server) { s.aliveInterval = 100 * time.Millisecond },
 	)
 	defer closeFn()
 
@@ -228,7 +185,8 @@ func TestServerClientAliveSilent(t *testing.T) {
 	addr, closeFn := startTestServerOpts(
 		t,
 		ca,
-		Options{Tunables: Tunables{ClientAliveInterval: 100 * time.Millisecond}},
+		Options{},
+		func(s *Server) { s.aliveInterval = 100 * time.Millisecond },
 	)
 	defer closeFn()
 
@@ -248,7 +206,7 @@ func TestServerClientAliveSilent(t *testing.T) {
 	must.NoError(err)
 
 	// The server must close the connection once its keepalives stop getting
-	// answered (ClientAliveInterval * 3). Wait() blocks until the connection
+	// answered (three alive intervals). Wait() blocks until the connection
 	// ends, so run it on a goroutine.
 	done := make(chan error, 1)
 	go func() { done <- conn.Wait() }()

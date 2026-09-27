@@ -25,7 +25,6 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	c.TargetID = "tgt-1"
 	c.DaemonID = "daemon-1"
 	c.APIURL = "https://api.example.com"
-	c.SSHAddr = ":4022"
 
 	must.NoError(c.Save())
 
@@ -35,7 +34,6 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	is.Equal("tgt-1", loaded.TargetID)
 	is.Equal("daemon-1", loaded.DaemonID)
 	is.Equal("https://api.example.com", loaded.APIURL)
-	is.Equal(":4022", loaded.SSHAddr)
 }
 
 func TestConfigLoadMissingFileIsNotAnError(t *testing.T) {
@@ -46,7 +44,7 @@ func TestConfigLoadMissingFileIsNotAnError(t *testing.T) {
 	is.NoError(c.Load())
 }
 
-func TestConfigLoadCorruptedClearsAndRemoves(t *testing.T) {
+func TestConfigLoadIgnoresCorruptedFile(t *testing.T) {
 	newTestDataDir(t)
 	is := assert.New(t)
 	must := require.New(t)
@@ -60,8 +58,12 @@ func TestConfigLoadCorruptedClearsAndRemoves(t *testing.T) {
 	must.NoError(loaded.Load())
 	is.Empty(loaded.WorkspaceID)
 
-	_, err := os.Stat(paths.ConfigFile())
-	is.True(os.IsNotExist(err))
+	// The next save replaces the corrupt file.
+	loaded.WorkspaceID = "ws-2"
+	must.NoError(loaded.Save())
+	again := NewConfig()
+	must.NoError(again.Load())
+	is.Equal("ws-2", again.WorkspaceID)
 }
 
 func TestConfigClearKeepsSaveTarget(t *testing.T) {

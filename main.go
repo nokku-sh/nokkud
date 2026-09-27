@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/mizuchilabs/kata/buildinfo"
 	"github.com/mizuchilabs/kata/logx"
@@ -16,6 +19,7 @@ import (
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
 
+	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/client"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"
@@ -28,7 +32,7 @@ func main() {
 		EnableShellCompletion: true,
 		Suggest:               true,
 		Name:                  "nokkud",
-		Usage:                 "zero-trust SSH access - certificate-authenticated and fully recorded",
+		Usage:                 "zero-trust SSH access",
 		Description: `nokkud enrolls this server with Nokku and replaces the host sshd with an
 embedded SSH server that authenticates users via short-lived SSH certificates.`,
 		Version: buildinfo.String(),
@@ -44,81 +48,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			}
 			return ctx, nil
 		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			cache := state.NewCache()
-			if err := cache.Load(); err != nil {
-				return err
-			}
-
-			// Apply env/flag overrides only when one was explicitly provided,
-			// so a bare default cannot clobber a value from config.json.
-			cfg := state.NewConfig()
-			if err := cfg.Load(); err != nil {
-				return err
-			}
-			if cmd.IsSet("api") {
-				cfg.APIURL = strings.TrimRight(cmd.String("api"), "/")
-			} else if cfg.APIURL == "" {
-				cfg.APIURL = state.DefaultAPIURL
-			}
-			if cmd.IsSet("ssh-addr") {
-				cfg.SSHAddr = cmd.String("ssh-addr")
-			} else if cfg.SSHAddr == "" {
-				cfg.SSHAddr = state.DefaultSSHAddr
-			}
-			if err := cfg.Save(); err != nil {
-				return err
-			}
-
-			// The client wires the recording sink before the server accepts a
-			// session. Deferred Shutdown is idempotent and always runs.
-			var sshSrv *sshd.Server
-			if cfg.SSHAddr != "" {
-				if err := util.IsRoot(); err != nil {
-					return err
-				}
-				srv, err := sshd.New(sshd.OptionsFrom(cache, true))
-				if err != nil {
-					return err
-				}
-				sshSrv = srv
-			}
-			defer func() {
-				if sshSrv != nil {
-					_ = sshSrv.Shutdown()
-				}
-			}()
-
-			// Tokens never go on argv: read the env, or prompt when --enroll
-			// runs on a terminal.
-			token := os.Getenv("NOKKUD_ENROLL_TOKEN")
-			if cmd.Bool("enroll") && token == "" {
-				if !term.IsTerminal(int(os.Stdin.Fd())) {
-					return errors.New("no enrollment token: set NOKKUD_ENROLL_TOKEN or run --enroll on a terminal")
-				}
-				fmt.Fprint(os.Stderr, "Enrollment token: ")
-				secret, err := term.ReadPassword(int(os.Stdin.Fd()))
-				if err != nil {
-					return fmt.Errorf("read enrollment token: %w", err)
-				}
-				fmt.Fprintln(os.Stderr)
-				token = strings.TrimSpace(string(secret))
-			}
-
-			cl, err := newDaemonClient(ctx, cmd, token, cache, cfg, sshSrv)
-			if err != nil {
-				return err
-			}
-
-			if sshSrv != nil {
-				if _, listenErr := sshSrv.ListenAndServe(ctx, cfg.SSHAddr); listenErr != nil {
-					return fmt.Errorf("listen on %s: %w", cfg.SSHAddr, listenErr)
-				}
-			}
-
-			slog.Info("starting nokkud", "version", buildinfo.Version)
-			return cl.Run(ctx)
-		},
+		Action: run,
 		Commands: []*cli.Command{
 			{
 				Name:   "sftp-server",
@@ -148,7 +78,7 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 					if err := cfg.Load(); err != nil {
 						return err
 					}
-					cl, err := newDaemonClient(ctx, cmd, "", cache, cfg, nil)
+					cl, err := newDaemonClient(ctx, cmd, "", cache, cfg)
 					if err != nil {
 						return err
 					}
@@ -177,18 +107,14 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 			},
 			&cli.StringFlag{
 				Name:    "ssh-addr",
-				Usage:   "listen address for the embedded SSH server (set to empty to disable)",
+				Usage:   "listen address for the embedded SSH server",
+				Value:   ":4022",
 				Sources: cli.EnvVars("NOKKUD_SSH_ADDR"),
 			},
 			&cli.StringFlag{
 				Name:    "api",
 				Usage:   "Nokku API URL",
 				Sources: cli.EnvVars("NOKKUD_API_URL"),
-			},
-			&cli.StringFlag{
-				Name:    "ca",
-				Usage:   "SSH certificate authority uuid",
-				Sources: cli.EnvVars("NOKKUD_CA_ID"),
 			},
 			&cli.BoolFlag{
 				Name:  "enroll",
@@ -203,27 +129,113 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 	}
 }
 
+func run(ctx context.Context, cmd *cli.Command) error {
+	if err := util.IsRoot(); err != nil {
+		return err
+	}
+	cache := state.NewCache()
+	if err := cache.Load(); err != nil {
+		return err
+	}
+	cfg := state.NewConfig()
+	if err := cfg.Load(); err != nil {
+		return err
+	}
+	// The API URL is bound to the enrollment, so it is persisted. The flag
+	// only wins when given explicitly.
+	if cmd.IsSet("api") {
+		cfg.APIURL = strings.TrimRight(cmd.String("api"), "/")
+	}
+	if cfg.APIURL == "" {
+		cfg.APIURL = state.DefaultAPIURL
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+
+	token, err := enrollToken(cmd)
+	if err != nil {
+		return err
+	}
+	cl, err := newDaemonClient(ctx, cmd, token, cache, cfg)
+	if err != nil {
+		return err
+	}
+
+	sink, err := audit.New(paths.AuditDir())
+	if err != nil {
+		slog.Warn("audit log unavailable", "error", err)
+	}
+	srv, err := sshd.New(sshd.Options{
+		Principals:    cache.GetUUIDs,
+		Audit:         sink,
+		Policy:        sshd.PolicyFrom(cache.DaemonConfig()),
+		RecordingSink: cl.RecordingSink,
+	})
+	if err != nil {
+		return err
+	}
+	var lc net.ListenConfig
+	l, err := lc.Listen(ctx, "tcp", cmd.String("ssh-addr"))
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cmd.String("ssh-addr"), err)
+	}
+	slog.Info("starting nokkud", "version", buildinfo.Version, "ssh_addr", l.Addr())
+
+	// Serve stops with ctx, so a client exit (rejection, not enrolled) must
+	// cancel it too.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Go(func() { srv.Serve(ctx, l) })
+	addr, err := netip.ParseAddrPort(l.Addr().String())
+	if err != nil {
+		return err
+	}
+	err = cl.Run(ctx, srv, addr)
+	cancel()
+	wg.Wait()
+	return err
+}
+
+// enrollToken reads the token from the env, or prompts on --enroll. Tokens
+// never go on argv.
+func enrollToken(cmd *cli.Command) (string, error) {
+	token := os.Getenv("NOKKUD_ENROLL_TOKEN")
+	if !cmd.Bool("enroll") || token != "" {
+		return token, nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", errors.New("no enrollment token: set NOKKUD_ENROLL_TOKEN or run --enroll on a terminal")
+	}
+	fmt.Fprint(os.Stderr, "Enrollment token: ")
+	secret, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", fmt.Errorf("read enrollment token: %w", err)
+	}
+	return strings.TrimSpace(string(secret)), nil
+}
+
 func newDaemonClient(
 	ctx context.Context,
 	cmd *cli.Command,
 	token string,
 	cache *state.Cache,
 	cfg *state.Config,
-	sshSrv *sshd.Server,
 ) (*client.Client, error) {
 	cl, err := client.New(ctx, cache, cfg, client.Options{
 		Insecure:    cmd.Bool("insecure"),
 		RequireTPM:  cmd.Bool("require-tpm"),
 		EnrollToken: token,
-		CAID:        cmd.String("ca"),
-	}, sshSrv)
+	})
+	if errors.Is(err, tpm.ErrIdentityChanged) {
+		return nil, fmt.Errorf(
+			"the daemon signing key no longer matches this machine, re-enroll with `sudo nokkud --enroll`: %w",
+			err,
+		)
+	}
 	if err != nil {
-		if errors.Is(err, tpm.ErrIdentityChanged) {
-			return nil, fmt.Errorf(
-				"the daemon signing key no longer matches this machine, re-enroll with `sudo nokkud --enroll`: %w",
-				err,
-			)
-		}
 		return nil, fmt.Errorf("initialize daemon client: %w", err)
 	}
 	return cl, nil

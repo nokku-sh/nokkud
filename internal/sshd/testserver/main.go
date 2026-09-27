@@ -6,11 +6,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"os/user"
 	"syscall"
 
+	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/state"
@@ -58,13 +60,19 @@ func main() {
 		fail(err.Error())
 	}
 
-	opts := sshd.OptionsFrom(cache, false)
+	policy := sshd.DefaultPolicy
+	policy.Record = false
+	sink, err := audit.New(paths.AuditDir())
+	if err != nil {
+		fail(err.Error())
+	}
+	opts := sshd.Options{Principals: cache.GetUUIDs, Audit: sink, Policy: policy}
 	if *allowNonRoot {
 		// Without privilege dropping every session runs as this account, so
 		// only this account may log in.
-		self, err := user.Current()
-		if err != nil {
-			fail(err.Error())
+		self, userErr := user.Current()
+		if userErr != nil {
+			fail(userErr.Error())
 		}
 		opts.Principals = func(username string) []string {
 			if username != self.Username {
@@ -82,14 +90,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	bound, err := srv.ListenAndServe(ctx, *addr)
+	var lc net.ListenConfig
+	l, err := lc.Listen(ctx, "tcp", *addr)
 	if err != nil {
 		fail(err.Error())
 	}
-	fmt.Println(bound.String())
-
-	<-ctx.Done()
-	_ = srv.Shutdown()
+	fmt.Println(l.Addr().String())
+	srv.Serve(ctx, l)
 }
 
 func fail(msg string) {

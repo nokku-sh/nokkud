@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"context"
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -21,23 +20,11 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// TestRecoverAndLog verifies a panic in a handler goroutine is contained and
-// does not escape into the server, and that cleanup still runs.
-func TestRecoverAndLog(t *testing.T) {
-	is := assert.New(t)
-	buf := &syncedBuffer{}
-	s := &Server{logger: slog.New(slog.NewTextHandler(buf, nil))}
-
-	// Trigger a panic so recoverAndLog both contains it and runs cleanup.
-	cleanupRan := false
-	func() {
-		defer s.recoverAndLog("test", func() { cleanupRan = true })
+func TestRecoverPanic(t *testing.T) {
+	assert.NotPanics(t, func() {
+		defer recoverPanic("test")
 		panic("handler panic must be contained")
-	}()
-
-	is.True(cleanupRan, "cleanup did not run after recovered panic")
-	is.Contains(buf.String(), "handler panic must be contained")
-	is.Contains(buf.String(), "recovered panic")
+	})
 }
 
 // TestServerDisconnectReapsCommand verifies that when the client disconnects
@@ -206,22 +193,6 @@ func TestServerForceCommandBlocksEnv(t *testing.T) {
 
 // syncedBuffer appends into a shared string under a mutex, for asserting on
 // slog output.
-type syncedBuffer struct {
-	mu sync.Mutex
-	b  strings.Builder
-}
-
-func (w *syncedBuffer) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.b.Write(p)
-}
-
-func (w *syncedBuffer) String() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.b.String()
-}
 
 // captureSink collects recorder sink writes and signals Close, so tests can
 // assert what the daemon would have uploaded.
@@ -265,16 +236,16 @@ func TestPlainSessionRecorded(t *testing.T) {
 		return nil
 	}
 	srv, err := New(Options{
-		Principals: principals,
-		TrustedCAs: []ssh.PublicKey{ca.pub},
-		Tunables:   Tunables{Record: true},
+		Principals:    principals,
+		TrustedCAs:    []ssh.PublicKey{ca.pub},
+		Policy:        Policy{Record: true},
+		RecordingSink: factory,
 	})
 	must.NoError(err, "new server")
-	srv.SetRecordingSinkFactory(factory)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	must.NoError(err, "listen")
 	defer func() { _ = l.Close() }()
-	go func() { _ = srv.Serve(l) }()
+	go srv.Serve(t.Context(), l)
 
 	client, err := dial(t, l.Addr().String(), cur, userCert(t, ca, testPrincipal))
 	must.NoError(err, "dial")
@@ -385,16 +356,16 @@ func TestRecordingCorrelatesWebSessionID(t *testing.T) {
 				return nil
 			}
 			srv, err := New(Options{
-				Principals: principals,
-				TrustedCAs: []ssh.PublicKey{ca.pub},
-				Tunables:   Tunables{Record: true},
+				Principals:    principals,
+				TrustedCAs:    []ssh.PublicKey{ca.pub},
+				Policy:        Policy{Record: true},
+				RecordingSink: factory,
 			})
 			must.NoError(err, "new server")
-			srv.SetRecordingSinkFactory(factory)
 			l, err := net.Listen("tcp", "127.0.0.1:0")
 			must.NoError(err, "listen")
 			defer func() { _ = l.Close() }()
-			go func() { _ = srv.Serve(l) }()
+			go srv.Serve(t.Context(), l)
 
 			auth := userCertOpts(t, ca, func(c *ssh.Certificate) {
 				c.KeyId = tc.keyID
@@ -433,4 +404,23 @@ func TestRecordingCorrelatesWebSessionID(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestServerSecondPtyRejected verifies a second pty-req is refused, so a
+// client cannot pile up ptys it never uses.
+func TestServerSecondPtyRejected(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+	addr, closeFn := startTestServer(t, ca)
+	defer closeFn()
+
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err, "dial")
+	defer client.Close()
+	sess, err := client.NewSession()
+	must.NoError(err, "new session")
+	defer sess.Close()
+
+	must.NoError(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "first pty")
+	must.Error(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "second pty was accepted")
 }

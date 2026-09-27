@@ -9,12 +9,11 @@ import (
 	"log/slog"
 	"math"
 	"os"
-	"path/filepath"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/nokku-sh/mon/fsutil"
+	"github.com/mizuchilabs/kata/fsutil"
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/paths"
@@ -27,83 +26,51 @@ const (
 	renewWindowCap = 7 * 24 * time.Hour
 )
 
-// KeyPair is a host public key and the certificate path that backs it.
-type KeyPair struct {
-	PublicKeyPath string
-	CertPath      string
-	PublicKeyData []byte
-}
+// SignFunc asks the backend to sign the host public key, given in
+// authorized_keys form.
+type SignFunc func(ctx context.Context, pub []byte) (*nokkuv1.SignSSHCertificateResponse, error)
 
-// hostKeyPair returns the active host key, or ok false when no host key exists
-// yet. The identity is ECDSA P-256 in both TPM-resident and software modes.
-func hostKeyPair() (KeyPair, bool) {
-	pub := paths.HostKeyPub()
-	data, err := os.ReadFile(filepath.Clean(pub))
+// needsRenewal returns the host public key when its certificate is missing,
+// issued for another principal or key, or inside its renewal window. ok is
+// false when there is nothing to do, including when no host key exists yet.
+func needsRenewal(targetID string) (pub []byte, ok bool) {
+	pub, err := os.ReadFile(paths.HostKeyPub())
 	if err != nil {
-		return KeyPair{}, false
+		return nil, false
 	}
-	return KeyPair{
-		PublicKeyPath: pub,
-		CertPath:      paths.HostKeyCert(),
-		PublicKeyData: data,
-	}, true
+	cert, err := parseCertificate(paths.HostKeyCert())
+	if err != nil || !isValid(cert, targetID) || !matchesKey(cert, pub) {
+		return pub, true
+	}
+	return nil, false
 }
 
-// OutdatedHostCerts returns the host key when its certificate is missing,
-// signed for another principal or key, or inside its renewal window.
-func OutdatedHostCerts(targetID string) ([]KeyPair, error) {
-	kp, ok := hostKeyPair()
-	if !ok {
-		return nil, nil
-	}
-
-	cert, parseErr := parseCertificate(kp.CertPath)
-	if parseErr != nil || !isValid(cert, targetID) || !matchesKey(cert, kp) {
-		return []KeyPair{kp}, nil
-	}
-	return nil, nil
+// matchesKey reports whether cert was issued for pub. A cert for a previous
+// key must be re-issued even inside its validity window.
+func matchesKey(cert *ssh.Certificate, pub []byte) bool {
+	key, _, _, _, err := ssh.ParseAuthorizedKey(bytes.TrimSpace(pub))
+	return err == nil && bytes.Equal(cert.Key.Marshal(), key.Marshal())
 }
 
-// matchesKey reports whether the certificate was issued for the key in kp. A
-// cert for a previous key must be re-issued even within its validity window.
-func matchesKey(cert *ssh.Certificate, kp KeyPair) bool {
-	pub, _, _, _, err := ssh.ParseAuthorizedKey(bytes.TrimSpace(kp.PublicKeyData))
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(cert.Key.Marshal(), pub.Marshal())
-}
-
-// RenewHostCerts signs and stores a fresh certificate for the host key via
-// sign, reporting whether one was written. force re-signs after a CA rollover.
-func RenewHostCerts(
-	ctx context.Context,
-	targetID string,
-	sign func(context.Context, KeyPair) (*nokkuv1.SignSSHCertificateResponse, error),
-	force bool,
-) (bool, error) {
-	var kp KeyPair
+// RenewHostCerts signs and stores a fresh host certificate when it is due,
+// reporting whether one was written. force re-signs after a CA rollover.
+func RenewHostCerts(ctx context.Context, targetID string, sign SignFunc, force bool) (bool, error) {
+	pub, ok := needsRenewal(targetID)
 	if force {
-		var ok bool
-		if kp, ok = hostKeyPair(); !ok {
+		var err error
+		if pub, err = os.ReadFile(paths.HostKeyPub()); err != nil {
 			return false, nil
 		}
-	} else {
-		pairs, err := OutdatedHostCerts(targetID)
-		if err != nil {
-			return false, err
-		}
-		if len(pairs) == 0 {
-			return false, nil
-		}
-		kp = pairs[0]
+		ok = true
 	}
-
-	res, err := sign(ctx, kp)
+	if !ok {
+		return false, nil
+	}
+	res, err := sign(ctx, pub)
 	if err != nil {
 		return false, err
 	}
-	if err = saveCertificate(res, kp.CertPath); err != nil {
+	if err = saveCertificate(res, paths.HostKeyCert()); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -114,13 +81,9 @@ func RenewHostCerts(
 func NextRenewal(targetID string) time.Time {
 	now := time.Now()
 
-	kp, ok := hostKeyPair()
-	if !ok {
-		return now
-	}
-	cert, err := parseCertificate(kp.CertPath)
+	cert, err := parseCertificate(paths.HostKeyCert())
 	if err != nil {
-		slog.Debug("parse certificate", "path", kp.CertPath, "error", err)
+		slog.Debug("parse host certificate", "error", err)
 		return now
 	}
 	if !isValid(cert, targetID) {
@@ -229,7 +192,7 @@ func parseCertificateBytes(data []byte) (*ssh.Certificate, error) {
 }
 
 func parseCertificate(path string) (*ssh.Certificate, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
