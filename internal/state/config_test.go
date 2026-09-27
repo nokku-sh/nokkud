@@ -20,7 +20,7 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	c := NewConfig()
+	c := new(Config)
 	c.WorkspaceID = "ws-1"
 	c.TargetID = "tgt-1"
 	c.DaemonID = "daemon-1"
@@ -28,7 +28,7 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 
 	must.NoError(c.Save())
 
-	loaded := NewConfig()
+	loaded := new(Config)
 	must.NoError(loaded.Load())
 	is.Equal("ws-1", loaded.WorkspaceID)
 	is.Equal("tgt-1", loaded.TargetID)
@@ -40,7 +40,7 @@ func TestConfigLoadMissingFileIsNotAnError(t *testing.T) {
 	newTestDataDir(t)
 	is := assert.New(t)
 
-	c := NewConfig()
+	c := new(Config)
 	is.NoError(c.Load())
 }
 
@@ -49,36 +49,21 @@ func TestConfigLoadIgnoresCorruptedFile(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	c := NewConfig()
+	c := new(Config)
 	c.WorkspaceID = "ws-1"
 	must.NoError(c.Save())
 	must.NoError(os.WriteFile(paths.ConfigFile(), []byte("{not json"), 0o600))
 
-	loaded := NewConfig()
+	loaded := new(Config)
 	must.NoError(loaded.Load())
 	is.Empty(loaded.WorkspaceID)
 
 	// The next save replaces the corrupt file.
 	loaded.WorkspaceID = "ws-2"
 	must.NoError(loaded.Save())
-	again := NewConfig()
+	again := new(Config)
 	must.NoError(again.Load())
 	is.Equal("ws-2", again.WorkspaceID)
-}
-
-func TestConfigClearKeepsSaveTarget(t *testing.T) {
-	newTestDataDir(t)
-	is := assert.New(t)
-	must := require.New(t)
-
-	c := NewConfig()
-	c.WorkspaceID = "ws-1"
-	c.Clear()
-
-	is.Empty(c.WorkspaceID)
-	must.NoError(c.Save())
-	_, err := os.Stat(paths.ConfigFile())
-	is.NoError(err)
 }
 
 func TestConfigSaveSkipsUnchanged(t *testing.T) {
@@ -86,7 +71,7 @@ func TestConfigSaveSkipsUnchanged(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	c := NewConfig()
+	c := new(Config)
 	c.WorkspaceID = "ws-1"
 	must.NoError(c.Save())
 	fi, err := os.Stat(paths.ConfigFile())
@@ -102,7 +87,7 @@ func TestConfigSaveWritesWithPrivatePerms(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	c := NewConfig()
+	c := new(Config)
 	c.WorkspaceID = "ws-1"
 	must.NoError(c.Save())
 	fi, err := os.Stat(paths.ConfigFile())
@@ -116,7 +101,7 @@ func TestConfigFileNeverContainsPaths(t *testing.T) {
 	must := require.New(t)
 
 	dataDir := os.Getenv("NOKKUD_DATA_DIR")
-	c := NewConfig()
+	c := new(Config)
 	c.WorkspaceID = "ws-1"
 	must.NoError(c.Save())
 	data, err := os.ReadFile(paths.ConfigFile())

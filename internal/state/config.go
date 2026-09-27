@@ -19,10 +19,6 @@ type Config struct {
 	SessionToken string `json:"session_token,omitempty"`
 }
 
-func NewConfig() *Config {
-	return &Config{}
-}
-
 // Load reads the config from disk. A missing file is not an error.
 func (c *Config) Load() error {
 	return fsutil.LoadJSON(paths.ConfigFile(), c)
@@ -31,8 +27,4 @@ func (c *Config) Load() error {
 // Save writes the config atomically with 0600 perms.
 func (c *Config) Save() error {
 	return fsutil.SaveJSON(paths.ConfigFile(), c, 0o600)
-}
-
-func (c *Config) Clear() {
-	*c = Config{}
 }
