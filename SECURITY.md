@@ -112,6 +112,11 @@ control stream to the backend.
 - **Sessions run as the target OS user.** The daemon must run as root so it
   can drop privileges; it refuses to serve SSH unprivileged rather than
   silently running sessions as the wrong user.
+- **The daemon is not sandboxed.** Sessions are its children and inherit any
+  systemd, AppArmor, or SELinux confinement, which would stop a root session
+  from doing normal admin work. Like OpenSSH, the user boundary isolates
+  sessions. The unit uses `KillMode=process`, so a restart or package upgrade
+  replaces the daemon without killing live sessions.
 - **Per-connection channel cap.** Sessions plus port and agent forwards count
   against `MaxChannels` for the life of each channel, so one authorized
   connection cannot exhaust the daemon's file descriptors or goroutines.
@@ -129,10 +134,17 @@ control stream to the backend.
   them with systemd slices or per-user limits if that matters for your threat
   model.
 - **Audit and recording are local-first.** Security events (auth, session,
-  command, forward) are appended as rotated JSONL under
+  command, subsystem, forward, remote forward) are appended as rotated JSONL under
   `/var/lib/nokkud/audit/`; interactive sessions are recorded as gzipped
   asciicast under `/var/lib/nokkud/recordings/`, correlated to audit events
   via `session_id`. Non-interactive `exec` sessions are captured both as
   `command` audit events (command line, user, exit code) and as recordings
-  (output only). Recordings are uploaded to the backend when connected.
-  Both stores have size- and age-based retention.
+  (output only). SFTP (and so modern `scp`) is audited as a `subsystem`
+  event, the file contents are not recorded. Recordings stream to the backend
+  live, and any the backend did not fully receive (offline, upload error,
+  crash) are uploaded again every few minutes. Both stores have size- and
+  age-based retention.
+- **Recording fails open.** A session that cannot be recorded (under 512 MiB
+  free, the 50 MB per-recording cap, a file error) still runs, so a full disk
+  never locks admins out, but every gap raises a `recording_degraded` audit
+  event with the reason.
