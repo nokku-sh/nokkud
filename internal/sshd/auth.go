@@ -165,9 +165,19 @@ func (s *Server) publicKeyCallback(
 	if fc := cert.CriticalOptions["force-command"]; fc != "" {
 		perms.Extensions["force-command"] = fc
 	}
+	return perms, nil
+}
 
+// verifiedPublicKey audits the login once the client proved it holds the key.
+// publicKeyCallback also answers key queries, which prove nothing.
+func (s *Server) verifiedPublicKey(
+	conn ssh.ConnMetadata,
+	_ ssh.PublicKey,
+	perms *ssh.Permissions,
+	_ string,
+) (*ssh.Permissions, error) {
 	ev := connEvent(conn, audit.EventAuthSuccess)
-	ev.Principal = matched
+	ev.Principal = perms.Extensions["nokku-principal"]
 	s.audit.Emit(ev)
 	return perms, nil
 }

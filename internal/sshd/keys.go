@@ -13,13 +13,15 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
+// hostKeySalt namespaces the host key. Salt registry: mon/README.md.
+const hostKeySalt = "nokku-daemon-host"
+
 // loadHostKey returns the host signer, wrapped in the host certificate when
 // one matches. The host key is not the enrollment anchor, so an identity
 // change just gets a fresh key and the sync renews the cert.
 func loadHostKey() (ssh.Signer, io.Closer, error) {
 	signer, err := tpm.NewSigner(tpm.SignerOptions{
-		// Salt registry: see mon/README.md.
-		Salt:             []byte("nokku-daemon-host"),
+		Salt:             []byte(hostKeySalt),
 		StatePath:        paths.HostSignerStateFile(),
 		OnIdentityChange: tpm.RecreateIdentity,
 	})

@@ -148,6 +148,9 @@ func (s *Server) tcpipForward(st *connState, payload []byte) (bool, []byte) {
 		return false, nil
 	}
 	st.forwards[addr] = ln
+	ev := connEvent(st.conn, audit.EventRemoteForward)
+	ev.Target = ln.Addr().String()
+	s.audit.Emit(ev)
 	go s.acceptForwarded(st, ln, f.BindAddr)
 	return true, ssh.Marshal(struct{ Port uint32 }{uint32(addrPort(ln.Addr()).Port())})
 }

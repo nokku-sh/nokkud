@@ -11,7 +11,6 @@ import (
 
 	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
 	"github.com/nokku-sh/nokkud/internal/paths"
-	"github.com/nokku-sh/nokkud/internal/util"
 )
 
 // Cache is the thread-safe, persisted state synced from the backend. It backs
@@ -86,7 +85,7 @@ func (c *Cache) Replace(
 func validPrincipals(m map[string][]string) map[string][]string {
 	next := make(map[string][]string, len(m))
 	for principal, uuids := range m {
-		if err := util.ValidatePrincipal(principal); err != nil {
+		if err := validatePrincipal(principal); err != nil {
 			slog.Debug("skipping invalid principal", "error", err)
 			continue
 		}
