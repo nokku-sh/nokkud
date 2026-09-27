@@ -8,23 +8,18 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/bin/nokkud
 Restart=on-failure
+# 78 means not enrolled, restarting cannot fix that.
+RestartPreventExitStatus=78
 RestartSec=5s
+# Like sshd.service: a restart or upgrade only replaces the daemon, the
+# sessions it spawned keep running.
+KillMode=process
 LimitNOFILE=65536
 
-# Hardening (safe subset). Sessions run arbitrary user commands and the daemon
-# needs the TPM device, so these are deliberately left unset: ProtectSystem,
-# ProtectHome, PrivateDevices, PrivateTmp (sessions must write wherever the
-# target user can, and the TPM device must be reachable), NoNewPrivileges (a
-# root session must be able to run setuid tools such as sudo), and
-# CapabilityBoundingSet (tuning it requires exercising every session path).
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-ProtectClock=yes
-SystemCallArchitectures=native
-RestrictRealtime=yes
-TasksMax=8192
+# No sandboxing. Sessions are children of the daemon and inherit every
+# restriction set here, so a root shell could not load modules, set sysctls,
+# capture packets, or change the clock. Sessions are isolated by the target
+# user's own privileges, like OpenSSH.
 
 [Install]
 WantedBy=multi-user.target

@@ -27,6 +27,8 @@ if [ -d /usr/lib/systemd/system ] && has_cmd systemctl; then
    install -m 0644 /usr/share/nokkud/systemd/nokkud.service /usr/lib/systemd/system/nokkud.service
    systemctl daemon-reload >/dev/null 2>&1 || true
    systemctl enable nokkud.service >/dev/null 2>&1 || true
+   # Upgrades pick up the new binary. KillMode=process keeps live sessions.
+   systemctl try-restart nokkud.service >/dev/null 2>&1 || true
 fi
 
 # --- OpenRC ---
