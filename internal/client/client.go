@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/netip"
+	"os"
 	"sync"
 	"time"
 
@@ -30,7 +32,13 @@ const (
 	dialTimeout   = 30 * time.Second
 	enrollTimeout = 30 * time.Second
 	syncTimeout   = 15 * time.Second
+	// retryUploadsEvery is how often recordings the backend missed are
+	// uploaded again.
+	retryUploadsEvery = 5 * time.Minute
 )
+
+// signerSalt namespaces the daemon's DPoP key. Salt registry: mon/README.md.
+const signerSalt = "nokku-daemon"
 
 var errDaemonRejected = errors.New("daemon rejected by backend")
 
@@ -63,12 +71,17 @@ func New(ctx context.Context, cache *state.Cache, config *state.Config, opts Opt
 	if err != nil {
 		return nil, err
 	}
+	// The identity is bound to the enrollment, so only a new enrollment may
+	// replace a changed one. It registers the new key anyway.
+	onChange := tpm.FailOnIdentityChange
+	if opts.EnrollToken != "" {
+		onChange = tpm.RecreateIdentity
+	}
 	proofer, err := dpopclient.NewProofer(
-		// Salt registry: see mon/README.md.
-		[]byte("nokku-daemon"),
+		[]byte(signerSalt),
 		paths.SignerStateFile(),
 		opts.RequireTPM,
-		tpm.FailOnIdentityChange,
+		onChange,
 	)
 	if err != nil {
 		return nil, err
@@ -108,6 +121,14 @@ func (c *Client) enroll(ctx context.Context, token string) error {
 	if res.GetWorkspaceId() == "" || res.GetTargetId() == "" || res.GetId() == "" || res.GetAccessToken() == "" {
 		return errors.New("enroll: backend returned an incomplete enrollment")
 	}
+	// A re-enrollment may move the host to another workspace, so nothing the
+	// old one trusted may survive until the first sync.
+	c.cache.Clear()
+	for _, f := range []string{paths.UserCAFile(), paths.RetiredCAFile(), paths.HostKeyCert()} {
+		if err = os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("enroll: drop previous trust: %w", err)
+		}
+	}
 	c.config.WorkspaceID = res.GetWorkspaceId()
 	c.config.TargetID = res.GetTargetId()
 	c.config.DaemonID = res.GetId()
@@ -124,14 +145,27 @@ func (c *Client) RecordingSink(ctx context.Context, sessionID, username string) 
 	return recording.NewUploader(ctx, c.rc, sessionID, username)
 }
 
+// retryUploads uploads recordings whose live upload never completed, such as
+// sessions recorded while the backend was down.
+func (c *Client) retryUploads(ctx context.Context) {
+	t := time.NewTicker(retryUploadsEvery)
+	defer t.Stop()
+	for {
+		if err := recording.UploadPending(ctx, c.rc); err != nil {
+			slog.Debug("recording upload retry failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
 // Run syncs, keeps the host cert fresh, and holds the control stream open
 // until ctx is done or the backend rejects the daemon. sshAddr is where srv
 // listens.
 func (c *Client) Run(ctx context.Context, srv *sshd.Server, sshAddr netip.AddrPort) error {
-	if c.config.DaemonID == "" {
-		slog.Info("daemon not enrolled, run with --enroll")
-		return nil
-	}
 	c.srv = srv
 	c.sshAddr = sshAddr
 	// Deferred in this order so relays are canceled before they are joined.
@@ -147,6 +181,7 @@ func (c *Client) Run(ctx context.Context, srv *sshd.Server, sshAddr netip.AddrPo
 		slog.Warn("initial sync failed, serving from cache", "error", err)
 	}
 	go c.watchCertificates(ctx)
+	go c.retryUploads(ctx)
 
 	b := backoff.NewExponentialBackOff()
 	b.InitialInterval = time.Second

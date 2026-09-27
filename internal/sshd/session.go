@@ -584,7 +584,7 @@ func (sess *session) recordingDegraded(reason string) {
 }
 
 // canonicalUUID reports whether s is a lowercase hyphenated 8-4-4-4-12 UUID,
-// the form uuid.NewV7 produces. Re-serializing rejects braced and URN forms.
+// the form [uuid.NewV7] produces. Re-serializing rejects braced and URN forms.
 func canonicalUUID(s string) bool {
 	u, err := uuid.Parse(s)
 	return err == nil && u.String() == s

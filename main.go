@@ -24,7 +24,7 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/state"
-	"github.com/nokku-sh/nokkud/internal/util"
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 func main() {
@@ -63,29 +63,36 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				},
 			},
 			{
+				Name:  "enroll",
+				Usage: "Enroll this host with Nokku, then exit",
+				Description: `Prompts for the enrollment token from the Nokku web app, or reads
+NOKKUD_ENROLL_TOKEN for unattended installs. The token never goes on the command line.
+Run it again to move the host to another workspace. Restart the service afterwards.`,
+				Action: enroll,
+			},
+			{
 				Name:        "reset",
 				Usage:       "Cleanup application state and delete this daemon",
 				Description: `Cleans up all local certificates, principal caches, and enrollment data. Use this to decommission this machine or before re-enrolling.`,
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					if err := util.IsRoot(); err != nil {
+					if err := sysutil.IsRoot(); err != nil {
 						return err
 					}
-					cache := state.NewCache()
-					if err := cache.Load(); err != nil {
-						return err
-					}
-					cfg := state.NewConfig()
-					if err := cfg.Load(); err != nil {
-						return err
+					// Local state goes even when the backend or the signing
+					// key is gone, else a broken identity could never be reset.
+					defer paths.Cleanup()
+					cache, cfg, err := loadState(cmd)
+					if err != nil {
+						slog.Warn("load local state, removing it anyway", "error", err)
+						return nil
 					}
 					cl, err := newDaemonClient(ctx, cmd, "", cache, cfg)
-					if err != nil {
-						return err
+					if err == nil {
+						err = cl.DeleteDaemon(ctx)
 					}
-					if err = cl.DeleteDaemon(ctx); err != nil {
+					if err != nil {
 						slog.Warn("delete daemon from backend failed, local state removed", "error", err)
 					}
-					paths.Cleanup()
 					return nil
 				},
 			},
@@ -97,8 +104,9 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				Sources: cli.EnvVars("NOKKUD_DEBUG"),
 			},
 			&cli.BoolFlag{
-				Name:  "insecure",
-				Usage: "Disable TLS verification (only use for testing)",
+				Name:    "insecure",
+				Usage:   "Disable TLS verification (only use for testing)",
+				Sources: cli.EnvVars("NOKKUD_INSECURE"),
 			},
 			&cli.BoolFlag{
 				Name:    "require-tpm",
@@ -116,10 +124,6 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 				Usage:   "Nokku API URL",
 				Sources: cli.EnvVars("NOKKUD_API_URL"),
 			},
-			&cli.BoolFlag{
-				Name:  "enroll",
-				Usage: "Enroll this host. Prompts for the token unless NOKKUD_ENROLL_TOKEN is set",
-			},
 		},
 	}
 
@@ -129,35 +133,21 @@ embedded SSH server that authenticates users via short-lived SSH certificates.`,
 	}
 }
 
-func run(ctx context.Context, cmd *cli.Command) error {
-	if err := util.IsRoot(); err != nil {
-		return err
-	}
-	cache := state.NewCache()
-	if err := cache.Load(); err != nil {
-		return err
-	}
-	cfg := state.NewConfig()
-	if err := cfg.Load(); err != nil {
-		return err
-	}
-	// The API URL is bound to the enrollment, so it is persisted. The flag
-	// only wins when given explicitly.
-	if cmd.IsSet("api") {
-		cfg.APIURL = strings.TrimRight(cmd.String("api"), "/")
-	}
-	if cfg.APIURL == "" {
-		cfg.APIURL = state.DefaultAPIURL
-	}
-	if err := cfg.Save(); err != nil {
-		return err
-	}
+// errNotEnrolled exits with EX_CONFIG, which the unit file does not restart.
+var errNotEnrolled = cli.Exit("nokkud: this host is not enrolled, run: sudo nokkud enroll", 78)
 
-	token, err := enrollToken(cmd)
+func run(ctx context.Context, cmd *cli.Command) error {
+	if err := sysutil.IsRoot(); err != nil {
+		return err
+	}
+	cache, cfg, err := loadState(cmd)
 	if err != nil {
 		return err
 	}
-	cl, err := newDaemonClient(ctx, cmd, token, cache, cfg)
+	if cfg.DaemonID == "" {
+		return errNotEnrolled
+	}
+	cl, err := newDaemonClient(ctx, cmd, "", cache, cfg)
 	if err != nil {
 		return err
 	}
@@ -182,8 +172,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	slog.Info("starting nokkud", "version", buildinfo.Version, "ssh_addr", l.Addr())
 
-	// Serve stops with ctx, so a client exit (rejection, not enrolled) must
-	// cancel it too.
+	// Serve stops with ctx, so a client exit (rejection) must cancel it too.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -198,15 +187,53 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	return err
 }
 
-// enrollToken reads the token from the env, or prompts on --enroll. Tokens
-// never go on argv.
-func enrollToken(cmd *cli.Command) (string, error) {
-	token := os.Getenv("NOKKUD_ENROLL_TOKEN")
-	if !cmd.Bool("enroll") || token != "" {
+func enroll(ctx context.Context, cmd *cli.Command) error {
+	if err := sysutil.IsRoot(); err != nil {
+		return err
+	}
+	cache, cfg, err := loadState(cmd)
+	if err != nil {
+		return err
+	}
+	token, err := enrollToken()
+	if err != nil {
+		return err
+	}
+	if _, err = newDaemonClient(ctx, cmd, token, cache, cfg); err != nil {
+		return err
+	}
+	fmt.Println("Enrolled. Start the daemon with: sudo systemctl restart nokkud")
+	return nil
+}
+
+// loadState reads the persisted state. The API URL is bound to the
+// enrollment, so it is persisted, and the flag only wins when given.
+func loadState(cmd *cli.Command) (*state.Cache, *state.Config, error) {
+	cache := state.NewCache()
+	if err := cache.Load(); err != nil {
+		return nil, nil, err
+	}
+	cfg := new(state.Config)
+	if err := cfg.Load(); err != nil {
+		return nil, nil, err
+	}
+	if cmd.IsSet("api") {
+		cfg.APIURL = strings.TrimRight(cmd.String("api"), "/")
+	}
+	if cfg.APIURL == "" {
+		cfg.APIURL = state.DefaultAPIURL
+	}
+	return cache, cfg, cfg.Save()
+}
+
+// enrollToken reads the token from the env, or prompts on a terminal. Tokens
+// never go on argv, where any local user could read them.
+func enrollToken() (string, error) {
+	if token := os.Getenv("NOKKUD_ENROLL_TOKEN"); token != "" {
 		return token, nil
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", errors.New("no enrollment token: set NOKKUD_ENROLL_TOKEN or run --enroll on a terminal")
+		return "", errors.New("no enrollment token: set NOKKUD_ENROLL_TOKEN or run on a terminal")
 	}
 	fmt.Fprint(os.Stderr, "Enrollment token: ")
 	secret, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -231,7 +258,7 @@ func newDaemonClient(
 	})
 	if errors.Is(err, tpm.ErrIdentityChanged) {
 		return nil, fmt.Errorf(
-			"the daemon signing key no longer matches this machine, re-enroll with `sudo nokkud --enroll`: %w",
+			"the daemon signing key no longer matches this machine, re-enroll with `sudo nokkud enroll`: %w",
 			err,
 		)
 	}
