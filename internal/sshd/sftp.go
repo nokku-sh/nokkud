@@ -42,12 +42,12 @@ func (sess *session) runSFTP() {
 	home := sess.sysUser.HomeDir
 	cmd, err := sftpServerCmd(home)
 	if err != nil {
-		sess.Exit(1)
+		sess.exit(1)
 		return
 	}
 	attr, err := sysutil.SysProcAttr(sess.sysUser)
 	if err != nil {
-		sess.Exit(1)
+		sess.exit(1)
 		return
 	}
 	cmd.SysProcAttr = attr

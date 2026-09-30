@@ -19,28 +19,28 @@ import (
 )
 
 const (
-	// MaxSize caps a recording's compressed size on disk. Recording stops
+	// maxSize caps a recording's compressed size on disk. Recording stops
 	// there and the session goes on, the cut is audited.
-	MaxSize = 50 << 20
-	// MaxIdleTime is the maximum gap between events recorded in the cast.
-	MaxIdleTime = 2 * time.Second
+	maxSize = 50 << 20
+	// maxIdleTime is the maximum gap between events recorded in the cast.
+	maxIdleTime = 2 * time.Second
 	// maxFlushInterval bounds how long compressed data sits in the gzip
 	// buffer. A crash loses at most this much of the tail of a recording.
 	maxFlushInterval = 100 * time.Millisecond
 )
 
-// Header is the asciicast v3 metadata block written first in a recording.
-type Header struct {
+// header is the asciicast v3 metadata block written first in a recording.
+type header struct {
 	Version   int    `json:"version"`
-	Term      Term   `json:"term"`
+	Term      term   `json:"term"`
 	Timestamp int64  `json:"timestamp,omitempty"`
 	Title     string `json:"title,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
 	User      string `json:"user,omitempty"`
 }
 
-// Term is the terminal info block of an asciicast v3 header.
-type Term struct {
+// term is the terminal info block of an asciicast v3 header.
+type term struct {
 	Cols int    `json:"cols"`
 	Rows int    `json:"rows"`
 	Type string `json:"type,omitempty"`
@@ -58,7 +58,7 @@ type Options struct {
 	// Sink, when set, receives every flushed batch in addition to the local file.
 	// A nil error from its Close confirms the upload.
 	Sink io.WriteCloser
-	// OnLimit is called once when the recording stops at MaxSize.
+	// OnLimit is called once when the recording stops at maxSize.
 	OnLimit func()
 }
 
@@ -132,7 +132,7 @@ func New(opts Options) (*Recorder, error) {
 	}
 	path := f.Name()
 
-	if err = EnforceRetention(); err != nil {
+	if err = enforceRetention(); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
 		return nil, err
@@ -147,9 +147,9 @@ func New(opts Options) (*Recorder, error) {
 	enc := json.NewEncoder(gw)
 	enc.SetEscapeHTML(false)
 
-	if err = enc.Encode(Header{
+	if err = enc.Encode(header{
 		Version: 3,
-		Term: Term{
+		Term: term{
 			Cols: opts.Width,
 			Rows: opts.Height,
 			Type: cmp.Or(opts.Term, "xterm-256color"),
@@ -221,7 +221,7 @@ func (r *Recorder) event(eventType string, data []byte) {
 		r.mu.Unlock()
 		return
 	}
-	if r.cw.written < MaxSize {
+	if r.cw.written < maxSize {
 		r.emit(eventType, data)
 		r.mu.Unlock()
 		return
@@ -229,7 +229,7 @@ func (r *Recorder) event(eventType string, data []byte) {
 	r.closeLocked()
 	r.mu.Unlock()
 
-	slog.Warn("recording size limit reached, stopping", "size", MaxSize)
+	slog.Warn("recording size limit reached, stopping", "size", maxSize)
 	if r.onLimit != nil {
 		r.onLimit()
 	}
@@ -238,9 +238,9 @@ func (r *Recorder) event(eventType string, data []byte) {
 // emit writes one event line. Caller holds r.mu and has checked not closed.
 func (r *Recorder) emit(eventType string, data []byte) {
 	// asciicast v3 timestamps are intervals from the previous event. Gaps
-	// longer than MaxIdleTime are clamped so playback skips idle time.
+	// longer than maxIdleTime are clamped so playback skips idle time.
 	now := time.Now()
-	gap := min(now.Sub(r.lastEvent), MaxIdleTime)
+	gap := min(now.Sub(r.lastEvent), maxIdleTime)
 	r.lastEvent = now
 
 	encodedData := marshalEventData(string(data))

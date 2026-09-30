@@ -30,7 +30,7 @@ func SysProcAttr(sysUser *user.User) (*syscall.SysProcAttr, error) {
 		return nil, fmt.Errorf("failed to parse gid for user %s: %w", sysUser.Username, err)
 	}
 
-	groupIDs, err := GroupIDs(sysUser)
+	groupIDs, err := groupIDs(sysUser)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup groups for user %s: %w", sysUser.Username, err)
 	}
