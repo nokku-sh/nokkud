@@ -7,9 +7,6 @@ started is quick.
 
 - Go 1.x (see `go.mod`)
 - [Task](https://taskfile.dev)
-- [`buf`](https://buf.build) and
-  [`protoc-gen-connect-go`](https://connectrpc.com/docs/go/getting-started)
-  (protobuf generation)
 - [`golangci-lint`](https://golangci-lint.run)
 - [`govulncheck`](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)
 - [GoReleaser](https://goreleaser.com) (snapshots/releases only)
@@ -23,15 +20,18 @@ task build
 This builds the `nokkud` binary and installs it to `/usr/local/bin` (static,
 `CGO_ENABLED=0`). The move needs root, so the task calls `sudo`.
 
-## Regenerating generated code
+## API schema
+
+The generated API code comes from the
+[nokku-sh/protos](https://github.com/nokku-sh/protos) Go module, pinned in
+`go.mod`. Schema changes happen there. To pick up a new version:
 
 ```bash
-task gen
+go get github.com/nokku-sh/protos@vX.Y.Z
 ```
 
-This runs `buf generate` against the sibling `../protos/nokku` checkout, so
-clone [nokku-sh/protos](https://github.com/nokku-sh/protos) next to this repo
-first. The generated Go lives in `internal/gen/` and is committed.
+For local work against an unreleased schema, use a `go.work` in the parent
+directory. The protos README covers the workflow and what CI sees.
 
 ## Code style
 

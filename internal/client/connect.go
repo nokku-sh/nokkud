@@ -8,7 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
 // heartbeatInterval keeps the stream alive through proxies that close idle
