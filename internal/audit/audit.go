@@ -32,12 +32,12 @@ const (
 )
 
 const (
-	// MaxFileSize rotates to a new file after this many bytes.
-	MaxFileSize = 10 << 20
-	// MaxAge retains files younger than this.
-	MaxAge = 30 * 24 * time.Hour
-	// MaxTotalSize caps the total on-disk size of audit files.
-	MaxTotalSize = 1 << 30
+	// maxFileSize rotates to a new file after this many bytes.
+	maxFileSize = 10 << 20
+	// maxAge retains files younger than this.
+	maxAge = 30 * 24 * time.Hour
+	// maxTotalSize caps the total on-disk size of audit files.
+	maxTotalSize = 1 << 30
 	// maxQueuedEvents bounds the queue feeding the writer goroutine.
 	maxQueuedEvents = 1024
 	// emitWaitDefault is how long Emit waits for queue space before dropping.
@@ -213,7 +213,7 @@ func (s *Sink) write(ev Event) {
 		}
 	}
 
-	if s.size+int64(len(data)) > MaxFileSize {
+	if s.size+int64(len(data)) > maxFileSize {
 		if err = s.rotate(); err != nil {
 			slog.Warn("rotate audit log", "error", err)
 			return
@@ -258,7 +258,7 @@ func (s *Sink) rotate() error {
 	return nil
 }
 
-// enforceRetention applies MaxAge and MaxTotalSize to the audit files.
+// enforceRetention applies maxAge and maxTotalSize to the audit files.
 func (s *Sink) enforceRetention() {
 	matches, err := filepath.Glob(filepath.Join(s.dir, "audit-*.jsonl"))
 	if err != nil {
@@ -273,5 +273,5 @@ func (s *Sink) enforceRetention() {
 		}
 		files = append(files, fi)
 	}
-	sysutil.PruneOldest(s.dir, files, MaxAge, MaxTotalSize)
+	sysutil.PruneOldest(s.dir, files, maxAge, maxTotalSize)
 }

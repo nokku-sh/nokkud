@@ -124,8 +124,8 @@ func uploadFile(ctx context.Context, client nokkuv1connect.RecordingServiceClien
 }
 
 // readHeader reads the asciicast header, the first line of the recording.
-func readHeader(path string) (Header, error) {
-	var hdr Header
+func readHeader(path string) (header, error) {
+	var hdr header
 	f, err := os.Open(path) // #nosec G304 - a file from the recordings dir
 	if err != nil {
 		return hdr, err

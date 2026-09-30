@@ -59,9 +59,9 @@ func LookupUser(name string) (*user.User, error) {
 	}, nil
 }
 
-// GroupIDs returns the user's supplementary group ids, falling back to
+// groupIDs returns the user's supplementary group ids, falling back to
 // `id -G` for NSS / LDAP users invisible to static builds.
-func GroupIDs(u *user.User) ([]string, error) {
+func groupIDs(u *user.User) ([]string, error) {
 	if ids, err := u.GroupIds(); err == nil {
 		return ids, nil
 	}

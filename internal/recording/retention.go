@@ -12,15 +12,15 @@ import (
 )
 
 const (
-	// MaxTotalSpace limits the total space used by recordings.
-	MaxTotalSpace = 1 << 30
-	// MaxAge sets the retention period.
-	MaxAge = 30 * 24 * time.Hour
+	// maxTotalSpace limits the total space used by recordings.
+	maxTotalSpace = 1 << 30
+	// maxAge sets the retention period.
+	maxAge = 30 * 24 * time.Hour
 )
 
-// EnforceRetention removes old recordings based on time and total space
+// enforceRetention removes old recordings based on time and total space
 // constraints.
-func EnforceRetention() error {
+func enforceRetention() error {
 	recordsDir := paths.RecordsDir()
 	entries, err := os.ReadDir(recordsDir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -44,7 +44,7 @@ func EnforceRetention() error {
 		files = append(files, info)
 	}
 
-	sysutil.PruneOldest(recordsDir, files, MaxAge, MaxTotalSpace)
+	sysutil.PruneOldest(recordsDir, files, maxAge, maxTotalSpace)
 	return nil
 }
 

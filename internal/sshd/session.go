@@ -370,26 +370,26 @@ func (sess *session) killProc() {
 	}
 }
 
-// Exit reports the exit status and closes the channel. Idempotent, only the
+// exit reports the exit status and closes the channel. Idempotent, only the
 // first call has an effect.
-func (sess *session) Exit(code int) {
+func (sess *session) exit(code int) {
 	sess.finish(code, func() {
 		status := struct{ Status uint32 }{exitCodeToU32(code)}
 		_, _ = sess.SendRequest("exit-status", false, ssh.Marshal(status))
 	})
 }
 
-// ExitProcess reports a finished process like OpenSSH: exit-status normally,
+// exitProcess reports a finished process like OpenSSH: exit-status normally,
 // exit-signal when killed by a signal, so clients surface 128+signal.
-func (sess *session) ExitProcess(st *os.ProcessState) {
+func (sess *session) exitProcess(st *os.ProcessState) {
 	name, code, signaled := processSignal(st)
 	if !signaled {
-		sess.Exit(int(exitCodeOf(st)))
+		sess.exit(int(exitCodeOf(st)))
 		return
 	}
 	if name == "" {
 		// Signal outside the RFC 4254 name table: still surface 128+n.
-		sess.Exit(code)
+		sess.exit(code)
 		return
 	}
 	sess.exitSignal(name, code)
@@ -452,13 +452,13 @@ func (sess *session) runPTY() {
 	cmd.Env = sess.buildEnv()
 	attr, err := sysutil.SysProcAttr(sess.sysUser)
 	if err != nil {
-		sess.Exit(1)
+		sess.exit(1)
 		return
 	}
 	cmd.SysProcAttr = attr
 	if err = cmd.Start(); err != nil {
 		slog.Debug("start pty command failed", "error", err)
-		sess.Exit(1)
+		sess.exit(1)
 		return
 	}
 	sess.setProc(cmd.Process)
@@ -495,8 +495,8 @@ func (sess *session) runPTY() {
 	_ = sess.ptmx.Close()
 	_ = cmd.Wait()
 
-	// ExitProcess closes the channel, which unblocks the input relay.
-	sess.ExitProcess(cmd.ProcessState)
+	// exitProcess closes the channel, which unblocks the input relay.
+	sess.exitProcess(cmd.ProcessState)
 	input.Wait()
 }
 
@@ -515,7 +515,7 @@ func (sess *session) runPlain() {
 	cmd.Env = sess.buildEnv()
 	attr, err := sysutil.SysProcAttr(sess.sysUser)
 	if err != nil {
-		sess.Exit(1)
+		sess.exit(1)
 		return
 	}
 	cmd.SysProcAttr = attr
@@ -601,14 +601,14 @@ func (sess *session) runProcess(cmd *exec.Cmd) {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		slog.Debug("process stdin pipe failed", "error", err)
-		sess.Exit(1)
+		sess.exit(1)
 		return
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
 		slog.Debug("process stdout pipe failed", "error", err)
-		sess.Exit(1)
+		sess.exit(1)
 		return
 	}
 
@@ -616,7 +616,7 @@ func (sess *session) runProcess(cmd *exec.Cmd) {
 		slog.Debug("start command failed", "error", err)
 		_ = stdin.Close()
 		_ = stdout.Close()
-		sess.Exit(1)
+		sess.exit(1)
 		return
 	}
 	sess.setProc(cmd.Process)
@@ -651,8 +651,8 @@ func (sess *session) runProcess(cmd *exec.Cmd) {
 	}
 
 	// cmd.Wait() closed the pipes, but the client-side relay is still blocked
-	// reading the channel. ExitProcess closes it, then the relays are joined.
-	sess.ExitProcess(cmd.ProcessState)
+	// reading the channel. exitProcess closes it, then the relays are joined.
+	sess.exitProcess(cmd.ProcessState)
 	relay.Wait()
 }
 
