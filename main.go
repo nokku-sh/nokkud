@@ -33,8 +33,9 @@ func main() {
 		Suggest:               true,
 		Name:                  "nokkud",
 		Usage:                 "zero-trust SSH access",
-		Description: `nokkud enrolls this server with Nokku and replaces the host sshd with an
-embedded SSH server that authenticates users via short-lived SSH certificates.`,
+		Description: `nokkud enrolls this server with Nokku and runs an embedded SSH server beside
+the host sshd (on :4022 by default) that authenticates users via short-lived
+SSH certificates. The host sshd on port 22 is never touched.`,
 		Version: buildinfo.String(),
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			logx.Init(cmd.Bool("debug"))
