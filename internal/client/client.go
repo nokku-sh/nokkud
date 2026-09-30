@@ -20,8 +20,9 @@ import (
 	"github.com/nokku-sh/mon/dpopclient"
 	"github.com/nokku-sh/mon/tpm"
 
-	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
-	nokkuv1connect "github.com/nokku-sh/nokkud/internal/gen/nokku/v1/nokkuv1connect"
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
+	nokkuv1connect "github.com/nokku-sh/protos/gen/nokku/v1/nokkuv1connect"
+
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sshd"

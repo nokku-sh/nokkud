@@ -6,7 +6,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
+
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 

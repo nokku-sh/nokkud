@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
 type fakeRelayStream struct {

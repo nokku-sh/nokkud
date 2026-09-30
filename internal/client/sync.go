@@ -10,7 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	nokkuv1 "github.com/nokku-sh/nokkud/internal/gen/nokku/v1"
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
+
 	"github.com/nokku-sh/nokkud/internal/hostcerts"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"

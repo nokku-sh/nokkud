@@ -6,11 +6,6 @@ tasks:
     cmds:
       - go get -u ./...
 
-  gen:
-    desc: Generate buf.build files
-    cmds:
-      - buf generate
-
   selinux:
     desc: Generate selinux policy
     dir: ./packaging/selinux/
