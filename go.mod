@@ -8,7 +8,7 @@ require (
 	github.com/cenkalti/backoff/v7 v7.0.0
 	github.com/mizuchilabs/kata v0.1.14
 	github.com/nokku-sh/mon v0.1.4
-	github.com/nokku-sh/protos v0.1.0
+	github.com/nokku-sh/protos v0.2.0
 	github.com/pkg/sftp v1.13.11
 	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.13.0
