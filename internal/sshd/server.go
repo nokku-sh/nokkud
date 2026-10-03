@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
+	"net/netip"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -24,10 +25,13 @@ import (
 const (
 	maxConns    = 100
 	maxStartups = 10
+	// maxSourceStartups caps one remote address, so a single peer cannot hold
+	// every pre-auth slot.
+	maxSourceStartups = 3
 	// maxChannels caps the channels one connection holds open, sessions and
 	// forwards alike.
 	maxChannels      = 50
-	handshakeTimeout = 30 * time.Second
+	handshakeTimeout = 10 * time.Second
 	// aliveInterval is how often an idle client is probed. A probe left
 	// unanswered for three intervals drops the client, like OpenSSH.
 	aliveInterval = time.Minute
@@ -79,10 +83,16 @@ type Server struct {
 	policy        atomic.Pointer[Policy]
 
 	// Limits live on the server so tests can shrink them.
-	conns         chan struct{}
+	conns chan struct{}
+	// Loopback has its own pre-auth budget. Relayed connections arrive from
+	// there and a network peer must not starve them.
 	startups      chan struct{}
+	localStartups chan struct{}
 	maxChannels   int
 	aliveInterval time.Duration
+
+	startupMu      sync.Mutex
+	sourceStartups map[netip.Addr]int
 
 	mu         sync.RWMutex
 	cfg        *ssh.ServerConfig
@@ -97,15 +107,17 @@ func New(opts Options) (*Server, error) {
 		return nil, errors.New("sshd: Principals is required")
 	}
 	s := &Server{
-		principals:    opts.Principals,
-		audit:         opts.Audit,
-		recordingSink: opts.RecordingSink,
-		nologinFile:   opts.NologinFile,
-		conns:         make(chan struct{}, maxConns),
-		startups:      make(chan struct{}, maxStartups),
-		maxChannels:   maxChannels,
-		aliveInterval: aliveInterval,
-		trustedCAs:    caKeys(opts.TrustedCAs),
+		principals:     opts.Principals,
+		audit:          opts.Audit,
+		recordingSink:  opts.RecordingSink,
+		nologinFile:    opts.NologinFile,
+		conns:          make(chan struct{}, maxConns),
+		startups:       make(chan struct{}, maxStartups),
+		localStartups:  make(chan struct{}, maxStartups),
+		sourceStartups: map[netip.Addr]int{},
+		maxChannels:    maxChannels,
+		aliveInterval:  aliveInterval,
+		trustedCAs:     caKeys(opts.TrustedCAs),
 	}
 	if s.nologinFile == "" {
 		s.nologinFile = sysutil.NologinFile
@@ -286,12 +298,11 @@ func (s *Server) handleConn(nc net.Conn) {
 // handshake holds a pre-auth slot only while the handshake runs, and bounds a
 // peer that never finishes it.
 func (s *Server) handshake(nc net.Conn) (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
-	select {
-	case s.startups <- struct{}{}:
-		defer func() { <-s.startups }()
-	default:
+	release, ok := s.acquireStartup(nc.RemoteAddr())
+	if !ok {
 		return nil, nil, nil, errBusy
 	}
+	defer release()
 	if err := nc.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
 		return nil, nil, nil, err
 	}
@@ -303,6 +314,45 @@ func (s *Server) handshake(nc net.Conn) (*ssh.ServerConn, <-chan ssh.NewChannel,
 		return nil, nil, nil, err
 	}
 	return conn, chans, reqs, nc.SetDeadline(time.Time{})
+}
+
+// acquireStartup takes a pre-auth slot for addr. IPv6 peers count per /64.
+func (s *Server) acquireStartup(addr net.Addr) (release func(), ok bool) {
+	var source netip.Addr
+	if ap, err := netip.ParseAddrPort(addr.String()); err == nil {
+		source = ap.Addr().Unmap()
+	}
+	if source.IsLoopback() {
+		select {
+		case s.localStartups <- struct{}{}:
+			return func() { <-s.localStartups }, true
+		default:
+			return nil, false
+		}
+	}
+	if source.Is6() {
+		source = netip.PrefixFrom(source, 64).Masked().Addr()
+	}
+
+	s.startupMu.Lock()
+	defer s.startupMu.Unlock()
+	if s.sourceStartups[source] >= maxSourceStartups {
+		return nil, false
+	}
+	select {
+	case s.startups <- struct{}{}:
+	default:
+		return nil, false
+	}
+	s.sourceStartups[source]++
+	return func() {
+		<-s.startups
+		s.startupMu.Lock()
+		defer s.startupMu.Unlock()
+		if s.sourceStartups[source]--; s.sourceStartups[source] == 0 {
+			delete(s.sourceStartups, source)
+		}
+	}, true
 }
 
 func (s *Server) keepAlive(conn *ssh.ServerConn, done <-chan struct{}) {

@@ -1,7 +1,9 @@
 package sshd
 
 import (
+	"fmt"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -49,7 +51,7 @@ func TestServerMaxStartups(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.startups = make(chan struct{}, 1) })
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.localStartups = make(chan struct{}, 1) })
 	defer closeFn()
 
 	// A raw TCP connection that never completes the SSH handshake holds the
@@ -82,7 +84,7 @@ func TestServerMaxStartups(t *testing.T) {
 func TestServerMaxStartupsReleasedAfterHandshake(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.startups = make(chan struct{}, 1) })
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.localStartups = make(chan struct{}, 1) })
 	defer closeFn()
 
 	auth := userCert(t, ca, testPrincipal)
@@ -247,4 +249,49 @@ func TestServerBackgroundProcessReleasesConnection(t *testing.T) {
 		}
 		return false
 	}, 8*time.Second, 50*time.Millisecond, "background process kept the connection slot")
+}
+
+// TestStartupSlotsPerSource verifies one remote address cannot take every
+// pre-auth slot, and that loopback draws from its own budget.
+func TestStartupSlotsPerSource(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
+	s, err := New(Options{Principals: func(string) []string { return nil }})
+	must.NoError(err)
+
+	addr := func(ip string) net.Addr { return net.TCPAddrFromAddrPort(netip.MustParseAddrPort(ip)) }
+
+	var releases []func()
+	for range maxSourceStartups {
+		release, ok := s.acquireStartup(addr("203.0.113.7:1000"))
+		must.True(ok, "slot within the per-source cap")
+		releases = append(releases, release)
+	}
+	_, ok := s.acquireStartup(addr("203.0.113.7:1001"))
+	is.False(ok, "one address took more than its share")
+
+	_, ok = s.acquireStartup(addr("198.51.100.1:1000"))
+	is.True(ok, "another address was refused")
+
+	for range maxSourceStartups {
+		_, ok = s.acquireStartup(addr("[2001:db8::1]:1000"))
+		must.True(ok)
+	}
+	_, ok = s.acquireStartup(addr("[2001:db8::ffff]:1000"))
+	is.False(ok, "addresses in one /64 must share a cap")
+
+	// Remote slots are now exhausted (3 + 1 + 3 of 10 used, fill the rest).
+	for i := range 3 {
+		_, ok = s.acquireStartup(addr(fmt.Sprintf("192.0.2.%d:1000", i+1)))
+		must.True(ok)
+	}
+	_, ok = s.acquireStartup(addr("192.0.2.200:1000"))
+	is.False(ok, "remote budget is full")
+	_, ok = s.acquireStartup(addr("127.0.0.1:1000"))
+	is.True(ok, "loopback must not depend on the remote budget")
+
+	releases[0]()
+	_, ok = s.acquireStartup(addr("203.0.113.7:1002"))
+	is.True(ok, "a released slot was not reusable")
 }
