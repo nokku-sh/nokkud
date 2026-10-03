@@ -4,16 +4,16 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 	"uuid"
 
-	"github.com/aymanbagabas/go-pty"
+	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/recording"
@@ -52,8 +52,10 @@ type session struct {
 	agentLn   net.Listener
 	agentSock string
 
-	ptmx pty.Pty
-	rec  *recording.Recorder
+	// The pty master and its slave end, opened by pty-req.
+	ptmx, tty *os.File
+
+	rec *recording.Recorder
 
 	exitMu sync.Mutex
 	exited bool
@@ -159,6 +161,7 @@ func (sess *session) handleRequests() {
 	// No command ever ran, so nothing else releases what pty-req opened.
 	if sess.ptmx != nil {
 		_ = sess.ptmx.Close()
+		_ = sess.tty.Close()
 	}
 	if sess.rec != nil {
 		sess.rec.Close()
@@ -284,25 +287,26 @@ func (sess *session) ptyReq(req *ssh.Request) {
 		_ = req.Reply(false, nil)
 		return
 	}
-	ptmx, err := pty.New()
+	ptmx, tty, err := pty.Open()
 	if err != nil {
 		slog.Debug("open pty failed", "error", err)
 		_ = req.Reply(false, nil)
 		return
 	}
-	if err = ptmx.Resize(int(r.Width), int(r.Height)); err != nil {
+	if err = pty.Setsize(ptmx, winsize(r.Width, r.Height)); err != nil {
 		_ = ptmx.Close()
+		_ = tty.Close()
 		_ = req.Reply(false, nil)
 		return
 	}
 	// The daemon opened the pty as root. The user has to own it, like under
 	// OpenSSH, or opening the tty by its path is denied.
-	if u, ok := ptmx.(pty.UnixPty); ok && os.Geteuid() == 0 {
-		if err = u.Slave().Chown(int(sess.sysUser.UID), -1); err != nil {
+	if os.Geteuid() == 0 {
+		if err = tty.Chown(int(sess.sysUser.UID), -1); err != nil {
 			slog.Debug("chown pty failed", "error", err)
 		}
 	}
-	sess.ptmx = ptmx
+	sess.ptmx, sess.tty = ptmx, tty
 	// A client without TERM sends an empty one. Like OpenSSH, keep the default.
 	if r.Term != "" {
 		sess.setEnv("TERM", r.Term)
@@ -315,13 +319,21 @@ func (sess *session) ptyReq(req *ssh.Request) {
 func (sess *session) windowChange(req *ssh.Request) {
 	var w struct{ Cols, Rows, W, H uint32 }
 	if ssh.Unmarshal(req.Payload, &w) == nil && sess.ptmx != nil {
-		if err := sess.ptmx.Resize(int(w.Cols), int(w.Rows)); err != nil {
+		if err := pty.Setsize(sess.ptmx, winsize(w.Cols, w.Rows)); err != nil {
 			slog.Debug("resize pty failed", "error", err)
 		} else {
 			sess.rec.RecordResize(int(w.Cols), int(w.Rows))
 		}
 	}
 	_ = req.Reply(true, nil)
+}
+
+// winsize clamps a client's window size to what the tty can hold.
+func winsize(cols, rows uint32) *pty.Winsize {
+	return &pty.Winsize{
+		Cols: uint16(min(cols, math.MaxUint16)),
+		Rows: uint16(min(rows, math.MaxUint16)),
+	}
 }
 
 // signal forwards a channel signal to the running process. Signals that
@@ -443,18 +455,25 @@ func (sess *session) run() {
 // runPTY runs the login shell, or the command, in the session's pty and
 // relays bytes until it exits.
 func (sess *session) runPTY() {
-	cmd := sess.ptmx.Command(sess.sysUser.Shell)
-	cmd.Args[0] = "-" + filepath.Base(sess.sysUser.Shell) // login shell
+	defer sess.ptmx.Close()
+	defer sess.tty.Close()
+
+	// #nosec G204 - running the authenticated user's shell is the SSH
+	// server's purpose. The process is spawned with that user's privileges.
+	cmd := exec.CommandContext(sess.ctx, sess.sysUser.Shell)
 	if sess.rawCmd != "" {
-		cmd.Args = append(cmd.Args[:1], "-c", sess.rawCmd)
+		cmd.Args = append(cmd.Args, "-c", sess.rawCmd)
 	}
 	cmd.Dir = sess.sysUser.Home
 	cmd.Env = sess.buildEnv()
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = sess.tty, sess.tty, sess.tty
 	attr, err := sysutil.SysProcAttr(sess.sysUser)
 	if err != nil {
 		sess.exit(1)
 		return
 	}
+	// The pty becomes the controlling terminal of the new session.
+	attr.Setctty = true
 	cmd.SysProcAttr = attr
 	if err = cmd.Start(); err != nil {
 		slog.Debug("start pty command failed", "error", err)
@@ -463,9 +482,7 @@ func (sess *session) runPTY() {
 	}
 	sess.setProc(cmd.Process)
 	// Drop our slave end, so the master reports EOF once the child exits.
-	if u, ok := sess.ptmx.(pty.UnixPty); ok {
-		_ = u.Slave().Close()
-	}
+	_ = sess.tty.Close()
 
 	var input sync.WaitGroup
 	input.Go(func() {
@@ -671,7 +688,7 @@ func (sess *session) buildEnv() []string {
 		)
 	}
 	if sess.ptmx != nil {
-		env = append(env, "SSH_TTY="+sess.ptmx.Name())
+		env = append(env, "SSH_TTY="+sess.tty.Name())
 	}
 	if sess.agentSock != "" {
 		env = append(env, "SSH_AUTH_SOCK="+sess.agentSock)
