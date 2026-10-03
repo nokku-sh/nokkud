@@ -685,9 +685,14 @@ func (sess *session) buildEnv() []string {
 	env := sysutil.CmdEnv(sess.sysUser)
 	env = append(env, sess.env...)
 	if sess.conn != nil {
+		// The same two variables sshd sets. bash only reads ~/.bashrc for a
+		// remote command when it sees SSH_CLIENT.
+		rHost, rPort := splitHostPort(sess.conn.RemoteAddr())
+		lHost, lPort := splitHostPort(sess.conn.LocalAddr())
 		env = append(
 			env,
-			"SSH_CONNECTION="+connectionFields(sess.conn.RemoteAddr(), sess.conn.LocalAddr()),
+			"SSH_CLIENT="+rHost+" "+rPort+" "+lPort,
+			"SSH_CONNECTION="+rHost+" "+rPort+" "+lHost+" "+lPort,
 		)
 	}
 	if sess.ptmx != nil {
@@ -697,14 +702,6 @@ func (sess *session) buildEnv() []string {
 		env = append(env, "SSH_AUTH_SOCK="+sess.agentSock)
 	}
 	return env
-}
-
-// connectionFields renders the four SSH_CONNECTION fields (remote ip, remote
-// port, local ip, local port). [net.Addr] alone would render host:port twice.
-func connectionFields(remote, local net.Addr) string {
-	rHost, rPort := splitHostPort(remote)
-	lHost, lPort := splitHostPort(local)
-	return rHost + " " + rPort + " " + lHost + " " + lPort
 }
 
 func splitHostPort(a net.Addr) (string, string) {

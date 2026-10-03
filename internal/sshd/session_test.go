@@ -480,3 +480,29 @@ func TestShellStartsLikeOpenSSH(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionConnectionEnv verifies SSH_CLIENT and SSH_CONNECTION are set like
+// sshd sets them. bash only reads ~/.bashrc for a remote command when it sees
+// SSH_CLIENT.
+func TestSessionConnectionEnv(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+	addr, closeFn := startTestServer(t, ca)
+	defer closeFn()
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err, "dial")
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	must.NoError(err, "new session")
+	defer sess.Close()
+	out, err := sess.Output(`printf '%s|%s' "$SSH_CLIENT" "$SSH_CONNECTION"`)
+	must.NoError(err)
+
+	local, localPort, _ := net.SplitHostPort(client.LocalAddr().String())
+	server, serverPort, _ := net.SplitHostPort(addr)
+	must.Equal(
+		local+" "+localPort+" "+serverPort+"|"+local+" "+localPort+" "+server+" "+serverPort,
+		string(out),
+	)
+}
