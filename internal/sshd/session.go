@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -298,6 +299,14 @@ func (sess *session) ptyReq(req *ssh.Request) {
 		_ = ptmx.Close()
 		_ = req.Reply(false, nil)
 		return
+	}
+	// The daemon opened the pty as root. The user has to own it, like under
+	// OpenSSH, or opening the tty by its path is denied.
+	if u, ok := ptmx.(pty.UnixPty); ok && os.Geteuid() == 0 {
+		uid, _ := strconv.Atoi(sess.sysUser.Uid)
+		if err = u.Slave().Chown(uid, -1); err != nil {
+			slog.Debug("chown pty failed", "error", err)
+		}
 	}
 	sess.ptmx = ptmx
 	sess.setEnv("TERM", r.Term)
