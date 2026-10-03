@@ -216,18 +216,12 @@ func TestBinaryInterop(t *testing.T) {
 	must.NoError(aerr, "ssh -A: %s", aout)
 	is.NotEmpty(strings.TrimSpace(string(aout)), "ssh -A did not expose SSH_AUTH_SOCK")
 
-	// 9. Audit events were written for the real clients above.
-	auditFiles, err := filepath.Glob(filepath.Join(configDir, "audit", "audit-*.jsonl"))
-	must.NoError(err, "glob audit files")
-	is.NotEmpty(auditFiles, "no audit events written")
-	for _, f := range auditFiles {
-		var data []byte
-		data, err = os.ReadFile(f)
-		must.NoError(err, "read audit %s", f)
-		is.Contains(string(data), `"type":"auth_success"`)
-		is.Contains(string(data), `"type":"command"`)
-	}
-	t.Logf("audit: %d event file(s) verified", len(auditFiles))
+	// 9. Audit events were logged for the real clients above. Wait reaps the
+	// server and finishes the stderr copy.
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+	is.Contains(stderr.String(), "type=auth_success")
+	is.Contains(stderr.String(), "type=command")
 }
 
 // --- helpers ---------------------------------------------------------------

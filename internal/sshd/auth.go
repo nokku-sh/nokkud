@@ -14,7 +14,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
@@ -176,9 +175,9 @@ func (s *Server) verifiedPublicKey(
 	perms *ssh.Permissions,
 	_ string,
 ) (*ssh.Permissions, error) {
-	ev := connEvent(conn, audit.EventAuthSuccess)
+	ev := connEvent(conn, eventAuthSuccess)
 	ev.Principal = perms.Extensions["nokku-principal"]
-	s.audit.Emit(ev)
+	s.emit(ev)
 	return perms, nil
 }
 
@@ -194,9 +193,9 @@ func certExt(conn *ssh.ServerConn, name string) bool {
 
 // deny audits and logs a rejected login, then returns err.
 func (s *Server) deny(conn ssh.ConnMetadata, err error) error {
-	ev := connEvent(conn, audit.EventAuthFailure)
+	ev := connEvent(conn, eventAuthFailure)
 	ev.Error = err.Error()
-	s.audit.Emit(ev)
+	s.emit(ev)
 	slog.Warn("auth denied",
 		"user", conn.User(), "remote", conn.RemoteAddr(), "client", string(conn.ClientVersion()), "error", err)
 	return err

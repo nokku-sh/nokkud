@@ -18,7 +18,6 @@ import (
 	"github.com/aymanbagabas/go-pty"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
@@ -110,11 +109,11 @@ func (s *Server) serveSession(st *connState, newCh ssh.NewChannel) {
 		cancel:    cancel,
 		sessionID: uuid.NewV7().String(),
 	}
-	s.audit.Emit(sess.event(audit.EventSessionStart))
+	s.emit(sess.event(eventSessionStart))
 	sess.handleRequests()
 }
 
-func (sess *session) event(typ audit.EventType) audit.Event {
+func (sess *session) event(typ eventType) auditEvent {
 	ev := connEvent(sess.conn, typ)
 	ev.SessionID = sess.sessionID
 	ev.User = sess.sysUser.Username
@@ -198,9 +197,9 @@ func (sess *session) handleCommand(req *ssh.Request) bool {
 	sess.handled = true
 	_ = req.Reply(true, nil)
 
-	ev := sess.event(audit.EventCommand)
+	ev := sess.event(eventCommand)
 	ev.Command = sess.rawCmd
-	sess.server.audit.Emit(ev)
+	sess.server.emit(ev)
 	return true
 }
 
@@ -275,9 +274,9 @@ func (sess *session) acceptSubsystem(req *ssh.Request) bool {
 	sess.handled = sess.handled || ok
 	_ = req.Reply(ok, nil)
 	if ok {
-		ev := sess.event(audit.EventSubsystem)
+		ev := sess.event(eventSubsystem)
 		ev.Command = r.Name
-		sess.server.audit.Emit(ev)
+		sess.server.emit(ev)
 	}
 	return ok
 }
@@ -428,9 +427,9 @@ func (sess *session) finish(code int, send func()) {
 		sess.rec.Close()
 	}
 
-	ev := sess.event(audit.EventSessionEnd)
+	ev := sess.event(eventSessionEnd)
 	ev.ExitCode = code
-	sess.server.audit.Emit(ev)
+	sess.server.emit(ev)
 
 	send()
 	_ = sess.Close()
@@ -582,9 +581,9 @@ func (sess *session) startRecorder(width, height int) {
 }
 
 func (sess *session) recordingDegraded(reason string) {
-	ev := sess.event(audit.EventRecordingDegraded)
+	ev := sess.event(eventRecordingDegraded)
 	ev.Error = reason
-	sess.server.audit.Emit(ev)
+	sess.server.emit(ev)
 }
 
 // canonicalUUID reports whether s is a lowercase hyphenated 8-4-4-4-12 UUID,

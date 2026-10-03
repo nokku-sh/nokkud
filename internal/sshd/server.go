@@ -2,6 +2,7 @@
 package sshd
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -19,7 +20,6 @@ import (
 
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 
-	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
@@ -66,8 +66,8 @@ type RecordingSink func(ctx context.Context, sessionID, username string) io.Writ
 type Options struct {
 	// Principals returns the subject UUIDs allowed to log in as username.
 	Principals func(username string) []string
-	// Audit may be nil. The server closes it when Serve returns.
-	Audit         *audit.Sink
+	// Log gets the audit events. Nil means the default logger.
+	Log           *slog.Logger
 	Policy        Policy
 	RecordingSink RecordingSink
 	// TrustedCAs seeds the CA set until Reload reads it from disk. Tests only.
@@ -78,7 +78,7 @@ type Options struct {
 
 type Server struct {
 	principals    func(username string) []string
-	audit         *audit.Sink
+	log           *slog.Logger
 	recordingSink RecordingSink
 	nologinFile   string
 	policy        atomic.Pointer[Policy]
@@ -112,7 +112,7 @@ func New(opts Options) (*Server, error) {
 	}
 	s := &Server{
 		principals:     opts.Principals,
-		audit:          opts.Audit,
+		log:            cmp.Or(opts.Log, slog.Default()),
 		recordingSink:  opts.RecordingSink,
 		nologinFile:    opts.NologinFile,
 		conns:          make(chan struct{}, maxConns),
@@ -206,7 +206,7 @@ func (s *Server) Reload() error {
 }
 
 // Serve accepts connections on l until ctx is done or l is closed, then
-// releases the audit sink and host key. Established sessions are left to die
+// releases the host key. Established sessions are left to die
 // with the process.
 func (s *Server) Serve(ctx context.Context, l net.Listener) {
 	stop := context.AfterFunc(ctx, func() { _ = l.Close() })
@@ -257,7 +257,6 @@ func (s *Server) DropRevoked() {
 }
 
 func (s *Server) close() {
-	_ = s.audit.Close()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.hostKey != nil {

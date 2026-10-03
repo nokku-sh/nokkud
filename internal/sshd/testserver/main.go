@@ -12,7 +12,6 @@ import (
 	"os/user"
 	"syscall"
 
-	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/state"
@@ -62,11 +61,7 @@ func main() {
 
 	policy := sshd.DefaultPolicy
 	policy.Record = false
-	sink, err := audit.New(paths.AuditDir())
-	if err != nil {
-		fail(err.Error())
-	}
-	opts := sshd.Options{Principals: cache.GetUUIDs, Audit: sink, Policy: policy}
+	opts := sshd.Options{Principals: cache.GetUUIDs, Policy: policy}
 	if *allowNonRoot {
 		// Without privilege dropping every session runs as this account, so
 		// only this account may log in.

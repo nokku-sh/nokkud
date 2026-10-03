@@ -12,7 +12,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
@@ -92,9 +91,9 @@ func (s *Server) serveDirectTCPIP(st *connState, newCh ssh.NewChannel) {
 		return
 	}
 
-	ev := connEvent(st.conn, audit.EventForward)
+	ev := connEvent(st.conn, eventForward)
 	ev.Target = dest
-	s.audit.Emit(ev)
+	s.emit(ev)
 
 	ch, reqs, err := newCh.Accept()
 	if err != nil {
@@ -148,9 +147,9 @@ func (s *Server) tcpipForward(st *connState, payload []byte) (bool, []byte) {
 		return false, nil
 	}
 	st.forwards[addr] = ln
-	ev := connEvent(st.conn, audit.EventRemoteForward)
+	ev := connEvent(st.conn, eventRemoteForward)
 	ev.Target = ln.Addr().String()
-	s.audit.Emit(ev)
+	s.emit(ev)
 	go s.acceptForwarded(st, ln, f.BindAddr)
 	return true, ssh.Marshal(struct{ Port uint32 }{uint32(addrPort(ln.Addr()).Port())})
 }

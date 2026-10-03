@@ -16,7 +16,6 @@ const (
 	userCAFilename      = "nokku_ca.pub"
 	retiredCAFilename   = "nokku_ca.previous.pub"
 	recordsDir          = "recordings"
-	auditDir            = "audit"
 	hostKeyName         = "ssh_host_ecdsa_key"
 )
 
@@ -28,8 +27,6 @@ func dataDir() string {
 }
 
 func RecordsDir() string { return filepath.Join(dataDir(), recordsDir) }
-
-func AuditDir() string { return filepath.Join(dataDir(), auditDir) }
 
 func ConfigFile() string { return filepath.Join(dataDir(), configFilename) }
 
@@ -64,11 +61,6 @@ func Verify() error {
 	}
 	if err := os.MkdirAll(RecordsDir(), 0o700); err != nil {
 		return fmt.Errorf("cannot create directory %s: %w", RecordsDir(), err)
-	}
-	// Audit dir creation must not fail the daemon when the data dir is not
-	// writable (e.g. a read-only first boot). The audit sink is optional.
-	if err := os.MkdirAll(AuditDir(), 0o700); err != nil {
-		slog.Debug("cannot create audit directory", "error", err)
 	}
 	return nil
 }
