@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -294,4 +295,49 @@ func TestStartupSlotsPerSource(t *testing.T) {
 	releases[0]()
 	_, ok = s.acquireStartup(addr("203.0.113.7:1002"))
 	is.True(ok, "a released slot was not reusable")
+}
+
+// TestDropRevoked verifies a revoke ends the sessions that are already open,
+// not only future logins.
+func TestDropRevoked(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+	var srv *Server
+	var revoked atomic.Bool
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) {
+		srv = s
+		allowed := s.principals
+		s.principals = func(username string) []string {
+			if revoked.Load() {
+				return nil
+			}
+			return allowed(username)
+		}
+	})
+	defer closeFn()
+
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err)
+	defer client.Close()
+	gone := make(chan struct{})
+	go func() {
+		_ = client.Wait()
+		close(gone)
+	}()
+
+	// A sync that changes nothing for this user leaves the connection alone.
+	srv.DropRevoked()
+	select {
+	case <-gone:
+		t.Fatal("a connection that still has access was closed")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	revoked.Store(true)
+	srv.DropRevoked()
+	select {
+	case <-gone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the revoked user's connection stayed open")
+	}
 }

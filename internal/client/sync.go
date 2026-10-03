@@ -64,6 +64,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 	}
 	c.cache.Replace(principals, res.GetConfig(), res.GetStateVersion())
 	c.srv.SetPolicy(sshd.PolicyFrom(res.GetConfig()))
+	c.srv.DropRevoked()
 	return c.cache.Save()
 }
 
