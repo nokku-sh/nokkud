@@ -86,15 +86,6 @@ func (s *Server) serveSession(st *connState, newCh ssh.NewChannel) {
 	}
 	defer ch.Close()
 
-	sysUser, err := sysutil.LookupUser(conn.User())
-	if err == nil {
-		err = sysutil.LoginAllowed(sysUser, s.nologinFile)
-	}
-	if err != nil {
-		_ = s.deny(conn, err)
-		return
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sess := &session{
@@ -103,8 +94,8 @@ func (s *Server) serveSession(st *connState, newCh ssh.NewChannel) {
 		conn:      conn,
 		st:        st,
 		reqs:      reqs,
-		sysUser:   sysUser,
-		shell:     sysutil.UserShell(sysUser),
+		sysUser:   st.user,
+		shell:     sysutil.UserShell(st.user),
 		ctx:       ctx,
 		cancel:    cancel,
 		sessionID: uuid.NewV7().String(),

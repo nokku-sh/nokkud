@@ -286,33 +286,33 @@ func TestPlainSessionRecorded(t *testing.T) {
 	is.NotContains(string(cast), `"i"`, "plain sessions must not record stdin")
 }
 
-// TestSessionDeniedByNologin verifies /etc/nologin is honoured at session
-// start. Authentication still succeeds (it is certificate based); the
-// session channel is closed instead.
-func TestSessionDeniedByNologin(t *testing.T) {
+// TestLoginDeniedByNologin verifies /etc/nologin refuses the login itself, so
+// it stops forwards as well as sessions.
+func TestLoginDeniedByNologin(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root, where /etc/nologin does not apply")
 	}
-	is := assert.New(t)
 	must := require.New(t)
 
 	nologin := filepath.Join(t.TempDir(), "nologin")
 	must.NoError(os.WriteFile(nologin, []byte("maintenance\n"), 0o644))
 
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{NologinFile: nologin})
+	addr, closeFn := startTestServerOpts(t, ca, Options{NologinFile: nologin, Policy: Policy{AllowForwarding: true}})
 	defer closeFn()
+	echo := testEchoServer(t)
+	defer echo.Close()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
-	must.NoError(err, "dial")
-	defer client.Close()
-
-	sess, err := client.NewSession()
 	if err == nil {
-		err = sess.Run("true")
-		_ = sess.Close()
+		defer client.Close()
+		conn, dialErr := client.Dial("tcp", echo.Addr().String())
+		if dialErr == nil {
+			_ = conn.Close()
+		}
+		must.Error(dialErr, "a forward opened while /etc/nologin was present")
 	}
-	is.Error(err, "session started while /etc/nologin was present")
+	must.Error(err, "login succeeded while /etc/nologin was present")
 }
 
 // TestRecordingCorrelatesWebSessionID verifies the env NOKKU_SESSION_ID is
