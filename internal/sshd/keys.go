@@ -16,11 +16,13 @@ import (
 // hostKeySalt namespaces the host key. Salt registry: mon/README.md.
 const hostKeySalt = "nokku-daemon-host"
 
-// loadHostKey returns the host signer, wrapped in the host certificate when
-// one matches. The host key is not the enrollment anchor, so an identity
-// change just gets a fresh key and the sync renews the cert.
+// newHostSigner opens the host key. Tests swap it.
+var newHostSigner = tpm.NewSigner
+
+// loadHostKey opens the host key. It is not the enrollment anchor, so an
+// identity change just gets a fresh key and the sync renews the cert.
 func loadHostKey() (ssh.Signer, io.Closer, error) {
-	signer, err := tpm.NewSigner(tpm.SignerOptions{
+	signer, err := newHostSigner(tpm.SignerOptions{
 		Salt:             []byte(hostKeySalt),
 		StatePath:        paths.HostSignerStateFile(),
 		OnIdentityChange: tpm.RecreateIdentity,
@@ -37,12 +39,20 @@ func loadHostKey() (ssh.Signer, io.Closer, error) {
 		_ = signer.Close()
 		return nil, nil, fmt.Errorf("sshd: host key signer: %w", err)
 	}
-	if cert, certErr := parseHostCertFile(paths.HostKeyCert()); certErr == nil {
-		if cs, csErr := ssh.NewCertSigner(cert, sshSigner); csErr == nil {
-			sshSigner = cs
-		}
-	}
 	return sshSigner, signer, nil
+}
+
+// withHostCert wraps key in the host certificate on disk when it matches.
+func withHostCert(key ssh.Signer) ssh.Signer {
+	cert, err := parseHostCertFile(paths.HostKeyCert())
+	if err != nil {
+		return key
+	}
+	signer, err := ssh.NewCertSigner(cert, key)
+	if err != nil {
+		return key
+	}
+	return signer
 }
 
 // writeHostPubKey persists the public half for the cert renewal. A cert for a

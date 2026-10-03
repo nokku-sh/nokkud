@@ -362,7 +362,7 @@ func TestTCPIPForwardAfterClose(t *testing.T) {
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	srv, err := New(Options{Principals: func(string) []string { return nil }, Policy: Policy{AllowForwarding: true}})
 	require.NoError(t, err)
-	defer srv.close()
+	defer srv.hostKeyDev.Close()
 
 	conn := &ssh.ServerConn{Permissions: &ssh.Permissions{
 		Extensions: map[string]string{"permit-port-forwarding": ""},

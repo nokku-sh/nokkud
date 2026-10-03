@@ -79,9 +79,7 @@ func (c *Client) renewHostCerts(ctx context.Context, force bool) error {
 	if err != nil || !renewed {
 		return err
 	}
-	if err = c.srv.Reload(); err != nil {
-		slog.Warn("reload embedded ssh server", "error", err)
-	}
+	c.srv.Reload()
 	return nil
 }
 
