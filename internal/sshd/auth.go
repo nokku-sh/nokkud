@@ -206,12 +206,10 @@ func certExt(conn *ssh.ServerConn, name string) bool {
 	return ok
 }
 
-// deny audits and logs a rejected login, then returns err.
+// deny audits a rejected login, then returns err.
 func (s *Server) deny(conn ssh.ConnMetadata, err error) error {
 	ev := connEvent(conn, eventAuthFailure)
 	ev.Error = err.Error()
 	s.emit(ev)
-	slog.Warn("auth denied",
-		"user", conn.User(), "remote", conn.RemoteAddr(), "client", string(conn.ClientVersion()), "error", err)
 	return err
 }
