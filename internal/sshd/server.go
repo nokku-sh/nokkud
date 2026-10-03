@@ -98,10 +98,14 @@ type Server struct {
 	liveMu sync.Mutex
 	live   map[*ssh.ServerConn]struct{}
 
+	// The host key stays open as long as the server runs. A connection signs
+	// with it again on every rekey, long after its handshake.
+	hostKey    ssh.Signer
+	hostKeyDev io.Closer
+
 	mu         sync.RWMutex
 	cfg        *ssh.ServerConfig
 	trustedCAs map[string]struct{}
-	hostKey    io.Closer
 }
 
 // New loads the host key and trusted CAs. A missing CA file is fine on first
@@ -128,9 +132,11 @@ func New(opts Options) (*Server, error) {
 		s.nologinFile = sysutil.NologinFile
 	}
 	s.policy.Store(&opts.Policy)
-	if err := s.Reload(); err != nil {
+	var err error
+	if s.hostKey, s.hostKeyDev, err = loadHostKey(); err != nil {
 		return nil, err
 	}
+	s.Reload()
 	return s, nil
 }
 
@@ -158,17 +164,14 @@ func PolicyFrom(cfg *nokkuv1.DaemonConfig) Policy {
 
 func (s *Server) SetPolicy(p Policy) {
 	old := s.policy.Swap(&p)
-	if old.DropRetiredCA == p.DropRetiredCA {
-		return
-	}
-	if err := s.Reload(); err != nil {
-		slog.Warn("reload after policy change", "error", err)
+	if old.DropRetiredCA != p.DropRetiredCA {
+		s.Reload()
 	}
 }
 
-// Reload rereads the trusted CAs and host key. Established connections keep
-// the identity they handshook with.
-func (s *Server) Reload() error {
+// Reload rereads the trusted CAs and the host certificate. Established
+// connections keep the certificate they handshook with.
+func (s *Server) Reload() {
 	trusted, caErr := loadTrustedCAs(s.policy.Load().DropRetiredCA)
 	switch {
 	case errors.Is(caErr, fs.ErrNotExist):
@@ -178,31 +181,20 @@ func (s *Server) Reload() error {
 		slog.Warn("reload trusted CAs failed, keeping previous set", "error", caErr)
 	}
 
-	signer, closer, err := loadHostKey()
-	if err != nil {
-		return err
-	}
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback:         s.publicKeyCallback,
 		VerifiedPublicKeyCallback: s.verifiedPublicKey,
 		BannerCallback:            s.banner,
 		ServerVersion:             "SSH-2.0-nokkud",
 	}
-	cfg.AddHostKey(signer)
+	cfg.AddHostKey(withHostCert(s.hostKey))
 
 	s.mu.Lock()
-	old := s.hostKey
+	defer s.mu.Unlock()
 	if caErr == nil {
 		s.trustedCAs = caKeys(trusted)
 	}
-	s.hostKey = closer
 	s.cfg = cfg
-	s.mu.Unlock()
-
-	if old != nil {
-		_ = old.Close()
-	}
-	return nil
 }
 
 // Serve accepts connections on l until ctx is done or l is closed, then
@@ -211,7 +203,7 @@ func (s *Server) Reload() error {
 func (s *Server) Serve(ctx context.Context, l net.Listener) {
 	stop := context.AfterFunc(ctx, func() { _ = l.Close() })
 	defer stop()
-	defer s.close()
+	defer s.hostKeyDev.Close()
 
 	var delay time.Duration
 	for {
@@ -253,15 +245,6 @@ func (s *Server) DropRevoked() {
 		}
 		slog.Info("closing connection, access was revoked", "user", conn.User(), "remote", conn.RemoteAddr())
 		_ = conn.Close()
-	}
-}
-
-func (s *Server) close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.hostKey != nil {
-		_ = s.hostKey.Close()
-		s.hostKey = nil
 	}
 }
 
