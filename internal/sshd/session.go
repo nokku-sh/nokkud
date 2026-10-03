@@ -303,7 +303,10 @@ func (sess *session) ptyReq(req *ssh.Request) {
 		}
 	}
 	sess.ptmx = ptmx
-	sess.setEnv("TERM", r.Term)
+	// A client without TERM sends an empty one. Like OpenSSH, keep the default.
+	if r.Term != "" {
+		sess.setEnv("TERM", r.Term)
+	}
 	sess.startRecorder(int(r.Width), int(r.Height))
 	_ = req.Reply(true, nil)
 }
