@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 func TestRecoverPanic(t *testing.T) {
@@ -423,4 +424,59 @@ func TestServerSecondPtyRejected(t *testing.T) {
 
 	must.NoError(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "first pty")
 	must.Error(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "second pty was accepted")
+}
+
+// TestShellStartsLikeOpenSSH verifies how the user's shell is started. A
+// shell request gets a login shell, argv[0] with a dash, so the profile is
+// read. A command runs under the shell's plain name. A pty changes neither.
+func TestShellStartsLikeOpenSSH(t *testing.T) {
+	account, err := sysutil.LookupAccount(currentUser(t))
+	require.NoError(t, err)
+	shell := filepath.Base(account.Shell)
+
+	ca := newTestCA(t)
+	addr, closeFn := startTestServer(t, ca)
+	defer closeFn()
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	require.NoError(t, err, "dial")
+	defer client.Close()
+
+	for name, tt := range map[string]struct {
+		pty, command bool
+		want         string
+	}{
+		"shell":            {want: "argv0=-" + shell},
+		"shell on a pty":   {pty: true, want: "argv0=-" + shell},
+		"command":          {command: true, want: "argv0=" + shell},
+		"command on a pty": {pty: true, command: true, want: "argv0=" + shell},
+	} {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			sess, sessErr := client.NewSession()
+			must.NoError(sessErr, "new session")
+			defer sess.Close()
+			if tt.pty {
+				must.NoError(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "request pty")
+			}
+			var out bytes.Buffer
+			sess.Stdout = &out
+			if tt.command {
+				must.NoError(sess.Start("echo argv0=$0"))
+			} else {
+				sess.Stdin = strings.NewReader("echo argv0=$0\nexit\n")
+				must.NoError(sess.Shell())
+			}
+
+			done := make(chan error, 1)
+			go func() { done <- sess.Wait() }()
+			select {
+			case waitErr := <-done:
+				must.NoError(waitErr, "session")
+			case <-time.After(20 * time.Second):
+				t.Fatal("the shell did not exit")
+			}
+			// A pty echoes the typed line too, so match the answer as a whole line.
+			must.Contains(strings.Split(strings.ReplaceAll(out.String(), "\r", ""), "\n"), tt.want)
+		})
+	}
 }
