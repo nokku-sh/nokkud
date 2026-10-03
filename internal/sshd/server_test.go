@@ -223,6 +223,32 @@ func TestServerPTYExec(t *testing.T) {
 	is.Equal("pty-ok", string(out))
 }
 
+// TestServerPTYEmptyTerm verifies a client without TERM gets the default. It
+// sends an empty one, which must not replace it.
+func TestServerPTYEmptyTerm(t *testing.T) {
+	must := require.New(t)
+	// Setenv restores the value after the test, Unsetenv takes it away for it.
+	t.Setenv("TERM", "")
+	must.NoError(os.Unsetenv("TERM"))
+
+	ca := newTestCA(t)
+	addr, closeFn := startTestServer(t, ca)
+	defer closeFn()
+
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err, "dial")
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	must.NoError(err, "new session")
+	defer sess.Close()
+
+	must.NoError(sess.RequestPty("", 80, 24, ssh.TerminalModes{}), "request pty")
+	out, err := sess.Output("printf %s \"$TERM\"")
+	must.NoError(err, "pty exec")
+	must.Equal("xterm-256color", string(out))
+}
+
 func TestServerDeniesUntrustedCA(t *testing.T) {
 	is := assert.New(t)
 	ca := newTestCA(t)
