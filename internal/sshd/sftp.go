@@ -42,7 +42,7 @@ func ServeSFTP(home string) error {
 }
 
 func (sess *session) runSFTP() {
-	home := sess.sysUser.HomeDir
+	home := sess.sysUser.Home
 	cmd, err := sftpServerCmd(home)
 	if err != nil {
 		sess.exit(1)

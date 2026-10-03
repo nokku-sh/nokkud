@@ -7,12 +7,12 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 const (
@@ -49,7 +49,7 @@ func (sess *session) agentRequest(req *ssh.Request) bool {
 
 // newAgentSock creates a Unix socket only the session user can reach. The
 // MkdirTemp dir is root-owned and 0700, so both dir and socket get chowned.
-func newAgentSock(sysUser *user.User) (ln net.Listener, sock string, err error) {
+func newAgentSock(sysUser *sysutil.Account) (ln net.Listener, sock string, err error) {
 	dir, err := os.MkdirTemp("", "auth-agent")
 	if err != nil {
 		return nil, "", err
@@ -70,14 +70,7 @@ func newAgentSock(sysUser *user.User) (ln net.Listener, sock string, err error) 
 	if os.Geteuid() != 0 {
 		return ln, sock, nil
 	}
-	uid, err := strconv.Atoi(sysUser.Uid)
-	if err != nil {
-		return nil, "", err
-	}
-	gid, err := strconv.Atoi(sysUser.Gid)
-	if err != nil {
-		return nil, "", err
-	}
+	uid, gid := int(sysUser.UID), int(sysUser.GID)
 	// The socket goes first, while the dir is still root-only. Once the user
 	// owns the dir they could swap the socket for a symlink.
 	if err = os.Lchown(sock, uid, gid); err != nil {

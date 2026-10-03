@@ -2,15 +2,12 @@ package sshd
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,8 +35,7 @@ type session struct {
 	conn    *ssh.ServerConn
 	st      *connState
 	reqs    <-chan *ssh.Request
-	sysUser *user.User
-	shell   string
+	sysUser *sysutil.Account
 
 	// Exec'd commands use ctx, so a disconnect reaps them even if the
 	// request stream misbehaves.
@@ -96,7 +92,6 @@ func (s *Server) serveSession(st *connState, newCh ssh.NewChannel) {
 		st:        st,
 		reqs:      reqs,
 		sysUser:   st.user,
-		shell:     sysutil.UserShell(st.user),
 		ctx:       ctx,
 		cancel:    cancel,
 		sessionID: uuid.NewV7().String(),
@@ -108,7 +103,7 @@ func (s *Server) serveSession(st *connState, newCh ssh.NewChannel) {
 func (sess *session) event(typ eventType) auditEvent {
 	ev := connEvent(sess.conn, typ)
 	ev.SessionID = sess.sessionID
-	ev.User = sess.sysUser.Username
+	ev.User = sess.sysUser.Name
 	return ev
 }
 
@@ -303,8 +298,7 @@ func (sess *session) ptyReq(req *ssh.Request) {
 	// The daemon opened the pty as root. The user has to own it, like under
 	// OpenSSH, or opening the tty by its path is denied.
 	if u, ok := ptmx.(pty.UnixPty); ok && os.Geteuid() == 0 {
-		uid, _ := strconv.Atoi(sess.sysUser.Uid)
-		if err = u.Slave().Chown(uid, -1); err != nil {
+		if err = u.Slave().Chown(int(sess.sysUser.UID), -1); err != nil {
 			slog.Debug("chown pty failed", "error", err)
 		}
 	}
@@ -446,12 +440,12 @@ func (sess *session) run() {
 // runPTY runs the login shell, or the command, in the session's pty and
 // relays bytes until it exits.
 func (sess *session) runPTY() {
-	cmd := sess.ptmx.Command(sess.shell)
-	cmd.Args[0] = "-" + filepath.Base(sess.shell) // login shell
+	cmd := sess.ptmx.Command(sess.sysUser.Shell)
+	cmd.Args[0] = "-" + filepath.Base(sess.sysUser.Shell) // login shell
 	if sess.rawCmd != "" {
 		cmd.Args = append(cmd.Args[:1], "-c", sess.rawCmd)
 	}
-	cmd.Dir = sess.sysUser.HomeDir
+	cmd.Dir = sess.sysUser.Home
 	cmd.Env = sess.buildEnv()
 	attr, err := sysutil.SysProcAttr(sess.sysUser)
 	if err != nil {
@@ -510,11 +504,11 @@ func (sess *session) runPlain() {
 	// #nosec G204 - running the authenticated user's command is the SSH
 	// server's purpose. The process is spawned with that user's privileges.
 	if sess.rawCmd == "" {
-		cmd = exec.CommandContext(sess.ctx, sess.shell)
+		cmd = exec.CommandContext(sess.ctx, sess.sysUser.Shell)
 	} else {
-		cmd = exec.CommandContext(sess.ctx, sess.shell, "-c", sess.rawCmd)
+		cmd = exec.CommandContext(sess.ctx, sess.sysUser.Shell, "-c", sess.rawCmd)
 	}
-	cmd.Dir = sess.sysUser.HomeDir
+	cmd.Dir = sess.sysUser.Home
 	cmd.Env = sess.buildEnv()
 	attr, err := sysutil.SysProcAttr(sess.sysUser)
 	if err != nil {
@@ -552,17 +546,17 @@ func (sess *session) startRecorder(width, height int) {
 		sink = sess.server.recordingSink(
 			context.WithoutCancel(sess.ctx),
 			recSessionID,
-			sess.sysUser.Username,
+			sess.sysUser.Name,
 		)
 	}
 	term, _ := sess.envValue("TERM")
 	rec, err := recording.New(recording.Options{
 		Width:     width,
 		Height:    height,
-		Title:     fmt.Sprintf("ssh-%s", sess.sysUser.Username),
-		Label:     sess.sysUser.Username,
+		Title:     "ssh-" + sess.sysUser.Name,
+		Label:     sess.sysUser.Name,
 		SessionID: recSessionID,
-		User:      sess.sysUser.Username,
+		User:      sess.sysUser.Name,
 		Term:      term,
 		Sink:      sink,
 		OnLimit:   func() { sess.recordingDegraded("size limit reached, rest of the session not recorded") },
@@ -665,7 +659,7 @@ func (sess *session) runProcess(cmd *exec.Cmd) {
 }
 
 func (sess *session) buildEnv() []string {
-	env := sysutil.CmdEnv(sess.sysUser, sess.shell)
+	env := sysutil.CmdEnv(sess.sysUser)
 	env = append(env, sess.env...)
 	if sess.conn != nil {
 		env = append(

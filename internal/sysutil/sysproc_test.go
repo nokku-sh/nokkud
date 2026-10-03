@@ -3,8 +3,6 @@ package sysutil
 import (
 	"os"
 	"os/exec"
-	"os/user"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,13 +22,7 @@ func TestSysProcAttrNoCredentialWhenNonRoot(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	u := &user.User{
-		Uid:      strconv.Itoa(os.Getuid()),
-		Gid:      strconv.Itoa(os.Getgid()),
-		Username: "testuser",
-	}
-
-	attr, err := SysProcAttr(u)
+	attr, err := SysProcAttr(&Account{Name: "testuser"})
 	must.NoError(err)
 	is.Nil(attr.Credential)
 	is.True(attr.Setsid)
@@ -51,8 +43,7 @@ func TestSysProcAttrCredentialWhenRoot(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	u := &user.User{Uid: "0", Gid: "0", Username: "root"}
-	attr, err := SysProcAttr(u)
+	attr, err := SysProcAttr(&Account{Name: "root"})
 	must.NoError(err)
 	is.NotNil(attr.Credential)
 }

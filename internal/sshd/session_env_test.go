@@ -4,13 +4,13 @@ import (
 	"context"
 	"io"
 	"os"
-	"os/user"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 func TestEnvValueLastWins(t *testing.T) {
@@ -78,7 +78,7 @@ func TestRecorderSessionIDFromEnv(t *testing.T) {
 				sessionID: "sshd-generated",
 				env:       []string{"NOKKU_SESSION_ID=" + tt.env},
 				ctx:       t.Context(),
-				sysUser:   &user.User{Username: "tester"},
+				sysUser:   &sysutil.Account{Name: "tester"},
 			}
 
 			sess.startRecorder(80, 24)
