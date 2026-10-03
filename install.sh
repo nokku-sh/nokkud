@@ -217,7 +217,7 @@ install_binary() {
 		if ! cosign verify-blob \
 			--bundle "${TMP_DIR}/${CHECKSUM_FILE}.sigstore.json" \
 			--certificate-identity-regexp \
-			'https://github.com/nokku-sh/nokkud/\.github/workflows/.*' \
+			'^https://github.com/nokku-sh/nokkud/\.github/workflows/release\.yaml@refs/(heads/main|tags/v.+)$' \
 			--certificate-oidc-issuer https://token.actions.githubusercontent.com \
 			"${TMP_DIR}/${CHECKSUM_FILE}"; then
 			echo "error: ${CHECKSUM_FILE} signature verification failed" >&2
