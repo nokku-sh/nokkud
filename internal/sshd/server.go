@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -94,6 +95,9 @@ type Server struct {
 	startupMu      sync.Mutex
 	sourceStartups map[netip.Addr]int
 
+	liveMu sync.Mutex
+	live   map[*ssh.ServerConn]struct{}
+
 	mu         sync.RWMutex
 	cfg        *ssh.ServerConfig
 	trustedCAs map[string]struct{}
@@ -115,6 +119,7 @@ func New(opts Options) (*Server, error) {
 		startups:       make(chan struct{}, maxStartups),
 		localStartups:  make(chan struct{}, maxStartups),
 		sourceStartups: map[netip.Addr]int{},
+		live:           map[*ssh.ServerConn]struct{}{},
 		maxChannels:    maxChannels,
 		aliveInterval:  aliveInterval,
 		trustedCAs:     caKeys(opts.TrustedCAs),
@@ -236,6 +241,21 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) {
 	}
 }
 
+// DropRevoked closes every open connection whose principal lost access to
+// its account. The principals only gate new logins, so a sync calls this to
+// make a revoke end the sessions that are already open.
+func (s *Server) DropRevoked() {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	for conn := range s.live {
+		if slices.Contains(s.principals(conn.User()), conn.Permissions.Extensions["nokku-principal"]) {
+			continue
+		}
+		slog.Info("closing connection, access was revoked", "user", conn.User(), "remote", conn.RemoteAddr())
+		_ = conn.Close()
+	}
+}
+
 func (s *Server) close() {
 	_ = s.audit.Close()
 	s.mu.Lock()
@@ -260,6 +280,14 @@ func (s *Server) handleConn(nc net.Conn) {
 		return
 	}
 	defer conn.Close()
+	s.liveMu.Lock()
+	s.live[conn] = struct{}{}
+	s.liveMu.Unlock()
+	defer func() {
+		s.liveMu.Lock()
+		delete(s.live, conn)
+		s.liveMu.Unlock()
+	}()
 	slog.Info("connection established",
 		"user", conn.User(), "remote", conn.RemoteAddr(), "client", string(conn.ClientVersion()))
 
