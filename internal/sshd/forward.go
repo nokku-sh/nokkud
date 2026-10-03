@@ -6,12 +6,13 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"os/user"
 	"strconv"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 // tcpipChannelData is the payload of a direct-tcpip (RFC 4254 7.2) or
@@ -31,7 +32,7 @@ type tcpipForwardData struct {
 // connState tracks one connection's -R listeners and channel slots.
 type connState struct {
 	conn     *ssh.ServerConn
-	user     *user.User
+	user     *sysutil.Account
 	channels chan struct{}
 
 	mu       sync.Mutex
@@ -39,7 +40,7 @@ type connState struct {
 }
 
 func newConnState(conn *ssh.ServerConn, limit int) *connState {
-	sysUser, _ := conn.Permissions.ExtraData[accountKey].(*user.User)
+	sysUser, _ := conn.Permissions.ExtraData[accountKey].(*sysutil.Account)
 	return &connState{
 		conn:     conn,
 		user:     sysUser,
@@ -129,7 +130,7 @@ func (s *Server) tcpipForward(st *connState, payload []byte) (bool, []byte) {
 	}
 	// Like OpenSSH, only root may bind a privileged port. The daemon itself
 	// runs as root, so this has to be checked by hand.
-	if f.BindPort != 0 && f.BindPort < 1024 && st.user.Uid != "0" {
+	if f.BindPort != 0 && f.BindPort < 1024 && st.user.UID != 0 {
 		return false, nil
 	}
 	addr := forwardAddr(f, s.policy.Load().GatewayPorts)

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,7 +30,7 @@ func fakeGetentScript(exitCode int, output string) string {
 	return fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s'\n", output)
 }
 
-func TestLookupUserFallsBackToGetent(t *testing.T) {
+func TestLookupAccount(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	withFakeGetent(
@@ -39,60 +38,37 @@ func TestLookupUserFallsBackToGetent(t *testing.T) {
 		fakeGetentScript(0, "nokkud-test-alice:x:1001:1002:Alice Test:/home/alice:/bin/bash"),
 	)
 
-	u, err := LookupUser("nokkud-test-alice")
+	a, err := LookupAccount("nokkud-test-alice")
 	must.NoError(err)
-	is.Equal("nokkud-test-alice", u.Username)
-	is.Equal("1001", u.Uid)
-	is.Equal("1002", u.Gid)
-	is.Equal("Alice Test", u.Name)
-	is.Equal("/home/alice", u.HomeDir)
+	is.Equal(Account{Name: "nokkud-test-alice", UID: 1001, GID: 1002, Home: "/home/alice", Shell: "/bin/bash"}, *a)
 }
 
-func TestLookupUserMalformedGetentOutput(t *testing.T) {
-	is := assert.New(t)
-	withFakeGetent(t, fakeGetentScript(0, "nokkud-test-bob:x:1001"))
-
-	_, err := LookupUser("nokkud-test-bob")
-	is.Error(err)
-}
-
-func TestLookupUserGetentFailure(t *testing.T) {
-	is := assert.New(t)
-	withFakeGetent(t, fakeGetentScript(1, ""))
-
-	_, err := LookupUser("nokkud-test-ghost")
-	is.Error(err)
-}
-
-func TestUserShell(t *testing.T) {
-	tests := []struct {
-		name   string
-		getent string
-		want   string
-	}{
-		{
-			name:   "shell from getent",
-			getent: fakeGetentScript(0, "nokkud-test-alice:x:1001:1002::/home/alice:/bin/sh"),
-			want:   "/bin/sh",
-		},
-		{
-			name:   "a lock shell is used verbatim, not replaced",
-			getent: fakeGetentScript(0, "nokkud-test-alice:x:1001:1002::/home/alice:/nonexistent-shell"),
-			want:   "/nonexistent-shell",
-		},
-		{
-			name:   "malformed getent entry falls back to /bin/sh",
-			getent: fakeGetentScript(0, "nokkud-test-alice:x:1001"),
-			want:   "/bin/sh",
-		},
+func TestLookupAccountShell(t *testing.T) {
+	for name, tt := range map[string]struct{ entry, want string }{
+		"a lock shell is used as it stands": {"nokkud-test-alice:x:1001:1002::/home/alice:/usr/sbin/nologin", "/usr/sbin/nologin"},
+		"an empty shell means /bin/sh":      {"nokkud-test-alice:x:1001:1002::/home/alice:", "/bin/sh"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			withFakeGetent(t, fakeGetentScript(0, tt.entry))
+			a, err := LookupAccount("nokkud-test-alice")
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, a.Shell)
+		})
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			is := assert.New(t)
-			withFakeGetent(t, tt.getent)
+}
 
-			u := &user.User{Username: "nokkud-test-alice"}
-			is.Equal(tt.want, UserShell(u))
+func TestLookupAccountRefused(t *testing.T) {
+	for name, script := range map[string]string{
+		"getent fails":        fakeGetentScript(1, ""),
+		"short entry":         fakeGetentScript(0, "nokkud-test-bob:x:1001"),
+		"uid is not a number": fakeGetentScript(0, "nokkud-test-bob:x:abc:1002::/home/bob:/bin/sh"),
+		// getent resolves a number as a uid and answers with that account.
+		"entry for another name": fakeGetentScript(0, "root:x:0:0:root:/root:/bin/bash"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			withFakeGetent(t, script)
+			_, err := LookupAccount("nokkud-test-bob")
+			assert.Error(t, err)
 		})
 	}
 }
@@ -110,7 +86,7 @@ func TestCmdEnv(t *testing.T) {
 	t.Setenv("LD_PRELOAD", "/tmp/evil.so")
 	t.Setenv("BASH_ENV", "/tmp/evil")
 
-	env := CmdEnv(&user.User{Username: "alice", HomeDir: "/home/alice"}, "/bin/sh")
+	env := CmdEnv(&Account{Name: "alice", Home: "/home/alice", Shell: "/bin/sh"})
 	got := map[string]string{}
 	must := require.New(t)
 	for _, kv := range env {
@@ -143,8 +119,8 @@ func TestLoginAllowed(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "nologin")
 
-	nonRoot := &user.User{Username: "alice", Uid: "1000"}
-	root := &user.User{Username: "root", Uid: "0"}
+	nonRoot := &Account{Name: "alice", UID: 1000}
+	root := &Account{Name: "root"}
 
 	is.NoError(LoginAllowed(nonRoot, path), "missing file must allow logins")
 	is.NoError(LoginAllowed(root, path), "missing file must allow root")

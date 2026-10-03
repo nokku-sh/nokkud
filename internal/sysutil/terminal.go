@@ -3,12 +3,13 @@ package sysutil
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,10 +18,19 @@ import (
 // log in while it exists.
 const NologinFile = "/etc/nologin"
 
-// LoginAllowed reports whether the user may log in. Root is never blocked, so
-// an operator can still get in to fix the machine.
-func LoginAllowed(u *user.User, nologinPath string) error {
-	if u != nil && u.Uid == "0" {
+// Account is a local account as the password database has it.
+type Account struct {
+	Name  string
+	UID   uint32
+	GID   uint32
+	Home  string
+	Shell string
+}
+
+// LoginAllowed reports whether the account may log in. Root is never blocked,
+// so an operator can still get in to fix the machine.
+func LoginAllowed(a *Account, nologinPath string) error {
+	if a.UID == 0 {
 		return nil
 	}
 	msg, err := os.ReadFile(nologinPath)
@@ -33,56 +43,64 @@ func LoginAllowed(u *user.User, nologinPath string) error {
 	return fmt.Errorf("logins are disabled: %s", strings.TrimSpace(string(msg)))
 }
 
-// LookupUser resolves a user by name, falling back to getent for NSS / LDAP
-// users invisible to static (CGO-less) builds.
-func LookupUser(name string) (*user.User, error) {
-	if u, err := user.Lookup(name); err == nil {
-		return u, nil
-	}
-
+// LookupAccount resolves a local account through getent, so NSS and LDAP
+// users resolve too. A static binary cannot see those on its own.
+func LookupAccount(name string) (*Account, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// #nosec G204 - name passed the principals lookup, which only holds valid usernames.
 	out, err := exec.CommandContext(ctx, "getent", "passwd", name).Output()
 	if err != nil {
 		return nil, fmt.Errorf("user %q not found", name)
 	}
 	parts := strings.Split(strings.TrimSpace(string(out)), ":")
-	if len(parts) < 7 {
+	// getent takes a number as a uid. The entry has to be the name asked for.
+	if len(parts) != 7 || parts[0] != name {
 		return nil, fmt.Errorf("user %q not found", name)
 	}
-	return &user.User{
-		Uid:      parts[2],
-		Gid:      parts[3],
-		Username: parts[0],
-		Name:     parts[4],
-		HomeDir:  parts[5],
+	uid, uidErr := strconv.ParseUint(parts[2], 10, 32)
+	gid, gidErr := strconv.ParseUint(parts[3], 10, 32)
+	if uidErr != nil || gidErr != nil {
+		return nil, fmt.Errorf("user %q has a bad passwd entry", name)
+	}
+	return &Account{
+		Name: name,
+		UID:  uint32(uid),
+		GID:  uint32(gid),
+		Home: parts[5],
+		// The shell is used as it stands, so a lock shell (nologin, false)
+		// fails the session. Only an empty field means /bin/sh.
+		Shell: cmp.Or(parts[6], "/bin/sh"),
 	}, nil
 }
 
-// groupIDs returns the user's supplementary group ids, falling back to
-// `id -G` for NSS / LDAP users invisible to static builds.
-func groupIDs(u *user.User) ([]string, error) {
-	if ids, err := u.GroupIds(); err == nil {
-		return ids, nil
-	}
-
+// groupIDs returns the account's supplementary group ids.
+func groupIDs(a *Account) ([]uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "id", "-G", u.Username).Output() // #nosec G204
+	out, err := exec.CommandContext(ctx, "id", "-G", a.Name).Output() // #nosec G204
 	if err != nil {
-		return nil, fmt.Errorf("lookup groups for %s: %w", u.Username, err)
+		return nil, fmt.Errorf("lookup groups for %s: %w", a.Name, err)
 	}
-	return strings.Fields(string(out)), nil
+	var ids []uint32
+	for g := range strings.FieldsSeq(string(out)) {
+		id, parseErr := strconv.ParseUint(g, 10, 32)
+		if parseErr != nil {
+			return nil, fmt.Errorf("lookup groups for %s: %w", a.Name, parseErr)
+		}
+		ids = append(ids, uint32(id))
+	}
+	return ids, nil
 }
 
-// CmdEnv builds the target user's session environment: a fresh HOME/USER/
+// CmdEnv builds the account's session environment: a fresh HOME/USER/
 // SHELL/PATH plus a locale allowlist.
-func CmdEnv(sysUser *user.User, shell string) []string {
+func CmdEnv(a *Account) []string {
 	envMap := map[string]string{
-		"HOME":    sysUser.HomeDir,
-		"USER":    sysUser.Username,
-		"LOGNAME": sysUser.Username,
-		"SHELL":   shell,
+		"HOME":    a.Home,
+		"USER":    a.Name,
+		"LOGNAME": a.Name,
+		"SHELL":   a.Shell,
 		"PATH":    "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
 	}
 
@@ -112,28 +130,4 @@ func CmdEnv(sysUser *user.User, shell string) []string {
 		env = append(env, k+"="+v)
 	}
 	return env
-}
-
-// UserShell returns the target user's login shell from the password database.
-// The shell is used verbatim, so a lock shell (nologin, false) or a bogus path
-// fails the session instead of silently becoming a shell. /bin/sh is used only
-// when the password entry carries no shell at all, and never the daemon's own
-// SHELL.
-func UserShell(u *user.User) string {
-	if u != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		// #nosec G204
-		out, err := exec.CommandContext(ctx, "getent", "passwd", u.Username).Output()
-		if err == nil {
-			parts := strings.Split(strings.TrimSpace(string(out)), ":")
-			if len(parts) >= 7 {
-				if shell := strings.TrimSpace(parts[6]); shell != "" {
-					return shell
-				}
-			}
-		}
-	}
-	return "/bin/sh"
 }
