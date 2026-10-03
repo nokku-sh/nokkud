@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 // retiredCAGrace keeps certificates signed by a rolled-over CA valid until
@@ -167,14 +168,28 @@ func (s *Server) publicKeyCallback(
 	return perms, nil
 }
 
-// verifiedPublicKey audits the login once the client proved it holds the key.
-// publicKeyCallback also answers key queries, which prove nothing.
+// accountKey is where the login's local account sits in the permissions.
+const accountKey = "nokku-account"
+
+// verifiedPublicKey finishes the login once the client proved it holds the
+// key. publicKeyCallback also answers key queries, which prove nothing. The
+// local account is checked here and not per channel, so a missing account or
+// /etc/nologin stops forwards as well as sessions.
 func (s *Server) verifiedPublicKey(
 	conn ssh.ConnMetadata,
 	_ ssh.PublicKey,
 	perms *ssh.Permissions,
 	_ string,
 ) (*ssh.Permissions, error) {
+	sysUser, err := sysutil.LookupUser(conn.User())
+	if err == nil {
+		err = sysutil.LoginAllowed(sysUser, s.nologinFile)
+	}
+	if err != nil {
+		return nil, s.deny(conn, err)
+	}
+	perms.ExtraData = map[any]any{accountKey: sysUser}
+
 	ev := connEvent(conn, eventAuthSuccess)
 	ev.Principal = perms.Extensions["nokku-principal"]
 	s.emit(ev)
