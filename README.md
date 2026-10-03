@@ -26,7 +26,7 @@
 
 ## Install & Firewall
 
-Install the daemon. The installer sets up the systemd or OpenRC service and loads the AppArmor/SELinux policy:
+Install the daemon. The installer sets up the systemd or OpenRC service:
 
 ```bash
 curl -fsSL https://get.nokku.sh/nokkud | sudo sh

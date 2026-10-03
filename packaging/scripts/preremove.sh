@@ -20,16 +20,3 @@ if has_cmd rc-update && [ -f /etc/init.d/nokkud ]; then
 	rc-service nokkud stop >/dev/null 2>&1 || true
 	rc-update del nokkud default >/dev/null 2>&1 || true
 fi
-
-# Remove SELinux policy and AppArmor profile on uninstall
-if has_cmd semodule; then
-	if semodule -l | grep -q "^nokkud$"; then
-		echo "Removing SELinux policy..."
-		semodule -r nokkud || true
-	fi
-fi
-
-if has_cmd apparmor_parser && [ -f /etc/apparmor.d/usr.bin.nokkud ]; then
-	echo "Unloading AppArmor profile..."
-	apparmor_parser -R /etc/apparmor.d/usr.bin.nokkud || true
-fi
