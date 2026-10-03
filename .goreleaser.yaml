@@ -59,6 +59,8 @@ archives:
         dst: nokkud.firewalld.xml
       - src: packaging/install.sh
         dst: install.sh
+      - src: packaging/scripts/postinstall.sh
+        dst: postinstall.sh
 
 nfpms:
   - vendor: "MizuchiLabs"
