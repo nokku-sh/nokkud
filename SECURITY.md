@@ -88,7 +88,9 @@ control stream to the backend.
   `install.sh` verifies the SHA-256 of the tarball against the manifest,
   verifies the manifest with cosign when it is available, and stops on a
   mismatch. The manifest can also be checked by hand with `cosign verify-blob`
-  against the bundle and the GitHub Actions OIDC issuer.
+  against the bundle and the GitHub Actions OIDC issuer. The deb, rpm and apk
+  packages come from the Cloudsmith repository and are checked by the package
+  manager against the repository key.
 
 ### Embedded SSH server
 
