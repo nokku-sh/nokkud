@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"uuid"
 
 	"github.com/aymanbagabas/go-pty"
@@ -161,6 +162,9 @@ func (sess *session) handleRequests() {
 		}
 	}
 
+	// The client is gone, so stop waiting on output a background process may
+	// still hold open.
+	sess.cancel()
 	sess.killProc()
 	if handlerDone != nil {
 		<-handlerDone
@@ -612,6 +616,9 @@ func (sess *session) runProcess(cmd *exec.Cmd) {
 		return
 	}
 
+	// Bounds Wait when a background process keeps stderr open.
+	cmd.WaitDelay = time.Second
+
 	if err = cmd.Start(); err != nil {
 		slog.Debug("start command failed", "error", err)
 		_ = stdin.Close()
@@ -620,6 +627,8 @@ func (sess *session) runProcess(cmd *exec.Cmd) {
 		return
 	}
 	sess.setProc(cmd.Process)
+	stop := context.AfterFunc(sess.ctx, func() { _ = stdout.Close() })
+	defer stop()
 
 	var relay sync.WaitGroup
 
