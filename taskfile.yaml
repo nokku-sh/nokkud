@@ -6,12 +6,6 @@ tasks:
     cmds:
       - go get -u ./...
 
-  selinux:
-    desc: Generate selinux policy
-    dir: ./packaging/selinux/
-    cmds:
-      - make -f /usr/share/selinux/devel/Makefile nokkud.pp
-
   build:
     desc: Build binary
     cmds:

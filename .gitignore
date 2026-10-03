@@ -26,11 +26,6 @@ go.work.sum
 *.env
 .bak
 
-# Selinux
-*.pp
-*.if
-packaging/selinux/tmp/
-
 # Builds and extra
 .task/
 dist/

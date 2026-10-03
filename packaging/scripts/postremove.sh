@@ -15,7 +15,6 @@ fi
 if [ "$1" = "0" ] || [ "$1" = "remove" ] || [ "$1" = "purge" ] || [ -f /etc/alpine-release ]; then
    rm -f /usr/lib/systemd/system/nokkud.service
    rm -f /etc/init.d/nokkud
-   rm -f /etc/apparmor.d/usr.bin.nokkud
    rm -f /etc/ufw/applications.d/nokkud
    rm -f /usr/lib/firewalld/services/nokkud.xml
 fi

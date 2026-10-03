@@ -53,10 +53,6 @@ archives:
         dst: nokkud.service
       - src: packaging/openrc/nokkud.openrc
         dst: nokkud.openrc # needs to be renamed for OpenRC
-      - src: packaging/apparmor/usr.bin.nokkud
-        dst: usr.bin.nokkud
-      - src: packaging/selinux/nokkud.pp
-        dst: nokkud.pp
       - src: packaging/ufw/nokkud
         dst: nokkud.ufw
       - src: packaging/firewalld/nokkud.xml
@@ -75,8 +71,6 @@ nfpms:
       - apk
       - deb
       - rpm
-    dependencies:
-      - openssh
     scripts:
       postinstall: packaging/scripts/postinstall.sh
       preremove: packaging/scripts/preremove.sh
@@ -86,10 +80,6 @@ nfpms:
         dst: /usr/share/nokkud/systemd/nokkud.service
       - src: packaging/openrc/nokkud.openrc
         dst: /usr/share/nokkud/openrc/nokkud.openrc
-      - src: packaging/apparmor/usr.bin.nokkud
-        dst: /usr/share/nokkud/apparmor/usr.bin.nokkud
-      - src: packaging/selinux/nokkud.pp
-        dst: /usr/share/nokkud/selinux/nokkud.pp
       - src: packaging/ufw/nokkud
         dst: /usr/share/nokkud/ufw/nokkud
       - src: packaging/firewalld/nokkud.xml

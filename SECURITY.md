@@ -115,8 +115,8 @@ control stream to the backend.
 - **The daemon is not sandboxed.** Sessions are its children and inherit any
   systemd, AppArmor, or SELinux confinement, which would stop a root session
   from doing normal admin work. Like OpenSSH, the user boundary isolates
-  sessions. The unit uses `KillMode=process`, so a restart or package upgrade
-  replaces the daemon without killing live sessions.
+  sessions. Every connection lives in the daemon process, so a restart or
+  package upgrade ends live sessions.
 - **Per-connection channel cap.** Sessions plus port and agent forwards count
   against `MaxChannels` for the life of each channel, so one authorized
   connection cannot exhaust the daemon's file descriptors or goroutines.

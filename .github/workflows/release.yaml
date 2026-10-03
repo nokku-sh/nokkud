@@ -75,26 +75,11 @@ jobs:
         with:
           go-version-file: "go.mod"
 
-      - name: Install UPX
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y upx
-
       - uses: sigstore/cosign-installer@v4.1.2
 
       - uses: anchore/sbom-action@v0
         with:
           upload-release-assets: false
-
-      - name: Compile SELinux Policy
-        run: |
-          docker run --rm -v ${{ github.workspace }}/packaging/selinux:/selinux almalinux:9 \
-            bash -c "dnf install -y make selinux-policy-devel && \
-                     cd /selinux && \
-                     make -f /usr/share/selinux/devel/Makefile nokkud.pp"
-
-          # Verify the file was created
-          ls -l packaging/selinux/nokkud.pp
 
       - uses: golangci/golangci-lint-action@v9
         with:

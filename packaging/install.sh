@@ -18,15 +18,11 @@ install -d -m 0700 /var/lib/nokkud
 echo "Staging configuration files..."
 install -d /usr/share/nokkud/systemd
 install -d /usr/share/nokkud/openrc
-install -d /usr/share/nokkud/apparmor
-install -d /usr/share/nokkud/selinux
 install -d /usr/share/nokkud/ufw
 install -d /usr/share/nokkud/firewalld
 
 install -m 0644 nokkud.service /usr/share/nokkud/systemd/nokkud.service
 install -m 0755 nokkud.openrc /usr/share/nokkud/openrc/nokkud.openrc
-install -m 0644 usr.bin.nokkud /usr/share/nokkud/apparmor/usr.bin.nokkud
-install -m 0644 nokkud.pp /usr/share/nokkud/selinux/nokkud.pp
 install -m 0644 nokkud.ufw /usr/share/nokkud/ufw/nokkud
 install -m 0644 nokkud.firewalld.xml /usr/share/nokkud/firewalld/nokkud.xml
 
@@ -65,27 +61,6 @@ if [ -d /usr/lib/firewalld/services ]; then
    install -m 0644 /usr/share/nokkud/firewalld/nokkud.xml /usr/lib/firewalld/services/nokkud.xml
    if has_cmd firewall-cmd && systemctl is-active -q firewalld 2>/dev/null; then
       firewall-cmd --reload >/dev/null 2>&1 || true
-   fi
-fi
-
-# --- AppArmor ---
-if [ -d /etc/apparmor.d ] && has_cmd apparmor_parser; then
-   echo "Installing AppArmor profile..."
-   install -m 0644 /usr/share/nokkud/apparmor/usr.bin.nokkud /etc/apparmor.d/usr.bin.nokkud
-   if has_cmd aa-status && aa-status --enabled >/dev/null 2>&1; then
-      echo "Loading AppArmor profile..."
-      apparmor_parser -r -T -W /etc/apparmor.d/usr.bin.nokkud || true
-   fi
-fi
-
-# --- SELinux ---
-if has_cmd semodule; then
-   echo "Installing SELinux policy..."
-   semodule -i /usr/share/nokkud/selinux/nokkud.pp || true
-
-   # Apply contexts to binary and data directory
-   if has_cmd restorecon; then
-      restorecon -R -v /usr/bin/nokkud /var/lib/nokkud || true
    fi
 fi
 
