@@ -3,7 +3,7 @@ package sysutil
 import (
 	"testing"
 
-	"github.com/aymanbagabas/go-pty"
+	"github.com/creack/pty"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -16,9 +16,10 @@ func TestEchoEnabled(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	ptmx, err := pty.New()
+	ptmx, tty, err := pty.Open()
 	must.NoError(err)
-	defer func() { _ = ptmx.Close() }()
+	defer ptmx.Close()
+	defer tty.Close()
 
 	fd := ptmx.Fd()
 	is.True(EchoEnabled(fd))
