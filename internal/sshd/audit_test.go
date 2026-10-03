@@ -1,23 +1,22 @@
 package sshd
 
 import (
-	"bufio"
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
-
-	"github.com/nokku-sh/nokkud/internal/audit"
 )
 
 // TestServerAuditEvents verifies auth success/failure, session, and command
@@ -26,10 +25,8 @@ func TestServerAuditEvents(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
-	dir := t.TempDir()
-	sink, err := audit.New(dir)
-	must.NoError(err)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Audit: sink})
+	log, events := auditLog()
+	addr, closeFn := startTestServerOpts(t, ca, Options{Log: log})
 	defer closeFn()
 
 	// A successful login + command.
@@ -47,36 +44,51 @@ func TestServerAuditEvents(t *testing.T) {
 	_, err = dial(t, addr, currentUser(t), userCert(t, ca, "some-other-principal"))
 	must.Error(err, "login with wrong principal unexpectedly succeeded")
 
-	must.NoError(sink.Close())
-	types := readEventTypes(t, dir)
-	for _, want := range []audit.EventType{
-		audit.EventAuthSuccess,
-		audit.EventAuthFailure,
-		audit.EventSessionStart,
-		audit.EventSessionEnd,
-		audit.EventCommand,
+	// session_end is logged when the server has torn the session down.
+	for _, want := range []eventType{
+		eventAuthSuccess,
+		eventAuthFailure,
+		eventSessionStart,
+		eventSessionEnd,
+		eventCommand,
 	} {
-		is.True(slices.Contains(types, want), "missing audit event %q in %v", want, types)
+		is.Eventually(func() bool { return slices.Contains(events(), want) },
+			5*time.Second, 20*time.Millisecond, "missing audit event %q in %v", want, events())
 	}
 }
 
-func readEventTypes(t *testing.T, dir string) []audit.EventType {
-	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(dir, "audit-*.jsonl"))
-	require.NoError(t, err)
-	var types []audit.EventType
-	for _, path := range matches {
-		f, openErr := os.Open(path)
-		require.NoError(t, openErr)
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			var ev audit.Event
-			require.NoError(t, json.Unmarshal(sc.Bytes(), &ev))
-			types = append(types, ev.Type)
+// auditLog returns a logger for Options.Log and a reader of the audit event
+// types it has seen so far.
+func auditLog() (*slog.Logger, func() []eventType) {
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(lockedWriter{mu: &mu, w: &buf}, nil))
+	return log, func() []eventType {
+		mu.Lock()
+		defer mu.Unlock()
+		var types []eventType
+		for line := range bytes.Lines(buf.Bytes()) {
+			var rec struct {
+				Msg  string    `json:"msg"`
+				Type eventType `json:"type"`
+			}
+			if json.Unmarshal(line, &rec) == nil && rec.Msg == "audit" {
+				types = append(types, rec.Type)
+			}
 		}
-		_ = f.Close()
+		return types
 	}
-	return types
+}
+
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (l lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 // wrongKeySigner presents a valid certificate but signs with another key, like
@@ -95,10 +107,8 @@ func (w wrongKeySigner) Sign(r io.Reader, data []byte) (*ssh.Signature, error) {
 func TestServerAuditNoSuccessWithoutKey(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
-	dir := t.TempDir()
-	sink, err := audit.New(dir)
-	must.NoError(err)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Audit: sink})
+	log, events := auditLog()
+	addr, closeFn := startTestServerOpts(t, ca, Options{Log: log})
 	defer closeFn()
 
 	newSigner := func() (ssh.PublicKey, ssh.Signer) {
@@ -119,11 +129,10 @@ func TestServerAuditNoSuccessWithoutKey(t *testing.T) {
 	must.NoError(cert.SignCert(rand.Reader, ca.signer))
 	_, other := newSigner()
 
-	_, err = dial(t, addr, currentUser(t), ssh.PublicKeys(wrongKeySigner{cert: cert, other: other}))
+	_, err := dial(t, addr, currentUser(t), ssh.PublicKeys(wrongKeySigner{cert: cert, other: other}))
 	must.Error(err, "login without the private key unexpectedly succeeded")
 
-	must.NoError(sink.Close())
-	assert.NotContains(t, readEventTypes(t, dir), audit.EventAuthSuccess)
+	assert.NotContains(t, events(), eventAuthSuccess)
 }
 
 // TestServerAuditFileTransferAndRemoteForward verifies SFTP (which scp uses)
@@ -131,10 +140,8 @@ func TestServerAuditNoSuccessWithoutKey(t *testing.T) {
 func TestServerAuditFileTransferAndRemoteForward(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
-	dir := t.TempDir()
-	sink, err := audit.New(dir)
-	must.NoError(err)
-	addr, closeFn := startTestServerOpts(t, ca, Options{Audit: sink, Policy: DefaultPolicy})
+	log, events := auditLog()
+	addr, closeFn := startTestServerOpts(t, ca, Options{Log: log, Policy: DefaultPolicy})
 	defer closeFn()
 
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -152,9 +159,6 @@ func TestServerAuditFileTransferAndRemoteForward(t *testing.T) {
 	_ = ln.Close()
 
 	_ = client.Close()
-	closeFn()
-	must.NoError(sink.Close())
-	types := readEventTypes(t, dir)
-	assert.Contains(t, types, audit.EventSubsystem)
-	assert.Contains(t, types, audit.EventRemoteForward)
+	assert.Contains(t, events(), eventSubsystem)
+	assert.Contains(t, events(), eventRemoteForward)
 }

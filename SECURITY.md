@@ -42,7 +42,7 @@ The following are in scope for security reports:
 - Local state and configuration it writes, all under `/var/lib/nokkud/`:
   `config.json`, `cache.json`, `state.json`, `ssh_host_signer.json` (the
   TPM-backed or machine-wrapped host identity), the SSH host public key,
-  host certificate and trusted CA public key, `recordings/` and `audit/`.
+  host certificate and trusted CA public key, and `recordings/`.
 
 ### Out of scope
 
@@ -134,15 +134,17 @@ control stream to the backend.
   them with systemd slices or per-user limits if that matters for your threat
   model.
 - **Audit and recording are local-first.** Security events (auth, session,
-  command, subsystem, forward, remote forward) are appended as rotated JSONL under
-  `/var/lib/nokkud/audit/`; interactive sessions are recorded as gzipped
-  asciicast under `/var/lib/nokkud/recordings/`, correlated to audit events
-  via `session_id`. Non-interactive `exec` sessions are captured both as
+  command, subsystem, forward, remote forward) go to the daemon's log as
+  `audit` lines with a `type`, so to journald under systemd and to
+  `/var/log/nokkud.log` under OpenRC. Retention is the log's own.
+  Interactive sessions are recorded as gzipped asciicast under
+  `/var/lib/nokkud/recordings/`, correlated to audit events via
+  `session_id`. Non-interactive `exec` sessions are captured both as
   `command` audit events (command line, user, exit code) and as recordings
   (output only). SFTP (and so modern `scp`) is audited as a `subsystem`
   event, the file contents are not recorded. Recordings stream to the backend
   live, and any the backend did not fully receive (offline, upload error,
-  crash) are uploaded again every few minutes. Both stores have size- and
+  crash) are uploaded again every few minutes. Recordings have size- and
   age-based retention.
 - **Recording fails open.** A session that cannot be recorded (under 512 MiB
   free, the 50 MB per-recording cap, a file error) still runs, so a full disk

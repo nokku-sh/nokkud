@@ -19,7 +19,6 @@ import (
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
 
-	"github.com/nokku-sh/nokkud/internal/audit"
 	"github.com/nokku-sh/nokkud/internal/client"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"
@@ -153,13 +152,8 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	sink, err := audit.New(paths.AuditDir())
-	if err != nil {
-		slog.Warn("audit log unavailable", "error", err)
-	}
 	srv, err := sshd.New(sshd.Options{
 		Principals:    cache.GetUUIDs,
-		Audit:         sink,
 		Policy:        sshd.PolicyFrom(cache.DaemonConfig()),
 		RecordingSink: cl.RecordingSink,
 	})
