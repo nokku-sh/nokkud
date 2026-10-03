@@ -5,13 +5,13 @@ go 1.27
 require (
 	connectrpc.com/connect v1.21.0
 	github.com/aymanbagabas/go-pty v0.2.3
-	github.com/cenkalti/backoff/v7 v7.0.0
-	github.com/mizuchilabs/kata v0.1.14
+	github.com/cenkalti/backoff/v7 v7.0.1
+	github.com/mizuchilabs/kata v0.1.15
 	github.com/nokku-sh/mon v0.1.4
 	github.com/nokku-sh/protos v0.2.0
 	github.com/pkg/sftp v1.13.11
 	github.com/stretchr/testify v1.12.1
-	github.com/urfave/cli/v3 v3.13.0
+	github.com/urfave/cli/v3 v3.14.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
