@@ -32,8 +32,10 @@ Install the daemon. The installer sets up the systemd or OpenRC service:
 curl -fsSL https://get.nokku.sh/nokkud | sudo sh
 ```
 
-The installer prefers your distro's package (deb/rpm/apk) via the Cloudsmith
-repository and falls back to the GitHub release tarball.
+The installer adds the Cloudsmith repository and installs your distro's
+package (deb, rpm, apk). Other distros and pinned versions
+(`--version <x.y.z>` or `NOKKUD_VERSION=<x.y.z>`) get the release tarball from
+GitHub.
 
 Prefer manual packages? See the [package repository](https://broadcasts.cloudsmith.com/nokku/nokkud) for apt/dnf/apk install instructions.
 
@@ -71,7 +73,7 @@ Download the release tarball for your architecture from
 installer:
 
 ```bash
-tar -xzf nokkud_*_linux_amd64.tar.gz
+tar -xzf nokkud_linux_amd64.tar.gz
 sudo ./install.sh
 ```
 
