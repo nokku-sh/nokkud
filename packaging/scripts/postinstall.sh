@@ -1,42 +1,31 @@
 #!/bin/sh
+# Runs after a package install or upgrade and at the end of the tarball
+# installer. Copies what fits this host out of /usr/share/nokkud.
 set -e
 
-has_cmd() { command -v "$1" >/dev/null 2>&1; }
+share=/usr/share/nokkud
+have() { command -v "$1" >/dev/null 2>&1; }
 
-# --- Firewall profiles ---
-# Ship the definitions only; opening the port stays the admin's call.
+if [ -d /usr/lib/systemd/system ] && have systemctl; then
+	install -m 0644 $share/systemd/nokkud.service /usr/lib/systemd/system/nokkud.service
+	systemctl daemon-reload >/dev/null 2>&1 || true
+	systemctl enable nokkud.service >/dev/null 2>&1 || true
+	# An upgrade picks up the new binary. Live connections end with the restart.
+	systemctl try-restart nokkud.service >/dev/null 2>&1 || true
+fi
+
+if have rc-update; then
+	install -m 0755 $share/openrc/nokkud.openrc /etc/init.d/nokkud
+	rc-update add nokkud default >/dev/null 2>&1 || true
+fi
+
+# Firewall definitions only. Opening the port stays the admin's call.
 if [ -d /etc/ufw/applications.d ]; then
-   echo "Installing ufw application profile..."
-   install -m 0644 /usr/share/nokkud/ufw/nokkud /etc/ufw/applications.d/nokkud
-   if has_cmd ufw; then
-      ufw app update >/dev/null 2>&1 || true
-   fi
+	install -m 0644 $share/ufw/nokkud /etc/ufw/applications.d/nokkud
+	ufw app update nokkud >/dev/null 2>&1 || true
 fi
 
 if [ -d /usr/lib/firewalld/services ]; then
-   echo "Installing firewalld service definition..."
-   install -m 0644 /usr/share/nokkud/firewalld/nokkud.xml /usr/lib/firewalld/services/nokkud.xml
-   if has_cmd firewall-cmd && systemctl is-active -q firewalld 2>/dev/null; then
-      firewall-cmd --reload >/dev/null 2>&1 || true
-   fi
+	install -m 0644 $share/firewalld/nokkud.xml /usr/lib/firewalld/services/nokkud.xml
+	firewall-cmd --reload >/dev/null 2>&1 || true
 fi
-
-# --- systemd ---
-if [ -d /usr/lib/systemd/system ] && has_cmd systemctl; then
-   echo "Installing systemd service..."
-   install -m 0644 /usr/share/nokkud/systemd/nokkud.service /usr/lib/systemd/system/nokkud.service
-   systemctl daemon-reload >/dev/null 2>&1 || true
-   systemctl enable nokkud.service >/dev/null 2>&1 || true
-   # Upgrades pick up the new binary. Live connections end with the restart.
-   systemctl try-restart nokkud.service >/dev/null 2>&1 || true
-fi
-
-# --- OpenRC ---
-if [ -d /etc/init.d ]; then
-   echo "Installing OpenRC/SysV init script..."
-   install -m 0755 /usr/share/nokkud/openrc/nokkud.openrc /etc/init.d/nokkud
-   if [ -d /run/openrc ] && has_cmd rc-update; then
-      rc-update add nokkud default >/dev/null 2>&1 || true
-   fi
-fi
-
