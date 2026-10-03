@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -452,29 +453,42 @@ func (sess *session) run() {
 	sess.runPlain()
 }
 
-// runPTY runs the login shell, or the command, in the session's pty and
-// relays bytes until it exits.
+// shellCmd builds the session's process the way OpenSSH starts it. A shell
+// request gets a login shell, argv[0] with a dash, so the profile is read. A
+// command runs as "shell -c command" under the shell's plain name.
+func (sess *session) shellCmd() (*exec.Cmd, error) {
+	shell := sess.sysUser.Shell
+	// #nosec G204 - running the authenticated user's shell is the SSH
+	// server's purpose. The process is spawned with that user's privileges.
+	cmd := exec.CommandContext(sess.ctx, shell)
+	cmd.Args = []string{"-" + filepath.Base(shell)}
+	if sess.rawCmd != "" {
+		cmd.Args = []string{filepath.Base(shell), "-c", sess.rawCmd}
+	}
+	cmd.Dir = sess.sysUser.Home
+	cmd.Env = sess.buildEnv()
+	attr, err := sysutil.SysProcAttr(sess.sysUser)
+	if err != nil {
+		return nil, err
+	}
+	cmd.SysProcAttr = attr
+	return cmd, nil
+}
+
+// runPTY runs the shell or the command in the session's pty and relays bytes
+// until it exits.
 func (sess *session) runPTY() {
 	defer sess.ptmx.Close()
 	defer sess.tty.Close()
 
-	// #nosec G204 - running the authenticated user's shell is the SSH
-	// server's purpose. The process is spawned with that user's privileges.
-	cmd := exec.CommandContext(sess.ctx, sess.sysUser.Shell)
-	if sess.rawCmd != "" {
-		cmd.Args = append(cmd.Args, "-c", sess.rawCmd)
-	}
-	cmd.Dir = sess.sysUser.Home
-	cmd.Env = sess.buildEnv()
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = sess.tty, sess.tty, sess.tty
-	attr, err := sysutil.SysProcAttr(sess.sysUser)
+	cmd, err := sess.shellCmd()
 	if err != nil {
 		sess.exit(1)
 		return
 	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = sess.tty, sess.tty, sess.tty
 	// The pty becomes the controlling terminal of the new session.
-	attr.Setctty = true
-	cmd.SysProcAttr = attr
+	cmd.SysProcAttr.Setctty = true
 	if err = cmd.Start(); err != nil {
 		slog.Debug("start pty command failed", "error", err)
 		sess.exit(1)
@@ -517,25 +531,14 @@ func (sess *session) runPTY() {
 	input.Wait()
 }
 
-// runPlain runs the command without a pty, the non-interactive `ssh host
-// command` path.
+// runPlain runs the shell or the command without a pty, the non-interactive
+// `ssh host command` path.
 func (sess *session) runPlain() {
-	var cmd *exec.Cmd
-	// #nosec G204 - running the authenticated user's command is the SSH
-	// server's purpose. The process is spawned with that user's privileges.
-	if sess.rawCmd == "" {
-		cmd = exec.CommandContext(sess.ctx, sess.sysUser.Shell)
-	} else {
-		cmd = exec.CommandContext(sess.ctx, sess.sysUser.Shell, "-c", sess.rawCmd)
-	}
-	cmd.Dir = sess.sysUser.Home
-	cmd.Env = sess.buildEnv()
-	attr, err := sysutil.SysProcAttr(sess.sysUser)
+	cmd, err := sess.shellCmd()
 	if err != nil {
 		sess.exit(1)
 		return
 	}
-	cmd.SysProcAttr = attr
 
 	// Plain sessions record too: non-interactive exec is exactly where
 	// sensitive output (cat, curl, git) leaves the machine.
