@@ -218,6 +218,11 @@ func (c *Client) Run(ctx context.Context, srv *sshd.Server, sshAddr netip.AddrPo
 			return nil
 		case <-time.After(next):
 		}
+		// A daemon deleted while it was offline gets no stream and so no
+		// poke. Only a sync tells it to stop.
+		if errors.Is(c.syncDaemon(ctx), errDaemonRejected) {
+			return errDaemonRejected
+		}
 	}
 }
 
