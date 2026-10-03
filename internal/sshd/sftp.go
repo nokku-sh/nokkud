@@ -20,7 +20,10 @@ var sftpServerCmd = func(home string) (*exec.Cmd, error) {
 		return nil, err
 	}
 	// #nosec G204 - bin is this binary and home comes from the passwd entry.
-	return exec.Command(bin, "sftp-server", home), nil
+	cmd := exec.Command(bin, "sftp-server", home)
+	// Never the daemon's own environment, the user could read it from /proc.
+	cmd.Env = []string{"HOME=" + home}
+	return cmd, nil
 }
 
 // ServeSFTP runs the SFTP protocol over stdin and stdout, rooted at home. It
