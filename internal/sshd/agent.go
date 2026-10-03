@@ -48,7 +48,7 @@ func (sess *session) agentRequest(req *ssh.Request) bool {
 }
 
 // newAgentSock creates a Unix socket only the session user can reach. The
-// MkdirTemp dir is root-owned, so both dir and socket get chowned.
+// MkdirTemp dir is root-owned and 0700, so both dir and socket get chowned.
 func newAgentSock(sysUser *user.User) (ln net.Listener, sock string, err error) {
 	dir, err := os.MkdirTemp("", "auth-agent")
 	if err != nil {
@@ -78,13 +78,16 @@ func newAgentSock(sysUser *user.User) (ln net.Listener, sock string, err error) 
 	if err != nil {
 		return nil, "", err
 	}
-	for _, path := range []string{dir, sock} {
-		if err = os.Chown(path, uid, gid); err != nil {
-			return nil, "", fmt.Errorf("chown agent socket: %w", err)
-		}
+	// The socket goes first, while the dir is still root-only. Once the user
+	// owns the dir they could swap the socket for a symlink.
+	if err = os.Lchown(sock, uid, gid); err != nil {
+		return nil, "", fmt.Errorf("chown agent socket: %w", err)
 	}
 	if err = os.Chmod(sock, 0o600); err != nil {
 		return nil, "", fmt.Errorf("chmod agent socket: %w", err)
+	}
+	if err = os.Chown(dir, uid, gid); err != nil {
+		return nil, "", fmt.Errorf("chown agent socket dir: %w", err)
 	}
 	return ln, sock, nil
 }
