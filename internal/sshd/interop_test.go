@@ -27,12 +27,11 @@ func TestBinaryInterop(t *testing.T) {
 
 	ca := newTestCA(t)
 	configDir := t.TempDir()
-	seedTrustedCA(t, configDir, ca.pub)
-
-	// Seed the principal cache. The current user may log in as testPrincipal.
-	// Written directly in the daemon's on-disk format (cache.json) rather
-	// than via Cache.Save, keeping this harness independent of state wiring.
-	must.NoError(writeCacheFile(configDir, currentUser(t), []string{testPrincipal}), "seed cache")
+	// Seed the synced state: the trusted CA, and the current user may log in
+	// as testPrincipal. Written directly in the daemon's on-disk format
+	// (cache.json) rather than via Cache.Save, keeping this harness
+	// independent of state wiring.
+	must.NoError(writeCacheFile(configDir, ca.pub, currentUser(t), []string{testPrincipal}), "seed cache")
 
 	// Launch the headless server and wait for it to print its address.
 	cmd := exec.Command(
@@ -226,10 +225,11 @@ func TestBinaryInterop(t *testing.T) {
 
 // --- helpers ---------------------------------------------------------------
 
-// writeCacheFile seeds the principal cache file in the daemon's JSON format.
-func writeCacheFile(configDir, username string, uuids []string) error {
+// writeCacheFile seeds the synced state file in the daemon's JSON format.
+func writeCacheFile(configDir string, ca ssh.PublicKey, username string, uuids []string) error {
 	data, err := json.MarshalIndent(map[string]any{
 		"principals": map[string][]string{username: uuids},
+		"ca":         string(ssh.MarshalAuthorizedKey(ca)),
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -257,12 +257,6 @@ func repoRoot(t *testing.T) string {
 	wd, err := os.Getwd()
 	require.NoError(t, err)
 	return filepath.Clean(filepath.Join(wd, "..", ".."))
-}
-
-func seedTrustedCA(t *testing.T, dir string, pub ssh.PublicKey) {
-	t.Helper()
-	data := ssh.MarshalAuthorizedKey(pub)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "nokku_ca.pub"), data, 0o644))
 }
 
 func readLine(t *testing.T, r io.Reader, timeout time.Duration) string {

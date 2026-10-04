@@ -42,7 +42,7 @@ func markUploaded(path string) {
 // UploadPending uploads finished recordings the backend does not have yet,
 // oldest first, such as sessions recorded while it was unreachable. It stops
 // at the first failure, the next call retries.
-func UploadPending(ctx context.Context, client nokkuv1connect.RecordingServiceClient) error {
+func UploadPending(ctx context.Context, client nokkuv1connect.DaemonControlServiceClient) error {
 	// Filenames start with the timestamp, so Glob's order is oldest first.
 	matches, err := filepath.Glob(filepath.Join(paths.RecordsDir(), "*"+castSuffix))
 	if err != nil {
@@ -69,7 +69,7 @@ func UploadPending(ctx context.Context, client nokkuv1connect.RecordingServiceCl
 	return nil
 }
 
-func uploadFile(ctx context.Context, client nokkuv1connect.RecordingServiceClient, path string) error {
+func uploadFile(ctx context.Context, client nokkuv1connect.DaemonControlServiceClient, path string) error {
 	hdr, err := readHeader(path)
 	if err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)

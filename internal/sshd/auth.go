@@ -1,65 +1,20 @@
 package sshd
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
-	"os"
 	"slices"
 	"time"
 
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 var errNoCertificates = errors.New("sshd: only certificate authentication is supported")
-
-// loadTrustedCAs returns the active CA public keys.
-func loadTrustedCAs() ([]ssh.PublicKey, error) {
-	userCA := paths.UserCAFile()
-	keys, err := parseCAFile(userCA)
-	if err != nil {
-		return nil, err
-	}
-	if len(keys) == 0 {
-		return nil, fmt.Errorf("sshd: no CA public keys found in %s", userCA)
-	}
-	return keys, nil
-}
-
-// parseCAFile parses every authorized-key line in path, skipping blanks and
-// comments.
-func parseCAFile(path string) ([]ssh.PublicKey, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("sshd: read CA public key: %w", err)
-	}
-	defer f.Close()
-
-	var keys []ssh.PublicKey
-	scan := bufio.NewScanner(f)
-	for scan.Scan() {
-		line := bytes.TrimSpace(scan.Bytes())
-		if len(line) == 0 || bytes.HasPrefix(line, []byte("#")) {
-			continue
-		}
-		pub, _, _, _, parseErr := ssh.ParseAuthorizedKey(line)
-		if parseErr != nil {
-			return nil, fmt.Errorf("sshd: parse CA public key: %w", parseErr)
-		}
-		keys = append(keys, pub)
-	}
-	if scanErr := scan.Err(); scanErr != nil {
-		return nil, fmt.Errorf("sshd: read CA public key: %w", scanErr)
-	}
-	return keys, nil
-}
 
 // caKeys indexes CA public keys by wire encoding so lookups never marshal on
 // the auth path.
@@ -72,21 +27,36 @@ func caKeys(keys []ssh.PublicKey) map[string]struct{} {
 }
 
 func (s *Server) trustedCA(key ssh.PublicKey) bool {
+	return s.trustedCAWire(string(key.Marshal()))
+}
+
+// trustedCAWire takes the CA key in its wire encoding.
+func (s *Server) trustedCAWire(wire string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	wire := key.Marshal()
-	if _, ok := s.trustedCAs[string(wire)]; ok {
+	if _, ok := s.trustedCAs[wire]; ok {
 		return true
 	}
-	until, ok := s.retiredCAs[string(wire)]
+	until, ok := s.retiredCAs[wire]
 	return ok && time.Now().Before(until)
 }
 
-// SetRetiredCAs replaces the rolled-over CA keys the backend still trusts,
-// each until its deadline. An emergency rollover sends none.
-func (s *Server) SetRetiredCAs(keys []*nokkuv1.RetiredCAKey) {
-	retired := make(map[string]time.Time, len(keys))
-	for _, k := range keys {
+// SetTrust replaces the CAs a login may be signed by: the active one, and the
+// rolled-over ones the backend still trusts, each until its deadline. An
+// empty active key trusts no CA, an emergency rollover sends no retired key.
+func (s *Server) SetTrust(active string, retiredKeys []*nokkuv1.RetiredCAKey) {
+	trusted := map[string]struct{}{}
+	if active != "" {
+		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(active))
+		if err != nil {
+			// Keep the last good set, a garbled key must not lock everyone out.
+			slog.Warn("unreadable CA public key, keeping the previous trust", "error", err)
+			return
+		}
+		trusted[string(pub.Marshal())] = struct{}{}
+	}
+	retired := make(map[string]time.Time, len(retiredKeys))
+	for _, k := range retiredKeys {
 		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(k.GetPublicKey()))
 		if err != nil {
 			slog.Warn("skipping unreadable retired CA", "error", err)
@@ -96,6 +66,7 @@ func (s *Server) SetRetiredCAs(keys []*nokkuv1.RetiredCAKey) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.trustedCAs = trusted
 	s.retiredCAs = retired
 }
 
@@ -138,7 +109,7 @@ func (s *Server) publicKeyCallback(
 		)
 	}
 
-	// Built per-auth so CA reloads apply to new connections immediately.
+	// Built per-auth so a new trust applies to new connections immediately.
 	// x/crypto/ssh enforces the critical options, validity window, and CA
 	// signature.
 	checker := ssh.CertChecker{
@@ -159,6 +130,8 @@ func (s *Server) publicKeyCallback(
 		perms.Extensions = make(map[string]string, 2)
 	}
 	perms.Extensions["nokku-principal"] = matched
+	// DropRevoked closes the connection once this CA is no longer trusted.
+	perms.Extensions["nokku-ca"] = string(cert.SignatureKey.Marshal())
 	// The key id is covered by the CA signature, so the session can trust it
 	// to tell a control-plane web session from a direct login.
 	perms.Extensions["nokku-cert-key-id"] = cert.KeyId

@@ -2,7 +2,6 @@ package sshd
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"github.com/nokku-sh/mon/tpm"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/nokku-sh/nokkud/internal/hostcerts"
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
@@ -44,7 +44,7 @@ func loadHostKey() (ssh.Signer, io.Closer, error) {
 
 // withHostCert wraps key in the host certificate on disk when it matches.
 func withHostCert(key ssh.Signer) ssh.Signer {
-	cert, err := parseHostCertFile(paths.HostKeyCert())
+	cert, err := hostcerts.Load()
 	if err != nil {
 		return key
 	}
@@ -76,20 +76,4 @@ func writeHostPubKey(signer tpm.Signer) error {
 		_ = os.Remove(paths.HostKeyCert())
 	}
 	return nil
-}
-
-func parseHostCertFile(path string) (*ssh.Certificate, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	pub, _, _, _, err := ssh.ParseAuthorizedKey(data)
-	if err != nil {
-		return nil, err
-	}
-	cert, ok := pub.(*ssh.Certificate)
-	if !ok {
-		return nil, errors.New("sshd: not a certificate")
-	}
-	return cert, nil
 }

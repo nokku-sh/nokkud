@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -68,7 +67,7 @@ type Options struct {
 	Log           *slog.Logger
 	Policy        Policy
 	RecordingSink RecordingSink
-	// TrustedCAs seeds the CA set until Reload reads it from disk. Tests only.
+	// TrustedCAs seeds the CA set until SetTrust replaces it. Tests only.
 	TrustedCAs []ssh.PublicKey
 	// NologinFile defaults to /etc/nologin. Tests only.
 	NologinFile string
@@ -83,8 +82,8 @@ type Server struct {
 
 	// Limits live on the server so tests can shrink them.
 	conns chan struct{}
-	// Loopback has its own pre-auth budget. Relayed connections arrive from
-	// there and a network peer must not starve them.
+	// Loopback has its own pre-auth budget, a local proxy puts every client
+	// behind that one address.
 	startups      chan struct{}
 	localStartups chan struct{}
 	maxChannels   int
@@ -107,8 +106,8 @@ type Server struct {
 	retiredCAs map[string]time.Time
 }
 
-// New loads the host key and trusted CAs. A missing CA file is fine on first
-// boot, the first sync writes it and Reload picks it up.
+// New loads the host key. The trusted CAs come from SetTrust, a server that
+// never got any refuses every login.
 func New(opts Options) (*Server, error) {
 	if opts.Principals == nil {
 		return nil, errors.New("sshd: Principals is required")
@@ -164,18 +163,9 @@ func (s *Server) SetPolicy(p Policy) {
 	s.policy.Store(&p)
 }
 
-// Reload rereads the trusted CAs and the host certificate. Established
-// connections keep the certificate they handshook with.
+// Reload rereads the host certificate. Established connections keep the
+// certificate they handshook with.
 func (s *Server) Reload() {
-	trusted, caErr := loadTrustedCAs()
-	switch {
-	case errors.Is(caErr, fs.ErrNotExist):
-		slog.Debug("trusted CAs not synced yet")
-	case caErr != nil:
-		// Keep the last good set: a bad line must not lock everyone out.
-		slog.Warn("reload trusted CAs failed, keeping previous set", "error", caErr)
-	}
-
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback:         s.publicKeyCallback,
 		VerifiedPublicKeyCallback: s.verifiedPublicKey,
@@ -186,9 +176,6 @@ func (s *Server) Reload() {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if caErr == nil {
-		s.trustedCAs = caKeys(trusted)
-	}
 	s.cfg = cfg
 }
 
@@ -223,19 +210,37 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) {
 		}
 		go func() {
 			defer func() { <-s.conns }()
-			s.handleConn(nc)
+			s.handleConn(nc, false)
 		}()
 	}
 }
 
+// ServeConn serves one connection the backend relayed, until it ends. The
+// backend only relays users it authenticated and who hold a grant on this
+// host, so the connection takes no pre-auth slot from network peers. It
+// still counts against the connection cap.
+func (s *Server) ServeConn(nc net.Conn) {
+	select {
+	case s.conns <- struct{}{}:
+	default:
+		slog.Warn("dropping relayed connection, at capacity", "remote", nc.RemoteAddr())
+		_ = nc.Close()
+		return
+	}
+	defer func() { <-s.conns }()
+	s.handleConn(nc, true)
+}
+
 // DropRevoked closes every open connection whose principal lost access to
-// its account. The principals only gate new logins, so a sync calls this to
-// make a revoke end the sessions that are already open.
+// its account, or whose certificate came from a CA that is no longer trusted.
+// Both only gate new logins, so a sync calls this to make a revoke end the
+// sessions that are already open.
 func (s *Server) DropRevoked() {
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()
 	for conn := range s.live {
-		if slices.Contains(s.principals(conn.User()), conn.Permissions.Extensions["nokku-principal"]) {
+		ext := conn.Permissions.Extensions
+		if slices.Contains(s.principals(conn.User()), ext["nokku-principal"]) && s.trustedCAWire(ext["nokku-ca"]) {
 			continue
 		}
 		slog.Info("closing connection, access was revoked", "user", conn.User(), "remote", conn.RemoteAddr())
@@ -243,11 +248,11 @@ func (s *Server) DropRevoked() {
 	}
 }
 
-func (s *Server) handleConn(nc net.Conn) {
+func (s *Server) handleConn(nc net.Conn, relayed bool) {
 	defer nc.Close()
 	defer recoverPanic("connection")
 
-	conn, chans, reqs, err := s.handshake(nc)
+	conn, chans, reqs, err := s.handshake(nc, relayed)
 	if errors.Is(err, errBusy) {
 		slog.Warn("dropping connection", "remote", nc.RemoteAddr(), "error", err)
 		return
@@ -301,13 +306,18 @@ func (s *Server) handleConn(nc net.Conn) {
 }
 
 // handshake holds a pre-auth slot only while the handshake runs, and bounds a
-// peer that never finishes it.
-func (s *Server) handshake(nc net.Conn) (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
-	release, ok := s.acquireStartup(nc.RemoteAddr())
-	if !ok {
-		return nil, nil, nil, errBusy
+// peer that never finishes it. A relayed connection takes no slot.
+func (s *Server) handshake(
+	nc net.Conn,
+	relayed bool,
+) (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
+	if !relayed {
+		release, ok := s.acquireStartup(nc.RemoteAddr())
+		if !ok {
+			return nil, nil, nil, errBusy
+		}
+		defer release()
 	}
-	defer release()
 	if err := nc.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
 		return nil, nil, nil, err
 	}

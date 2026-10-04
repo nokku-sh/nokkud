@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/user"
+	"strings"
 	"testing"
 	"time"
 
@@ -390,7 +391,7 @@ func TestServerLivePrincipals(t *testing.T) {
 	must.Error(err, "expected auth to fail before the principal is granted")
 
 	// Backend push lands in the shared cache: now allowed.
-	cache.Replace(map[string][]string{cur.Username: {testPrincipal}}, nil, nil, 0)
+	cache.Replace(map[string][]string{cur.Username: {testPrincipal}}, nil, "", nil, 0)
 	client, err := dial(t, l.Addr().String(), cur.Username, userCert(t, ca, testPrincipal))
 	must.NoError(err, "dial after cache update")
 	defer client.Close()
@@ -414,4 +415,69 @@ func TestPolicyFrom(t *testing.T) {
 	is.False(got.Record)
 	is.True(got.GatewayPorts)
 	is.True(got.AllowForwarding, "unset field lost its default")
+}
+
+// relayed is a connection with the remote address a relay reports for it.
+type relayed struct {
+	net.Conn
+
+	remote net.Addr
+}
+
+func (c relayed) RemoteAddr() net.Addr { return c.remote }
+
+// TestServeConnReportsRelayedClient verifies a relayed connection is served
+// without a pre-auth slot, and that the session and source-address options
+// see the address the relay reported, not the relay itself.
+func TestServeConnReportsRelayedClient(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
+	ca := newTestCA(t)
+	var srv *Server
+	_, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) {
+		srv = s
+		// No pre-auth slot at all: only a relayed connection gets through.
+		s.startups = make(chan struct{})
+		s.localStartups = make(chan struct{})
+	})
+	defer closeFn()
+
+	office := userCertOpts(t, ca, func(c *ssh.Certificate) {
+		c.CriticalOptions = map[string]string{"source-address": "203.0.113.0/24"}
+	}, testPrincipal)
+	// A TCP pair, net.Pipe has no buffer and both ssh ends write first.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	must.NoError(err)
+	defer l.Close()
+	connect := func(from string) (*ssh.Client, error) {
+		client, dialErr := net.Dial("tcp", l.Addr().String())
+		must.NoError(dialErr)
+		sshd, acceptErr := l.Accept()
+		must.NoError(acceptErr)
+		go srv.ServeConn(relayed{Conn: sshd, remote: &net.TCPAddr{IP: net.ParseIP(from)}})
+		conn, chans, reqs, sshErr := ssh.NewClientConn(client, "relay", &ssh.ClientConfig{
+			User:            currentUser(t),
+			Auth:            []ssh.AuthMethod{office},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(), // #nosec G106 - test server
+			Timeout:         10 * time.Second,
+		})
+		if sshErr != nil {
+			_ = client.Close()
+			return nil, sshErr
+		}
+		return ssh.NewClient(conn, chans, reqs), nil
+	}
+
+	_, err = connect("198.51.100.1")
+	must.Error(err, "a certificate bound to another network logged in through the relay")
+
+	client, err := connect("203.0.113.7")
+	must.NoError(err, "relayed login from the allowed network")
+	defer client.Close()
+	sess, err := client.NewSession()
+	must.NoError(err)
+	defer sess.Close()
+	out, err := sess.Output("echo $SSH_CLIENT")
+	must.NoError(err)
+	is.True(strings.HasPrefix(string(out), "203.0.113.7 0 "), "SSH_CLIENT = %q, want the relayed address", out)
 }

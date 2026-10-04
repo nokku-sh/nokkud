@@ -1,14 +1,12 @@
 package sshd
 
 import (
-	"bytes"
 	"crypto"
 	"crypto/rand"
 	"errors"
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,38 +21,30 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// TestServerReloadPicksUpCA verifies the server can start with no cached CA
-// (first boot) and, after Reload, trusts the CA that lands on disk.
-func TestServerReloadPicksUpCA(t *testing.T) {
+// TestSetTrust verifies the server starts trusting no CA, takes the active
+// one from a sync, and keeps the last good set when a sync hands it garbage.
+func TestSetTrust(t *testing.T) {
 	is := assert.New(t)
-	must := require.New(t)
-	ca := newTestCA(t)
-	configDir := t.TempDir()
-	t.Setenv("NOKKUD_DATA_DIR", configDir)
+	first, second := newTestCA(t), newTestCA(t)
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 
-	// No CA file yet: New must not fail and generates a host key into the
-	// state directory.
-	srv, err := New(Options{
-		Principals: func(username string) []string {
-			if username == currentUser(t) {
-				return []string{testPrincipal}
-			}
-			return nil
-		},
-		TrustedCAs: []ssh.PublicKey{ca.pub},
-	})
-	must.NoError(err, "new server without CA")
+	srv, err := New(Options{Principals: func(string) []string { return nil }})
+	require.NoError(t, err, "new server without a CA")
 	defer srv.hostKeyDev.Close()
+	is.False(srv.trustedCA(first.pub), "a server that never synced trusts no CA")
 
-	// Now the CA file appears (as the cert sync would write it) and Reload
-	// must pick it up.
-	must.NoError(os.WriteFile(
-		filepath.Join(configDir, "nokku_ca.pub"),
-		ssh.MarshalAuthorizedKey(ca.pub),
-		0o644,
-	))
-	srv.Reload()
-	is.True(srv.trustedCA(ca.pub), "reloaded server does not trust the CA that landed on disk")
+	srv.SetTrust(string(ssh.MarshalAuthorizedKey(first.pub)), nil)
+	is.True(srv.trustedCA(first.pub), "the synced CA is not trusted")
+
+	srv.SetTrust("garbage", nil)
+	is.True(srv.trustedCA(first.pub), "an unreadable CA dropped the previous trust")
+
+	srv.SetTrust(string(ssh.MarshalAuthorizedKey(second.pub)), nil)
+	is.True(srv.trustedCA(second.pub), "the new CA is not trusted")
+	is.False(srv.trustedCA(first.pub), "the replaced CA is still trusted")
+
+	srv.SetTrust("", nil)
+	is.False(srv.trustedCA(second.pub), "a target without a CA still trusts one")
 }
 
 // TestRetiredCATrustedUntilDeadline verifies a rolled-over CA stays trusted
@@ -66,13 +56,11 @@ func TestRetiredCATrustedUntilDeadline(t *testing.T) {
 	retired := newTestCA(t)
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 
-	srv, err := New(Options{
-		Principals: func(string) []string { return nil },
-		TrustedCAs: []ssh.PublicKey{active.pub},
-	})
+	srv, err := New(Options{Principals: func(string) []string { return nil }})
 	require.NoError(t, err)
 	defer srv.hostKeyDev.Close()
 
+	activeKey := string(ssh.MarshalAuthorizedKey(active.pub))
 	retiredKey := func(until time.Time) []*nokkuv1.RetiredCAKey {
 		return []*nokkuv1.RetiredCAKey{
 			{PublicKey: new(string(ssh.MarshalAuthorizedKey(retired.pub))), TrustedUntil: timestamppb.New(until)},
@@ -80,17 +68,18 @@ func TestRetiredCATrustedUntilDeadline(t *testing.T) {
 		}
 	}
 
+	srv.SetTrust(activeKey, nil)
 	is.False(srv.trustedCA(retired.pub), "no retired CA synced yet")
 
-	srv.SetRetiredCAs(retiredKey(time.Now().Add(time.Hour)))
+	srv.SetTrust(activeKey, retiredKey(time.Now().Add(time.Hour)))
 	is.True(srv.trustedCA(retired.pub), "retired CA must be trusted before its deadline")
 	is.True(srv.trustedCA(active.pub), "active CA must stay trusted")
 
-	srv.SetRetiredCAs(retiredKey(time.Now().Add(-time.Minute)))
+	srv.SetTrust(activeKey, retiredKey(time.Now().Add(-time.Minute)))
 	is.False(srv.trustedCA(retired.pub), "retired CA must not be trusted past its deadline")
 
-	srv.SetRetiredCAs(retiredKey(time.Now().Add(time.Hour)))
-	srv.SetRetiredCAs(nil)
+	srv.SetTrust(activeKey, retiredKey(time.Now().Add(time.Hour)))
+	srv.SetTrust(activeKey, nil)
 	is.False(srv.trustedCA(retired.pub), "an empty list must drop the retired CA at once")
 	is.True(srv.trustedCA(active.pub), "active CA must stay trusted")
 }
@@ -141,59 +130,6 @@ func TestServerReloadRefreshesHostCerts(t *testing.T) {
 	srv.mu.RUnlock()
 	_, hasCert := hostPublicKey(t, cfg).(*ssh.Certificate)
 	is.True(hasCert, "reload did not adopt the host certificate")
-}
-
-// TestParseCAFileSkipsComments verifies blank lines and comments in the CA
-// file are tolerated, matching the authorized_keys format it mirrors.
-func TestParseCAFileSkipsComments(t *testing.T) {
-	is := assert.New(t)
-	must := require.New(t)
-	ca := newTestCA(t)
-	path := filepath.Join(t.TempDir(), "ca.pub")
-
-	content := "# trusted CAs\n\n" + string(ssh.MarshalAuthorizedKey(ca.pub)) + "\n# trailing comment\n"
-	must.NoError(os.WriteFile(path, []byte(content), 0o644))
-
-	keys, err := parseCAFile(path)
-	must.NoError(err, "comments must not fail the parse")
-	is.Len(keys, 1, "expected exactly one CA key")
-	is.True(bytes.Equal(keys[0].Marshal(), ca.pub.Marshal()))
-}
-
-// TestServerReloadKeepsPreviousCAOnError verifies a CA file that becomes
-// unreadable between reloads does not blank the trust set: logins keep
-// working with the last known good CAs until the next successful sync.
-func TestServerReloadKeepsPreviousCAOnError(t *testing.T) {
-	is := assert.New(t)
-	must := require.New(t)
-	ca := newTestCA(t)
-	configDir := t.TempDir()
-	t.Setenv("NOKKUD_DATA_DIR", configDir)
-
-	srv, err := New(Options{
-		Principals: func(username string) []string {
-			if username == currentUser(t) {
-				return []string{testPrincipal}
-			}
-			return nil
-		},
-		TrustedCAs: []ssh.PublicKey{ca.pub},
-	})
-	must.NoError(err, "new server")
-	defer srv.hostKeyDev.Close()
-
-	must.NoError(os.WriteFile(
-		filepath.Join(configDir, "nokku_ca.pub"),
-		ssh.MarshalAuthorizedKey(ca.pub),
-		0o644,
-	))
-	srv.Reload()
-
-	// A corrupt CA file (sync raced by an editor, disk glitch, ...) must
-	// leave the previous trust set in place so logins keep working.
-	must.NoError(os.WriteFile(filepath.Join(configDir, "nokku_ca.pub"), []byte("garbage"), 0o644))
-	srv.Reload()
-	is.True(srv.trustedCA(ca.pub), "previous trust set was dropped on reload error")
 }
 
 // hostPublicKey handshakes against cfg and returns the host key it presents.

@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TestServerMaxConnections verifies the concurrent connection cap: an
@@ -339,5 +341,45 @@ func TestDropRevoked(t *testing.T) {
 	case <-gone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the revoked user's connection stayed open")
+	}
+}
+
+// TestDropRevokedCA verifies a connection ends once the CA that signed its
+// certificate is no longer trusted, as after an emergency rollover.
+func TestDropRevokedCA(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+	var srv *Server
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { srv = s })
+	defer closeFn()
+
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err)
+	defer client.Close()
+	gone := make(chan struct{})
+	go func() {
+		_ = client.Wait()
+		close(gone)
+	}()
+
+	// A rollover that keeps the old key trusted leaves the connection alone.
+	next := string(ssh.MarshalAuthorizedKey(newTestCA(t).pub))
+	srv.SetTrust(next, []*nokkuv1.RetiredCAKey{{
+		PublicKey:    new(string(ssh.MarshalAuthorizedKey(ca.pub))),
+		TrustedUntil: timestamppb.New(time.Now().Add(time.Hour)),
+	}})
+	srv.DropRevoked()
+	select {
+	case <-gone:
+		t.Fatal("a connection signed by a still trusted CA was closed")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	srv.SetTrust(next, nil)
+	srv.DropRevoked()
+	select {
+	case <-gone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a connection signed by a revoked CA stayed open")
 	}
 }

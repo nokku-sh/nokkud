@@ -1,7 +1,6 @@
 package hostcerts
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -16,8 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
-
-	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
@@ -40,14 +37,14 @@ func newTestCA(t testing.TB) testCA {
 }
 
 // signHostCert signs a host certificate for hostPub with the given validity
-// window and returns its authorized_keys text plus the CA's.
+// window and returns its authorized_keys text.
 func signHostCert(
 	t testing.TB,
 	ca testCA,
 	hostPub ssh.PublicKey,
 	principal string,
 	validAfter, validBefore uint64,
-) (certText, caText []byte) {
+) []byte {
 	t.Helper()
 	must := require.New(t)
 	cert := &ssh.Certificate{
@@ -59,7 +56,7 @@ func signHostCert(
 		ValidBefore:     validBefore,
 	}
 	must.NoError(cert.SignCert(rand.Reader, ca.signer), "sign cert")
-	return ssh.MarshalAuthorizedKey(cert), ssh.MarshalAuthorizedKey(ca.pub)
+	return ssh.MarshalAuthorizedKey(cert)
 }
 
 // newHostPub returns a fresh ECDSA P-256 host public key, matching the
@@ -108,7 +105,7 @@ func TestNeedsRenewal(t *testing.T) {
 			name: "certificate for another principal is outdated",
 			setup: func(t *testing.T, dir string, ca testCA) {
 				hostPub := writeHostKey(t, dir)
-				certText, _ := signHostCert(t, ca, hostPub, "other-target", 0, ssh.CertTimeInfinity)
+				certText := signHostCert(t, ca, hostPub, "other-target", 0, ssh.CertTimeInfinity)
 				writeCert(t, dir, certText)
 			},
 			targetID: "target-1",
@@ -118,7 +115,7 @@ func TestNeedsRenewal(t *testing.T) {
 			name: "expiring certificate is outdated",
 			setup: func(t *testing.T, dir string, ca testCA) {
 				hostPub := writeHostKey(t, dir)
-				certText, _ := signHostCert(
+				certText := signHostCert(
 					t, ca, hostPub, "target-1", 0, uint64(now.Add(24*time.Hour).Unix()),
 				)
 				writeCert(t, dir, certText)
@@ -130,7 +127,7 @@ func TestNeedsRenewal(t *testing.T) {
 			name: "expired certificate is outdated",
 			setup: func(t *testing.T, dir string, ca testCA) {
 				hostPub := writeHostKey(t, dir)
-				certText, _ := signHostCert(
+				certText := signHostCert(
 					t,
 					ca,
 					hostPub,
@@ -147,7 +144,7 @@ func TestNeedsRenewal(t *testing.T) {
 			name: "valid certificate is not outdated",
 			setup: func(t *testing.T, dir string, ca testCA) {
 				hostPub := writeHostKey(t, dir)
-				certText, _ := signHostCert(
+				certText := signHostCert(
 					t, ca, hostPub, "target-1", uint64(now.Add(-time.Hour).Unix()),
 					uint64(now.Add(90*24*time.Hour).Unix()),
 				)
@@ -155,6 +152,19 @@ func TestNeedsRenewal(t *testing.T) {
 			},
 			targetID: "target-1",
 			want:     false,
+		},
+		{
+			name: "certificate from another CA is outdated",
+			setup: func(t *testing.T, dir string, _ testCA) {
+				hostPub := writeHostKey(t, dir)
+				certText := signHostCert(
+					t, newTestCA(t), hostPub, "target-1", uint64(now.Add(-time.Hour).Unix()),
+					uint64(now.Add(90*24*time.Hour).Unix()),
+				)
+				writeCert(t, dir, certText)
+			},
+			targetID: "target-1",
+			want:     true,
 		},
 		{
 			name:     "no keys means nothing to renew",
@@ -168,10 +178,11 @@ func TestNeedsRenewal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			is := assert.New(t)
 			dir := t.TempDir()
-			tt.setup(t, dir, newTestCA(t))
+			ca := newTestCA(t)
+			tt.setup(t, dir, ca)
 
 			t.Setenv("NOKKUD_DATA_DIR", dir)
-			_, got := needsRenewal(tt.targetID)
+			_, got := needsRenewal(tt.targetID, ca.pub)
 			is.Equal(tt.want, got)
 		})
 	}
@@ -179,86 +190,76 @@ func TestNeedsRenewal(t *testing.T) {
 
 func TestNextRenewal(t *testing.T) {
 	now := time.Now()
+	ca := newTestCA(t)
+	caKey := string(ssh.MarshalAuthorizedKey(ca.pub))
 
 	t.Run("no certificates schedules immediately", func(t *testing.T) {
 		is := assert.New(t)
 		dir := t.TempDir()
 		t.Setenv("NOKKUD_DATA_DIR", dir)
-		got := NextRenewal("target-1")
+		got := NextRenewal("target-1", caKey)
 		is.False(got.IsZero(), "NextRenewal returned zero time with no certificates")
 		is.False(got.After(now.Add(time.Minute)), "NextRenewal = %v, want ~now", got)
 	})
 
-	t.Run("expiry drives the schedule", func(t *testing.T) {
+	t.Run("a certificate renews at half of its life", func(t *testing.T) {
 		is := assert.New(t)
 		dir := t.TempDir()
-		ca := newTestCA(t)
 		hostPub := writeHostKey(t, dir)
 
-		near := uint64(now.Add(30 * 24 * time.Hour).Unix())
-		certText, _ := signHostCert(t, ca, hostPub, "target-1", 0, near)
-		writeCert(t, dir, certText)
-
-		t.Setenv("NOKKUD_DATA_DIR", dir)
-		got := NextRenewal("target-1")
-
-		want := now.Add(30*24*time.Hour - renewWindowCap)
-		is.InDelta(
-			float64(want.UnixNano()), float64(got.UnixNano()), float64(time.Minute),
-			"NextRenewal = %v, want ~%v", got, want,
-		)
-	})
-
-	t.Run("short certificates renew late in life, never immediately", func(t *testing.T) {
-		is := assert.New(t)
-		dir := t.TempDir()
-		ca := newTestCA(t)
-		hostPub := writeHostKey(t, dir)
-
-		// 7-day TTL (the backend's new host cap) issued one minute ago.
+		// The default host TTL, issued a minute ago.
 		after := uint64(now.Add(-time.Minute).Unix())
 		before := uint64(now.Add(7 * 24 * time.Hour).Unix())
-		certText, _ := signHostCert(t, ca, hostPub, "target-1", after, before)
+		certText := signHostCert(t, ca, hostPub, "target-1", after, before)
 		writeCert(t, dir, certText)
 
 		t.Setenv("NOKKUD_DATA_DIR", dir)
-		got := NextRenewal("target-1")
+		got := NextRenewal("target-1", caKey)
 
-		// 15% of 7 days is ~25.2h, so the deadline sits ~5.95 days out. It
-		// must be well after issuance (renew-loop guard) but before the
-		// expiry minus one day.
-		want := time.Unix(int64(before), 0).Add(-time.Duration(0.15 * float64(7*24*time.Hour)))
+		want := now.Add(84 * time.Hour)
 		is.InDelta(
-			float64(want.UnixNano()), float64(got.UnixNano()), float64(time.Minute),
+			float64(want.UnixNano()), float64(got.UnixNano()), float64(2*time.Minute),
 			"NextRenewal = %v, want ~%v", got, want,
 		)
-		is.True(got.After(now.Add(5*24*time.Hour)), "NextRenewal = %v, want more than 5 days out", got)
 	})
 
 	t.Run("infinity certificate is ignored", func(t *testing.T) {
 		is := assert.New(t)
 		dir := t.TempDir()
-		ca := newTestCA(t)
 		hostPub := writeHostKey(t, dir)
-		certText, _ := signHostCert(t, ca, hostPub, "target-1", 0, ssh.CertTimeInfinity)
+		certText := signHostCert(t, ca, hostPub, "target-1", 0, ssh.CertTimeInfinity)
 		writeCert(t, dir, certText)
 
 		t.Setenv("NOKKUD_DATA_DIR", dir)
-		got := NextRenewal("target-1")
+		got := NextRenewal("target-1", caKey)
 		is.False(got.After(now.Add(time.Minute)), "NextRenewal with only an infinity cert = %v, want ~now", got)
 	})
 
 	t.Run("outdated certificate schedules immediately", func(t *testing.T) {
 		is := assert.New(t)
 		dir := t.TempDir()
-		ca := newTestCA(t)
 		hostPub := writeHostKey(t, dir)
-		certText, _ := signHostCert(t, ca, hostPub, "wrong-target", 0, ssh.CertTimeInfinity)
+		certText := signHostCert(t, ca, hostPub, "wrong-target", 0, ssh.CertTimeInfinity)
 		writeCert(t, dir, certText)
 
 		t.Setenv("NOKKUD_DATA_DIR", dir)
-		got := NextRenewal("target-1")
+		got := NextRenewal("target-1", caKey)
 		is.False(got.After(now.Add(time.Minute)), "NextRenewal with outdated cert = %v, want ~now", got)
+	})
+
+	t.Run("a certificate from a replaced CA schedules immediately", func(t *testing.T) {
+		is := assert.New(t)
+		dir := t.TempDir()
+		hostPub := writeHostKey(t, dir)
+		certText := signHostCert(
+			t, newTestCA(t), hostPub, "target-1",
+			uint64(now.Add(-time.Minute).Unix()), uint64(now.Add(7*24*time.Hour).Unix()),
+		)
+		writeCert(t, dir, certText)
+
+		t.Setenv("NOKKUD_DATA_DIR", dir)
+		got := NextRenewal("target-1", caKey)
+		is.False(got.After(now.Add(time.Minute)), "NextRenewal after a CA change = %v, want ~now", got)
 	})
 }
 
@@ -271,12 +272,13 @@ func TestRenewHostCertsSignFailure(t *testing.T) {
 	t.Setenv("NOKKUD_DATA_DIR", dir)
 
 	calls := 0
-	sign := func(_ context.Context, _ []byte) (*nokkuv1.SignSSHCertificateResponse, error) {
+	sign := func(_ context.Context, _ []byte) (string, error) {
 		calls++
-		return nil, errors.New("backend refused")
+		return "", errors.New("backend refused")
 	}
 
-	renewed, err := RenewHostCerts(context.Background(), "target-1", sign, false)
+	caKey := string(ssh.MarshalAuthorizedKey(newTestCA(t).pub))
+	renewed, err := RenewHostCerts(context.Background(), "target-1", caKey, sign)
 	must.Error(err, "expected the sign error to be returned")
 	is.False(renewed)
 	is.Equal(1, calls)
@@ -284,20 +286,36 @@ func TestRenewHostCertsSignFailure(t *testing.T) {
 	// Nothing must have landed on disk.
 	_, statErr := os.Stat(paths.HostKeyCert())
 	must.ErrorIs(statErr, os.ErrNotExist, "failed renewal must not write a certificate")
-	_, statErr = os.Stat(paths.UserCAFile())
-	must.ErrorIs(statErr, os.ErrNotExist, "failed renewal must not write the CA file")
 }
 
-func TestRenewHostCertsForce(t *testing.T) {
+// TestRenewHostCertsWithoutCA verifies nothing is signed before a sync told
+// the daemon which CA to trust.
+func TestRenewHostCertsWithoutCA(t *testing.T) {
+	dir := t.TempDir()
+	writeHostKey(t, dir)
+	t.Setenv("NOKKUD_DATA_DIR", dir)
+
+	sign := func(context.Context, []byte) (string, error) {
+		t.Fatal("signed a host certificate without a trusted CA")
+		return "", nil
+	}
+	renewed, err := RenewHostCerts(context.Background(), "target-1", "", sign)
+	require.NoError(t, err)
+	assert.False(t, renewed)
+}
+
+// TestRenewHostCertsFollowsCA verifies a valid certificate is left alone, and
+// re-signed once the daemon trusts another CA than the one that signed it.
+func TestRenewHostCertsFollowsCA(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	dir := t.TempDir()
-	ca := newTestCA(t)
+	old, next := newTestCA(t), newTestCA(t)
 	hostPub := writeHostKey(t, dir)
 
 	now := time.Now()
-	certText, _ := signHostCert(
-		t, ca, hostPub, "target-1",
+	certText := signHostCert(
+		t, old, hostPub, "target-1",
 		uint64(now.Add(-time.Hour).Unix()),
 		uint64(now.Add(90*24*time.Hour).Unix()),
 	)
@@ -305,76 +323,30 @@ func TestRenewHostCertsForce(t *testing.T) {
 
 	t.Setenv("NOKKUD_DATA_DIR", dir)
 
-	sign := func(_ context.Context, _ []byte) (*nokkuv1.SignSSHCertificateResponse, error) {
-		cert, caPub := signHostCert(t, ca, hostPub, "target-1", 0, ssh.CertTimeInfinity)
-		certStr, caStr := string(cert), string(caPub)
-		return &nokkuv1.SignSSHCertificateResponse{
-			SignedCertificate: &certStr,
-			CaPublicKey:       &caStr,
-		}, nil
+	signer := old
+	sign := func(_ context.Context, _ []byte) (string, error) {
+		cert := signHostCert(t, signer, hostPub, "target-1", 0, ssh.CertTimeInfinity)
+		return string(cert), nil
 	}
+	oldKey, nextKey := string(ssh.MarshalAuthorizedKey(old.pub)), string(ssh.MarshalAuthorizedKey(next.pub))
 
-	// A valid cert is not outdated, so a normal renew leaves it alone.
-	renewed, err := RenewHostCerts(context.Background(), "target-1", sign, false)
-	must.NoError(err, "renew (non-force)")
-	is.False(renewed, "non-force renew rewrote a valid cert")
+	renewed, err := RenewHostCerts(context.Background(), "target-1", oldKey, sign)
+	must.NoError(err, "renew under the same CA")
+	is.False(renewed, "a valid certificate was rewritten")
 
-	// Force re-signs even the valid cert, refetching the CA.
-	renewed, err = RenewHostCerts(context.Background(), "target-1", sign, true)
-	must.NoError(err, "renew (force)")
-	is.True(renewed, "force renew left the cert alone")
-}
+	// The backend still signs with the old key: the certificate is refused
+	// and the one on disk stays.
+	renewed, err = RenewHostCerts(context.Background(), "target-1", nextKey, sign)
+	must.Error(err, "a certificate from another CA than the trusted one was stored")
+	is.False(renewed)
 
-func TestSaveCertificateRejectsMismatchedCA(t *testing.T) {
-	must := require.New(t)
-	dir := t.TempDir()
-	t.Setenv("NOKKUD_DATA_DIR", dir)
-
-	ca := newTestCA(t)
-	otherCA := newTestCA(t)
-	hostPub := writeHostKey(t, dir)
-	certText, _ := signHostCert(t, ca, hostPub, "target-1", 0, ssh.CertTimeInfinity)
-	_, otherCaText := signHostCert(t, otherCA, hostPub, "target-1", 0, ssh.CertTimeInfinity)
-
-	certStr, caStr := string(certText), string(otherCaText)
-	res := &nokkuv1.SignSSHCertificateResponse{
-		SignedCertificate: &certStr,
-		CaPublicKey:       &caStr,
-	}
-	err := saveCertificate(res, filepath.Join(dir, "ssh_host_ecdsa_key-cert.pub"))
-	must.Error(err, "saveCertificate accepted a cert signed by a different CA")
-	_, statErr := os.Stat(paths.UserCAFile())
-	must.ErrorIs(statErr, os.ErrNotExist, "mismatched CA must not write the CA file")
-}
-
-// TestSaveCertificateSwitchesCA verifies that a certificate from a new signing
-// CA replaces the active CA file. The backend decides how long the old key
-// stays trusted, so nothing of it is kept here.
-func TestSaveCertificateSwitchesCA(t *testing.T) {
-	is := assert.New(t)
-	must := require.New(t)
-	dir := t.TempDir()
-	t.Setenv("NOKKUD_DATA_DIR", dir)
-
-	hostPub := writeHostKey(t, dir)
-	certPath := filepath.Join(dir, "ssh_host_ecdsa_key-cert.pub")
-
-	for _, ca := range []testCA{newTestCA(t), newTestCA(t)} {
-		certText, caText := signHostCert(t, ca, hostPub, "target-1", 0, ssh.CertTimeInfinity)
-		certStr, caStr := string(certText), string(caText)
-		must.NoError(saveCertificate(&nokkuv1.SignSSHCertificateResponse{
-			SignedCertificate: &certStr,
-			CaPublicKey:       &caStr,
-		}, certPath), "saveCertificate")
-
-		active, err := os.ReadFile(paths.UserCAFile())
-		must.NoError(err, "read active CA")
-		is.Equal(
-			bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca.pub)),
-			bytes.TrimSpace(active),
-			"active CA file does not hold the signing CA",
-		)
-	}
+	signer = next
+	renewed, err = RenewHostCerts(context.Background(), "target-1", nextKey, sign)
+	must.NoError(err, "renew after the rollover")
+	is.True(renewed, "the certificate of the replaced CA was kept")
+	cert, err := Load()
+	must.NoError(err)
+	is.True(signedBy(cert, next.pub))
 }
 
 func writeCert(t testing.TB, dir string, data []byte) {

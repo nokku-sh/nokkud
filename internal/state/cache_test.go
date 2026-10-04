@@ -22,7 +22,7 @@ func TestCacheRejectsInvalidPrincipals(t *testing.T) {
 		"../../etc": {"uuid-1"},
 		"0start":    {"uuid-1"},
 		"":          {"uuid-1"},
-	}, nil, nil, 0)
+	}, nil, "", nil, 0)
 
 	is.Empty(c.GetUUIDs("../../etc"))
 	is.Empty(c.GetUUIDs("0start"))
@@ -35,7 +35,7 @@ func TestCacheReplaceCopiesInput(t *testing.T) {
 	c := NewCache()
 
 	uuids := []string{"uuid-1", "uuid-2"}
-	c.Replace(map[string][]string{"alice": uuids}, nil, nil, 0)
+	c.Replace(map[string][]string{"alice": uuids}, nil, "", nil, 0)
 	uuids[0] = "mutated"
 
 	is.Equal([]string{"uuid-1", "uuid-2"}, c.GetUUIDs("alice"))
@@ -45,7 +45,7 @@ func TestCacheGetUUIDsReturnsCopy(t *testing.T) {
 	t.Parallel()
 	is := assert.New(t)
 	c := NewCache()
-	c.Replace(map[string][]string{"alice": {"uuid-1", "uuid-2"}}, nil, nil, 0)
+	c.Replace(map[string][]string{"alice": {"uuid-1", "uuid-2"}}, nil, "", nil, 0)
 
 	got := c.GetUUIDs("alice")
 	got[0] = "mutated"
@@ -63,7 +63,7 @@ func TestCacheSaveLoadRoundTrip(t *testing.T) {
 	c.Replace(map[string][]string{
 		"alice": {"uuid-1", "uuid-2"},
 		"bob":   {"uuid-3"},
-	}, nil, nil, 0)
+	}, nil, "", nil, 0)
 	must.NoError(c.Save())
 
 	loaded := NewCache()
@@ -87,7 +87,7 @@ func TestCacheDaemonConfigRoundTrip(t *testing.T) {
 
 	c := NewCache()
 	record := true
-	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, nil, 0)
+	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, "", nil, 0)
 	c.SetDaemonConfig(&nokkuv1.DaemonConfig{
 		RecordSessions: &record,
 	})
@@ -116,7 +116,7 @@ func TestCacheLoadIgnoresCorruptedFile(t *testing.T) {
 	must := require.New(t)
 
 	c := NewCache()
-	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, nil, 0)
+	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, "", nil, 0)
 	must.NoError(c.Save())
 	must.NoError(os.WriteFile(paths.CacheFile(), []byte("{not json"), 0o640))
 
@@ -125,7 +125,7 @@ func TestCacheLoadIgnoresCorruptedFile(t *testing.T) {
 	is.Empty(loaded.GetUUIDs("alice"))
 
 	// The next save replaces the corrupt file.
-	loaded.Replace(map[string][]string{"bob": {"uuid-2"}}, nil, nil, 0)
+	loaded.Replace(map[string][]string{"bob": {"uuid-2"}}, nil, "", nil, 0)
 	must.NoError(loaded.Save())
 	again := NewCache()
 	must.NoError(again.Load())
@@ -136,13 +136,13 @@ func TestCacheClear(t *testing.T) {
 	t.Parallel()
 	is := assert.New(t)
 	c := NewCache()
-	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, nil, 0)
+	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, "", nil, 0)
 	c.Clear()
 
 	is.Empty(c.GetUUIDs("alice"))
 
 	// Clearing must not leave a nil map behind. Subsequent writes must work.
-	c.Replace(map[string][]string{"bob": {"uuid-2"}}, nil, nil, 0)
+	c.Replace(map[string][]string{"bob": {"uuid-2"}}, nil, "", nil, 0)
 	is.Equal([]string{"uuid-2"}, c.GetUUIDs("bob"))
 }
 
@@ -162,7 +162,7 @@ func TestCacheConcurrentAccess(t *testing.T) {
 				c.Replace(map[string][]string{
 					principal: {"uuid-1", "uuid-2"},
 					"other":   {"uuid-3"},
-				}, nil, nil, 0)
+				}, nil, "", nil, 0)
 				_ = c.GetUUIDs(principal)
 				_ = c.GetUUIDs("other")
 			}
@@ -183,7 +183,7 @@ func TestCacheReplace(t *testing.T) {
 	c := NewCache()
 
 	// Pre-existing state must be fully replaced, not merged.
-	c.Replace(map[string][]string{"stale": {"uuid-old"}}, nil, nil, 0)
+	c.Replace(map[string][]string{"stale": {"uuid-old"}}, nil, "", nil, 0)
 
 	c.Replace(
 		map[string][]string{
@@ -191,10 +191,13 @@ func TestCacheReplace(t *testing.T) {
 			"../../etc": {"uuid-evil"}, // invalid, must be skipped
 		},
 		&nokkuv1.DaemonConfig{RecordSessions: new(true)},
+		"ssh-ed25519 BBBB",
 		[]*nokkuv1.RetiredCAKey{{PublicKey: new("ssh-ed25519 AAAA")}},
 		7,
 	)
-	is.Len(c.RetiredCAs(), 1)
+	active, retired := c.CAs()
+	is.Equal("ssh-ed25519 BBBB", active)
+	is.Len(retired, 1)
 
 	is.Empty(c.GetUUIDs("stale"))
 	is.Equal([]string{"uuid-1", "uuid-2"}, c.GetUUIDs("alice"))
@@ -203,6 +206,6 @@ func TestCacheReplace(t *testing.T) {
 	is.True(c.DaemonConfig().GetRecordSessions())
 
 	// Replacing with an empty map must yield an empty map, not nil.
-	c.Replace(nil, nil, nil, 0)
+	c.Replace(nil, nil, "", nil, 0)
 	is.NotNil(c.principals)
 }

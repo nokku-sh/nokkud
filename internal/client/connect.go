@@ -23,7 +23,7 @@ type controlStream = connect.BidiStreamForClientSimple[nokkuv1.ConnectRequest, n
 func (c *Client) runControlStream(ctx context.Context) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stream, err := c.dcs.Connect(streamCtx)
+	stream, err := c.ctl.Connect(streamCtx)
 	if err != nil {
 		return err
 	}

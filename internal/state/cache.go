@@ -21,6 +21,7 @@ type Cache struct {
 	principals   map[string][]string
 	stateVersion int64
 	daemonConfig *nokkuv1.DaemonConfig
+	ca           string
 	retiredCAs   []*nokkuv1.RetiredCAKey
 }
 
@@ -30,6 +31,7 @@ type cacheJSON struct {
 	Principals   map[string][]string     `json:"principals"`
 	StateVersion int64                   `json:"state_version,omitempty"`
 	DaemonConfig *nokkuv1.DaemonConfig   `json:"daemon_config,omitempty"`
+	CA           string                  `json:"ca,omitempty"`
 	RetiredCAs   []*nokkuv1.RetiredCAKey `json:"retired_cas,omitempty"`
 }
 
@@ -68,12 +70,13 @@ func (c *Cache) DaemonConfig() *nokkuv1.DaemonConfig {
 	return c.daemonConfig
 }
 
-// RetiredCAs returns the rolled-over CA keys that are still trusted. Callers
-// must treat them as read-only.
-func (c *Cache) RetiredCAs() []*nokkuv1.RetiredCAKey {
+// CAs returns the CA public key user certificates must be signed by, and the
+// rolled-over keys that are still trusted. Callers must treat the retired
+// keys as read-only.
+func (c *Cache) CAs() (active string, retired []*nokkuv1.RetiredCAKey) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.retiredCAs
+	return c.ca, c.retiredCAs
 }
 
 // Replace atomically swaps the whole cached state so auth reads never observe
@@ -81,6 +84,7 @@ func (c *Cache) RetiredCAs() []*nokkuv1.RetiredCAKey {
 func (c *Cache) Replace(
 	principals map[string][]string,
 	dc *nokkuv1.DaemonConfig,
+	ca string,
 	retiredCAs []*nokkuv1.RetiredCAKey,
 	version int64,
 ) {
@@ -89,6 +93,7 @@ func (c *Cache) Replace(
 	defer c.mu.Unlock()
 	c.principals = next
 	c.daemonConfig = dc
+	c.ca = ca
 	c.retiredCAs = retiredCAs
 	c.stateVersion = version
 }
@@ -114,6 +119,7 @@ func (c *Cache) Clear() {
 	c.principals = make(map[string][]string)
 	c.stateVersion = 0
 	c.daemonConfig = nil
+	c.ca = ""
 	c.retiredCAs = nil
 }
 
@@ -135,6 +141,7 @@ func (c *Cache) MarshalJSON() ([]byte, error) {
 		Principals:   c.principals,
 		StateVersion: c.stateVersion,
 		DaemonConfig: c.daemonConfig,
+		CA:           c.ca,
 		RetiredCAs:   c.retiredCAs,
 	})
 }
@@ -151,6 +158,7 @@ func (c *Cache) UnmarshalJSON(data []byte) error {
 	c.principals = validPrincipals(dto.Principals)
 	c.stateVersion = dto.StateVersion
 	c.daemonConfig = dto.DaemonConfig
+	c.ca = dto.CA
 	c.retiredCAs = dto.RetiredCAs
 	return nil
 }

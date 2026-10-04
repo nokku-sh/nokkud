@@ -21,7 +21,7 @@ const (
 )
 
 type Uploader struct {
-	client    nokkuv1connect.RecordingServiceClient
+	client    nokkuv1connect.DaemonControlServiceClient
 	sessionID string
 	username  string
 
@@ -37,7 +37,7 @@ type Uploader struct {
 // NewUploader builds an Uploader and starts its sender goroutine.
 func NewUploader(
 	ctx context.Context,
-	client nokkuv1connect.RecordingServiceClient,
+	client nokkuv1connect.DaemonControlServiceClient,
 	sessionID, username string,
 ) *Uploader {
 	ctx, cancel := context.WithCancel(ctx)

@@ -22,7 +22,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:0", "listen address")
 	configDir := flag.String(
 		"config-dir", "",
-		"state directory holding cache.json, the host key and the trusted CA pubkey",
+		"state directory holding cache.json and the host key",
 	)
 	allowNonRoot := flag.Bool("allow-nonroot", false, "run as non-root, sessions restricted to this account")
 	flag.Parse()
@@ -81,6 +81,7 @@ func main() {
 	if err != nil {
 		fail(err.Error())
 	}
+	srv.SetTrust(cache.CAs())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
