@@ -1,272 +1,270 @@
 package client
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
 	"io"
 	"net"
-	"net/netip"
-	"runtime"
+	"os/user"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
+	"google.golang.org/protobuf/proto"
 
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
+// fakeRelayStream is the backend end of a relay. Canceling ctx fails Receive,
+// like a canceled connect stream.
 type fakeRelayStream struct {
+	ctx  context.Context
 	sent chan *nokkuv1.DaemonRelayRequest
 	recv chan *nokkuv1.DaemonRelayResponse
 }
 
+// Send copies the frame like the real stream, which marshals it before it
+// returns. The ssh transport reuses its write buffer.
 func (s *fakeRelayStream) Send(req *nokkuv1.DaemonRelayRequest) error {
-	s.sent <- req
+	s.sent <- proto.CloneOf(req)
 	return nil
 }
 
 func (s *fakeRelayStream) Receive() (*nokkuv1.DaemonRelayResponse, error) {
-	msg, ok := <-s.recv
-	if !ok {
-		return nil, io.EOF
+	select {
+	case msg := <-s.recv:
+		return msg, nil
+	case <-s.ctx.Done():
+		return nil, s.ctx.Err()
 	}
-	return msg, nil
 }
 
-func TestLoopback(t *testing.T) {
+func newTestRelayConn(t *testing.T) (*relayConn, *fakeRelayStream) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	stream := &fakeRelayStream{
+		ctx:  ctx,
+		sent: make(chan *nokkuv1.DaemonRelayRequest, 8),
+		recv: make(chan *nokkuv1.DaemonRelayResponse, 8),
+	}
+	return &relayConn{stream: stream, cancel: cancel}, stream
+}
+
+func dataFrame(data string) *nokkuv1.DaemonRelayResponse {
+	return &nokkuv1.DaemonRelayResponse{Msg: &nokkuv1.DaemonRelayResponse_Data{Data: []byte(data)}}
+}
+
+func TestClientAddr(t *testing.T) {
 	t.Parallel()
 	is := assert.New(t)
 	for addr, want := range map[string]string{
-		"[::]:4022":         "127.0.0.1:4022",
-		"0.0.0.0:4022":      "127.0.0.1:4022",
-		"192.168.1.10:4022": "192.168.1.10:4022",
+		"203.0.113.7":       "203.0.113.7:0",
+		"203.0.113.7:51000": "203.0.113.7:51000",
+		"2001:db8::1":       "[2001:db8::1]:0",
+		"":                  "0.0.0.0:0",
+		"not an address":    "0.0.0.0:0",
 	} {
-		is.Equal(want, loopback(netip.MustParseAddrPort(addr)), addr)
+		got := clientAddr(addr)
+		is.Equal(want, got.String(), addr)
+		is.IsType(&net.TCPAddr{}, got, "source-address options need a TCP address")
 	}
 }
 
-func TestPumpRelayOut(t *testing.T) {
+// TestRelayConnRead verifies frames come out as a byte stream, a frame larger
+// than the read buffer is not lost, and a Closed frame is the end of it.
+func TestRelayConnRead(t *testing.T) {
 	t.Parallel()
-	conn, sshd := net.Pipe()
-	t.Cleanup(func() { _ = conn.Close(); _ = sshd.Close() })
-
-	stream := &fakeRelayStream{sent: make(chan *nokkuv1.DaemonRelayRequest, 16)}
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- pumpRelayOut(stream, conn) }()
-
-	_, err := sshd.Write([]byte("SSH-2.0-OpenSSH\r\n"))
-	require.NoError(t, err)
-
-	req := <-stream.sent
-	require.Equal(t, []byte("SSH-2.0-OpenSSH\r\n"), req.GetData())
-
-	// sshd EOF ends the pump cleanly.
-	require.NoError(t, sshd.Close())
-	select {
-	case pumpErr := <-errCh:
-		require.NoError(t, pumpErr)
-	case <-time.After(2 * time.Second):
-		t.Fatal("pump did not end on conn EOF")
-	}
-}
-
-func TestPumpRelayOutConnClosed(t *testing.T) {
-	t.Parallel()
-	conn, sshd := net.Pipe()
-	t.Cleanup(func() { _ = sshd.Close() })
-
-	stream := &fakeRelayStream{sent: make(chan *nokkuv1.DaemonRelayRequest, 16)}
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- pumpRelayOut(stream, conn) }()
-
-	// Closing the read end unblocks the pump, the same way runRelay tears
-	// down on stream end.
-	require.NoError(t, conn.Close())
-	select {
-	case err := <-errCh:
-		require.Error(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("pump did not end on conn close")
-	}
-}
-
-func TestPumpRelayIn(t *testing.T) {
-	t.Parallel()
-	conn, sshd := net.Pipe()
-	t.Cleanup(func() { _ = conn.Close(); _ = sshd.Close() })
-
-	stream := &fakeRelayStream{recv: make(chan *nokkuv1.DaemonRelayResponse, 8)}
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- pumpRelayIn(stream, conn) }()
-
-	stream.recv <- &nokkuv1.DaemonRelayResponse{
-		Msg: &nokkuv1.DaemonRelayResponse_Data{Data: []byte("banner line\n")},
-	}
-	buf := make([]byte, len("banner line\n"))
-	_, err := io.ReadFull(sshd, buf)
-	require.NoError(t, err)
-	require.Equal(t, []byte("banner line\n"), buf)
-
-	// A closed frame ends the pump without touching conn.
+	conn, stream := newTestRelayConn(t)
+	stream.recv <- dataFrame("hello ")
+	stream.recv <- dataFrame("sshd")
 	stream.recv <- &nokkuv1.DaemonRelayResponse{
 		Msg: &nokkuv1.DaemonRelayResponse_Closed{Closed: &nokkuv1.DaemonRelayClosed{}},
 	}
-	select {
-	case pumpErr := <-errCh:
-		require.NoError(t, pumpErr)
-	case <-time.After(2 * time.Second):
-		t.Fatal("pump did not end on closed frame")
-	}
-}
 
-func TestPumpRelayInReceiveError(t *testing.T) {
-	t.Parallel()
-	conn, sshd := net.Pipe()
-	t.Cleanup(func() { _ = conn.Close(); _ = sshd.Close() })
-
-	stream := &fakeRelayStream{recv: make(chan *nokkuv1.DaemonRelayResponse)}
-	errCh := make(chan error, 1)
-	go func() { errCh <- pumpRelayIn(stream, conn) }()
-
-	close(stream.recv)
-	select {
-	case err := <-errCh:
-		require.ErrorIs(t, err, io.EOF)
-	case <-time.After(2 * time.Second):
-		t.Fatal("pump did not end on receive error")
-	}
-}
-
-func startStubSSHD(t *testing.T) (addr string, connCh <-chan net.Conn) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
-
-	ch := make(chan net.Conn, 1)
-	go func() {
-		c, acceptErr := ln.Accept()
-		if acceptErr == nil {
-			ch <- c
+	buf := make([]byte, 4)
+	var got []byte
+	for {
+		n, err := conn.Read(buf)
+		got = append(got, buf[:n]...)
+		if errors.Is(err, io.EOF) {
+			break
 		}
-	}()
-	return ln.Addr().String(), ch
-}
-
-// TestRunRelayStreamRelaysBytes drives runRelayStream against a stub sshd
-// listener: frames from the backend reach sshd, sshd bytes reach the
-// backend, and a backend close tears the local side down.
-func TestRunRelayStreamRelaysBytes(t *testing.T) {
-	t.Parallel()
-	baseline := runtime.NumGoroutine()
-	addr, sshdCh := startStubSSHD(t)
-
-	stream := &fakeRelayStream{
-		sent: make(chan *nokkuv1.DaemonRelayRequest, 16),
-		recv: make(chan *nokkuv1.DaemonRelayResponse, 8),
-	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- runRelayStream(t.Context(), stream, addr, "r1") }()
-
-	ready := <-stream.sent
-	require.NotNil(t, ready.GetReady())
-	require.Equal(t, "r1", ready.GetReady().GetRelayId())
-
-	sshd := <-sshdCh
-	t.Cleanup(func() { _ = sshd.Close() })
-
-	// Backend to sshd.
-	stream.recv <- &nokkuv1.DaemonRelayResponse{
-		Msg: &nokkuv1.DaemonRelayResponse_Data{Data: []byte("hello sshd")},
-	}
-	buf := make([]byte, len("hello sshd"))
-	_, err := io.ReadFull(sshd, buf)
-	require.NoError(t, err)
-	require.Equal(t, []byte("hello sshd"), buf)
-
-	// sshd to backend.
-	_, err = sshd.Write([]byte("hello backend"))
-	require.NoError(t, err)
-	req := <-stream.sent
-	require.Equal(t, []byte("hello backend"), req.GetData())
-
-	// Backend closes: the relay answers with Closed and drops sshd.
-	stream.recv <- &nokkuv1.DaemonRelayResponse{
-		Msg: &nokkuv1.DaemonRelayResponse_Closed{Closed: &nokkuv1.DaemonRelayClosed{}},
-	}
-	select {
-	case runErr := <-errCh:
-		require.NoError(t, runErr)
-	case <-time.After(3 * time.Second):
-		t.Fatal("relay did not end on backend close")
-	}
-	closed := <-stream.sent
-	require.NotNil(t, closed.GetClosed())
-	_, err = sshd.Read(buf)
-	require.Error(t, err, "sshd conn must be closed after backend close")
-
-	// No relay goroutines outlive the run.
-	is := assert.New(t)
-	is.Eventually(func() bool {
-		return runtime.NumGoroutine() <= baseline+2
-	}, 2*time.Second, 10*time.Millisecond)
-}
-
-// TestRunRelayStreamSSHDExit covers the sshd side ending first: the backend
-// gets a Closed frame and the run returns cleanly.
-func TestRunRelayStreamSSHDExit(t *testing.T) {
-	t.Parallel()
-	addr, sshdCh := startStubSSHD(t)
-
-	stream := &fakeRelayStream{
-		sent: make(chan *nokkuv1.DaemonRelayRequest, 8),
-		recv: make(chan *nokkuv1.DaemonRelayResponse, 1),
-	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- runRelayStream(t.Context(), stream, addr, "r2") }()
-
-	ready := <-stream.sent
-	require.NotNil(t, ready.GetReady())
-
-	sshd := <-sshdCh
-	require.NoError(t, sshd.Close())
-
-	closed := <-stream.sent
-	require.NotNil(t, closed.GetClosed())
-
-	// Unblock the stream receive so teardown can join its pumps.
-	close(stream.recv)
-	select {
-	case err := <-errCh:
 		require.NoError(t, err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("relay did not end on sshd exit")
+	}
+	assert.Equal(t, "hello sshd", string(got))
+}
+
+// TestRelayConnWriteAndClose verifies writes go out as data frames, and Close
+// sends one Closed frame as the last one and ends the stream.
+func TestRelayConnWriteAndClose(t *testing.T) {
+	t.Parallel()
+	is := assert.New(t)
+	conn, stream := newTestRelayConn(t)
+
+	n, err := conn.Write([]byte("hello backend"))
+	require.NoError(t, err)
+	is.Equal(len("hello backend"), n)
+	is.Equal([]byte("hello backend"), (<-stream.sent).GetData())
+
+	require.NoError(t, conn.Close())
+	require.NoError(t, conn.Close(), "closing twice")
+	is.NotNil((<-stream.sent).GetClosed())
+	is.Empty(stream.sent, "more than one Closed frame")
+
+	_, err = conn.Write([]byte("late"))
+	require.ErrorIs(t, err, net.ErrClosed)
+	_, err = conn.Read(make([]byte, 1))
+	require.ErrorIs(t, err, context.Canceled, "a closed relay still reads")
+}
+
+// TestRelayConnDeadline verifies a deadline that passes ends the connection,
+// which is what bounds a relayed peer that never finishes the handshake.
+func TestRelayConnDeadline(t *testing.T) {
+	t.Parallel()
+	conn, stream := newTestRelayConn(t)
+
+	// A deadline that is lifted in time leaves the connection alone.
+	require.NoError(t, conn.SetDeadline(time.Now().Add(50*time.Millisecond)))
+	require.NoError(t, conn.SetDeadline(time.Time{}))
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, stream.ctx.Err(), "a lifted deadline ended the relay")
+
+	require.NoError(t, conn.SetDeadline(time.Now().Add(20*time.Millisecond)))
+	done := make(chan error, 1)
+	go func() {
+		_, err := conn.Read(make([]byte, 1))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a read outlived its deadline")
 	}
 }
 
-// TestRunRelayStreamDialFailure covers the fast-fail path: Ready goes out
-// first, a refused sshd dial yields Closed and a descriptive error.
-func TestRunRelayStreamDialFailure(t *testing.T) {
-	t.Parallel()
-	stream := &fakeRelayStream{
-		sent: make(chan *nokkuv1.DaemonRelayRequest, 8),
-		recv: make(chan *nokkuv1.DaemonRelayResponse, 1),
+// userEnd is the user's side of a fake relay as the connection an ssh client
+// dials over, the mirror image of relayConn.
+type userEnd struct {
+	stream  *fakeRelayStream
+	pending []byte
+}
+
+func (u *userEnd) Read(p []byte) (int, error) {
+	for len(u.pending) == 0 {
+		select {
+		case req := <-u.stream.sent:
+			if req.GetClosed() != nil {
+				return 0, io.EOF
+			}
+			u.pending = req.GetData()
+		case <-u.stream.ctx.Done():
+			return 0, io.EOF
+		}
 	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- runRelayStream(t.Context(), stream, "127.0.0.1:1", "r3") }()
+	n := copy(p, u.pending)
+	u.pending = u.pending[n:]
+	return n, nil
+}
 
-	ready := <-stream.sent
-	require.NotNil(t, ready.GetReady())
-
-	closed := <-stream.sent
-	require.NotNil(t, closed.GetClosed())
-
+func (u *userEnd) Write(p []byte) (int, error) {
 	select {
-	case err := <-errCh:
-		require.ErrorContains(t, err, "dial local sshd")
-	case <-time.After(3 * time.Second):
-		t.Fatal("relay did not fail fast on dial failure")
+	case u.stream.recv <- dataFrame(string(p)):
+		return len(p), nil
+	case <-u.stream.ctx.Done():
+		return 0, net.ErrClosed
+	}
+}
+
+// Close tells the daemon the user is gone, as the backend does.
+func (u *userEnd) Close() error {
+	select {
+	case u.stream.recv <- &nokkuv1.DaemonRelayResponse{
+		Msg: &nokkuv1.DaemonRelayResponse_Closed{Closed: &nokkuv1.DaemonRelayClosed{}},
+	}:
+	case <-u.stream.ctx.Done():
+	}
+	return nil
+}
+
+func (u *userEnd) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (u *userEnd) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (u *userEnd) SetDeadline(time.Time) error      { return nil }
+func (u *userEnd) SetReadDeadline(time.Time) error  { return nil }
+func (u *userEnd) SetWriteDeadline(time.Time) error { return nil }
+
+// TestRelayServesSSH runs a real ssh login and command over a relay stream:
+// the sshd serves the stream itself and reports the user's address.
+func TestRelayServesSSH(t *testing.T) {
+	must := require.New(t)
+	c := newSyncClient(t, &fakeBackend{})
+	cur, err := user.Current()
+	must.NoError(err)
+
+	caPub, caPriv, err := ed25519.GenerateKey(rand.Reader)
+	must.NoError(err)
+	caSigner, err := ssh.NewSignerFromKey(caPriv)
+	must.NoError(err)
+	caKey, err := ssh.NewPublicKey(caPub)
+	must.NoError(err)
+	c.cache.Replace(map[string][]string{cur.Username: {"subject-1"}}, nil, "", nil, 1)
+	c.srv.SetTrust(string(ssh.MarshalAuthorizedKey(caKey)), nil)
+
+	_, userPriv, err := ed25519.GenerateKey(rand.Reader)
+	must.NoError(err)
+	userSigner, err := ssh.NewSignerFromKey(userPriv)
+	must.NoError(err)
+	cert := &ssh.Certificate{
+		Key:             userSigner.PublicKey(),
+		CertType:        ssh.UserCert,
+		ValidPrincipals: []string{"subject-1"},
+		ValidBefore:     ssh.CertTimeInfinity,
+	}
+	must.NoError(cert.SignCert(rand.Reader, caSigner))
+	certSigner, err := ssh.NewCertSigner(cert, userSigner)
+	must.NoError(err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	stream := &fakeRelayStream{
+		ctx:  ctx,
+		sent: make(chan *nokkuv1.DaemonRelayRequest, 64),
+		recv: make(chan *nokkuv1.DaemonRelayResponse, 64),
+	}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		c.srv.ServeConn(&relayConn{
+			stream: stream,
+			cancel: cancel,
+			remote: clientAddr("203.0.113.7"),
+			local:  &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4022},
+		})
+	}()
+
+	conn, chans, reqs, err := ssh.NewClientConn(&userEnd{stream: stream}, "relay", &ssh.ClientConfig{
+		User:            cur.Username,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(certSigner)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // #nosec G106 - test server
+		Timeout:         10 * time.Second,
+	})
+	must.NoError(err, "ssh over the relay")
+	client := ssh.NewClient(conn, chans, reqs)
+	sess, err := client.NewSession()
+	must.NoError(err)
+	out, err := sess.Output("echo $SSH_CONNECTION")
+	must.NoError(err)
+	assert.Equal(t, "203.0.113.7 0 127.0.0.1 4022\n", string(out))
+
+	must.NoError(client.Close())
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sshd kept serving a relay whose user left")
 	}
 }

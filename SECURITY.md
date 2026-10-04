@@ -41,8 +41,9 @@ The following are in scope for security reports:
   outbound control stream to the backend.
 - Local state and configuration it writes, all under `/var/lib/nokkud/`:
   `config.json`, `cache.json`, `state.json`, `ssh_host_signer.json` (the
-  TPM-backed or machine-wrapped host identity), the SSH host public key,
-  host certificate and trusted CA public key, and `recordings/`.
+  TPM-backed or machine-wrapped host identity), the SSH host public key and
+  host certificate, and `recordings/`. The trusted CA keys are part of
+  `cache.json`.
 
 ### Out of scope
 
@@ -125,7 +126,16 @@ control stream to the backend.
 - **Retired CA deadline.** After a CA rollover the backend sends the previous
   key with a deadline, and the daemon trusts it until then so certificates it
   signed keep working. An emergency rollover sends no previous key, which
-  stops that trust at the next sync.
+  stops that trust at the next sync. That sync also closes the connections
+  that are still open on a certificate of a CA it no longer trusts.
+- **A sync never waits for the host certificate.** Principals and trusted CAs
+  are applied as soon as they arrive. The host certificate is renewed apart
+  from them, at half of its lifetime or when the CA changes, so a signing
+  failure cannot hold back a revoke.
+- **Relayed connections carry the user's address.** A connection through the
+  backend relay is served in process, not over loopback. Audit events,
+  `SSH_CLIENT` and `source-address` certificate options see the address the
+  backend reported for the user.
 - **`/etc/nologin` is honored.** When the file exists, logins are refused for
   every user except root, matching OpenSSH, so a machine can be put into
   maintenance.

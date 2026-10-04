@@ -1,14 +1,9 @@
 package hostcerts
 
 import (
-	"os"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
-
-	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
-
-	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
 // FuzzParseCertificate feeds arbitrary bytes into the certificate parser that
@@ -17,7 +12,7 @@ import (
 // authorized_keys serialization and never crash the renewal/validity checks.
 func FuzzParseCertificate(f *testing.F) {
 	ca := newTestCA(f)
-	certText, _ := signHostCert(f, ca, newHostPub(f), "some-target-id", 0, ssh.CertTimeInfinity)
+	certText := signHostCert(f, ca, newHostPub(f), "some-target-id", 0, ssh.CertTimeInfinity)
 	f.Add(certText)
 	f.Add([]byte(""))
 	f.Add([]byte("not a key"))
@@ -44,52 +39,29 @@ func FuzzParseCertificate(f *testing.F) {
 	})
 }
 
-// FuzzSaveCertificate drives the store path end to end: certificate + CA text
-// from the control plane against a scratch dir. Any accepted pair must leave
-// parseable files behind, and nothing may panic.
+// FuzzSaveCertificate drives the store path: a certificate from the control
+// plane against a scratch dir. Whatever is accepted must be signed by the
+// trusted CA and leave a parseable file behind, and nothing may panic.
 func FuzzSaveCertificate(f *testing.F) {
 	ca := newTestCA(f)
-	certText, caText := signHostCert(
-		f,
-		ca,
-		newHostPub(f),
-		"some-target-id",
-		0,
-		ssh.CertTimeInfinity,
-	)
-	f.Add(certText, caText)
-	f.Add([]byte("garbage"), []byte("garbage"))
-	f.Add([]byte(""), []byte(""))
+	certText := signHostCert(f, ca, newHostPub(f), "some-target-id", 0, ssh.CertTimeInfinity)
+	otherText := signHostCert(f, newTestCA(f), newHostPub(f), "some-target-id", 0, ssh.CertTimeInfinity)
+	f.Add(certText)
+	f.Add(otherText)
+	f.Add([]byte("garbage"))
+	f.Add([]byte(""))
 
-	f.Fuzz(func(t *testing.T, signedCert, caPub []byte) {
+	f.Fuzz(func(t *testing.T, signedCert []byte) {
 		t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
-		certPath := paths.HostKeyCert()
-
-		certStr, caStr := string(signedCert), string(caPub)
-		res := &nokkuv1.SignSSHCertificateResponse{
-			SignedCertificate: &certStr,
-			CaPublicKey:       &caStr,
-		}
-		err := saveCertificate(res, certPath)
-		if err != nil {
+		if err := saveCertificate(signedCert, ca.pub); err != nil {
 			return
 		}
-
-		// Success means the CA file must be a parseable authorized key and
-		// the certificate file must parse back to a certificate.
-		caData, err := os.ReadFile(paths.UserCAFile())
+		cert, err := Load()
 		if err != nil {
-			t.Fatalf("saveCertificate succeeded but CA file is unreadable: %v", err)
+			t.Fatalf("saveCertificate succeeded but the certificate does not load: %v", err)
 		}
-		if _, _, _, _, err = ssh.ParseAuthorizedKey(caData); err != nil {
-			t.Fatalf("saveCertificate wrote unparseable CA: %v", err)
-		}
-		certData, err := os.ReadFile(certPath)
-		if err != nil {
-			t.Fatalf("saveCertificate succeeded but cert file is unreadable: %v", err)
-		}
-		if _, err = parseCertificateBytes(certData); err != nil {
-			t.Fatalf("saveCertificate wrote unparseable cert: %v", err)
+		if !signedBy(cert, ca.pub) {
+			t.Fatal("saveCertificate stored a certificate of another CA")
 		}
 	})
 }

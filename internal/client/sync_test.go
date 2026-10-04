@@ -1,30 +1,142 @@
 package client
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"path/filepath"
-	"strings"
+	"sync/atomic"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
+
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
+	"github.com/nokku-sh/protos/gen/nokku/v1/nokkuv1connect"
+
+	"github.com/nokku-sh/nokkud/internal/paths"
+	"github.com/nokku-sh/nokkud/internal/sshd"
+	"github.com/nokku-sh/nokkud/internal/state"
 )
 
-// TestCaMatches verifies the cached CA comparison used to detect rollovers:
-// content equality, whitespace tolerance, and the missing-file case.
-func TestCaMatches(t *testing.T) {
+// fakeBackend answers a sync with one grant under ca, and refuses to sign
+// host certificates, like a backend whose CA was deactivated.
+type fakeBackend struct {
+	nokkuv1connect.UnimplementedDaemonControlServiceHandler
+
+	ca    string
+	signs atomic.Int32
+}
+
+func (b *fakeBackend) SyncDaemon(
+	context.Context,
+	*nokkuv1.SyncDaemonRequest,
+) (*nokkuv1.SyncDaemonResponse, error) {
+	return &nokkuv1.SyncDaemonResponse{
+		Status:       nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED.Enum(),
+		CaPublicKey:  &b.ca,
+		StateVersion: new(int64(7)),
+		Principals:   []*nokkuv1.PrincipalUsers{{Username: new("deploy"), Ids: []string{"subject-1"}}},
+	}, nil
+}
+
+func (b *fakeBackend) SignHostCertificate(
+	context.Context,
+	*nokkuv1.SignHostCertificateRequest,
+) (*nokkuv1.SignHostCertificateResponse, error) {
+	b.signs.Add(1)
+	return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("certificate authority is not active"))
+}
+
+func newTestCAKey(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	key, err := ssh.NewPublicKey(pub)
+	require.NoError(t, err)
+	return string(ssh.MarshalAuthorizedKey(key))
+}
+
+// newSyncClient wires a client to backend with a real sshd behind it.
+func newSyncClient(t *testing.T, backend *fakeBackend) *Client {
+	t.Helper()
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
+	require.NoError(t, paths.Verify())
+
+	mux := http.NewServeMux()
+	mux.Handle(nokkuv1connect.NewDaemonControlServiceHandler(backend))
+	api := httptest.NewServer(mux)
+	t.Cleanup(api.Close)
+
+	cache := state.NewCache()
+	srv, err := sshd.New(sshd.Options{Principals: cache.GetUUIDs})
+	require.NoError(t, err)
+	// Serve owns the host key, so it has to run for the key to be released.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		srv.Serve(ctx, l)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-served
+	})
+
+	return &Client{
+		cache:  cache,
+		config: &state.Config{TargetID: "target-1"},
+		ctl:    nokkuv1connect.NewDaemonControlServiceClient(api.Client(), api.URL),
+		srv:    srv,
+		renew:  make(chan struct{}, 1),
+	}
+}
+
+// TestSyncAppliesStateWithoutHostCert is the revoke that must not get stuck:
+// a new CA whose host certificate cannot be signed still replaces the trusted
+// CA and the principals. The certificate is the watcher's job.
+func TestSyncAppliesStateWithoutHostCert(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
-	dir := t.TempDir()
-	t.Setenv("NOKKUD_DATA_DIR", dir)
-	caPath := filepath.Join(dir, "nokku_ca.pub")
-	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFw2BPSytSBKCcOmfUWab8JA2uRKsEUO/FtuZACsJccE"
+	backend := &fakeBackend{ca: newTestCAKey(t)}
+	c := newSyncClient(t, backend)
 
-	is.False(caMatches(key), "caMatches must report false when no CA file exists")
+	must.NoError(c.syncDaemon(t.Context()), "a sync must not fail on the host certificate")
+	is.Equal([]string{"subject-1"}, c.cache.GetUUIDs("deploy"), "the grant did not land")
+	active, _ := c.cache.CAs()
+	is.Equal(backend.ca, active, "the CA did not land")
+	is.EqualValues(7, c.cache.GetStateVersion())
+	is.Zero(backend.signs.Load(), "the sync signed a host certificate itself")
 
-	must.NoError(os.WriteFile(caPath, []byte(key+"\n"), 0o644))
-	is.True(caMatches(key), "caMatches must match the cached CA")
-	is.True(caMatches(key+"\n   "), "caMatches must tolerate surrounding whitespace")
-	is.False(caMatches(key[:len(key)-1]+"X"), "caMatches must reject a different CA")
-	is.True(caMatches(strings.TrimSpace(key)), "caMatches must ignore whitespace differences")
+	select {
+	case <-c.renew:
+	default:
+		t.Fatal("a new CA did not wake the certificate watcher")
+	}
+	must.Error(c.renewHostCerts(t.Context()), "the refused host certificate went unnoticed")
+	_, err := os.Stat(paths.HostKeyCert())
+	must.ErrorIs(err, os.ErrNotExist)
+
+	// The same CA again changes nothing for the watcher.
+	must.NoError(c.syncDaemon(t.Context()))
+	select {
+	case <-c.renew:
+		t.Fatal("an unchanged CA woke the certificate watcher")
+	default:
+	}
+
+	// The state survives a restart from disk.
+	loaded := state.NewCache()
+	must.NoError(loaded.Load())
+	active, _ = loaded.CAs()
+	is.Equal(backend.ca, active)
+	is.Equal([]string{"subject-1"}, loaded.GetUUIDs("deploy"))
 }

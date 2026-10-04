@@ -88,7 +88,7 @@ Run it again to move the host to another workspace. Restart the service afterwar
 					}
 					cl, err := newDaemonClient(ctx, cmd, "", cache, cfg)
 					if err == nil {
-						err = cl.DeleteDaemon(ctx)
+						err = cl.Unenroll(ctx)
 					}
 					if err != nil {
 						slog.Warn("delete daemon from backend failed, local state removed", "error", err)
@@ -160,7 +160,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	srv.SetRetiredCAs(cache.RetiredCAs())
+	srv.SetTrust(cache.CAs())
 	var lc net.ListenConfig
 	l, err := lc.Listen(ctx, "tcp", cmd.String("ssh-addr"))
 	if err != nil {

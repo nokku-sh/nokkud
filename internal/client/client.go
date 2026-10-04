@@ -53,17 +53,15 @@ type Client struct {
 	cache  *state.Cache
 	config *state.Config
 	dpop   *dpopclient.Client
+	ctl    nokkuv1connect.DaemonControlServiceClient
 
 	// Set by Run before any goroutine starts.
 	srv     *sshd.Server
 	sshAddr netip.AddrPort
 	relays  sync.WaitGroup
 
-	cc  nokkuv1connect.CertificateServiceClient
-	rc  nokkuv1connect.RecordingServiceClient
-	dc  nokkuv1connect.DaemonServiceClient
-	dcs nokkuv1connect.DaemonControlServiceClient
-	dss nokkuv1connect.DaemonSessionServiceClient
+	// renew wakes the certificate watcher when the trusted CA changed.
+	renew chan struct{}
 }
 
 // New builds the backend clients and enrolls when opts carries a token.
@@ -88,19 +86,14 @@ func New(ctx context.Context, cache *state.Cache, config *state.Config, opts Opt
 		return nil, err
 	}
 
-	c := &Client{cache: cache, config: config}
+	c := &Client{cache: cache, config: config, renew: make(chan struct{}, 1)}
 	apiURL := config.APIURL
 	c.dpop = dpopclient.New(proofer, httpc, func() string { return config.SessionToken }, dpopclient.Options{
 		BaseURL:           apiURL,
-		UnboundProcedures: map[string]bool{nokkuv1connect.DaemonServiceEnrollDaemonProcedure: true},
+		UnboundProcedures: map[string]bool{nokkuv1connect.DaemonControlServiceEnrollDaemonProcedure: true},
 		UserAgent:         buildinfo.UserAgent("nokkud"),
 	})
-	interceptors := connect.WithInterceptors(c.dpop)
-	c.cc = nokkuv1connect.NewCertificateServiceClient(httpc, apiURL, interceptors)
-	c.rc = nokkuv1connect.NewRecordingServiceClient(httpc, apiURL, interceptors)
-	c.dc = nokkuv1connect.NewDaemonServiceClient(httpc, apiURL, interceptors)
-	c.dcs = nokkuv1connect.NewDaemonControlServiceClient(httpc, apiURL, interceptors)
-	c.dss = nokkuv1connect.NewDaemonSessionServiceClient(httpc, apiURL, interceptors)
+	c.ctl = nokkuv1connect.NewDaemonControlServiceClient(httpc, apiURL, connect.WithInterceptors(c.dpop))
 
 	if opts.EnrollToken != "" {
 		if err = c.enroll(ctx, opts.EnrollToken); err != nil {
@@ -115,7 +108,7 @@ func New(ctx context.Context, cache *state.Cache, config *state.Config, opts Opt
 func (c *Client) enroll(ctx context.Context, token string) error {
 	ctx, cancel := context.WithTimeout(ctx, enrollTimeout)
 	defer cancel()
-	res, err := c.dc.EnrollDaemon(ctx, &nokkuv1.EnrollDaemonRequest{Token: &token})
+	res, err := c.ctl.EnrollDaemon(ctx, &nokkuv1.EnrollDaemonRequest{Token: &token})
 	if err != nil {
 		return fmt.Errorf("enroll: %w", err)
 	}
@@ -125,10 +118,8 @@ func (c *Client) enroll(ctx context.Context, token string) error {
 	// A re-enrollment may move the host to another workspace, so nothing the
 	// old one trusted may survive until the first sync.
 	c.cache.Clear()
-	for _, f := range []string{paths.UserCAFile(), paths.HostKeyCert()} {
-		if err = os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("enroll: drop previous trust: %w", err)
-		}
+	if err = os.Remove(paths.HostKeyCert()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("enroll: drop previous host certificate: %w", err)
 	}
 	c.config.WorkspaceID = res.GetWorkspaceId()
 	c.config.TargetID = res.GetTargetId()
@@ -143,7 +134,7 @@ func (c *Client) enroll(ctx context.Context, token string) error {
 
 // RecordingSink streams one session recording to the backend.
 func (c *Client) RecordingSink(ctx context.Context, sessionID, username string) io.WriteCloser {
-	return recording.NewUploader(ctx, c.rc, sessionID, username)
+	return recording.NewUploader(ctx, c.ctl, sessionID, username)
 }
 
 // retryUploads uploads recordings whose live upload never completed, such as
@@ -152,7 +143,7 @@ func (c *Client) retryUploads(ctx context.Context) {
 	t := time.NewTicker(retryUploadsEvery)
 	defer t.Stop()
 	for {
-		if err := recording.UploadPending(ctx, c.rc); err != nil {
+		if err := recording.UploadPending(ctx, c.ctl); err != nil {
 			slog.Debug("recording upload retry failed", "error", err)
 		}
 		select {
@@ -226,10 +217,10 @@ func (c *Client) Run(ctx context.Context, srv *sshd.Server, sshAddr netip.AddrPo
 	}
 }
 
-// DeleteDaemon removes this daemon's registration from the backend.
-func (c *Client) DeleteDaemon(ctx context.Context) error {
+// Unenroll removes this daemon's registration from the backend.
+func (c *Client) Unenroll(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	_, err := c.dc.DeleteDaemon(ctx, &nokkuv1.DeleteDaemonRequest{})
+	_, err := c.ctl.UnenrollDaemon(ctx, &nokkuv1.UnenrollDaemonRequest{})
 	return err
 }

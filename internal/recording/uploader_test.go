@@ -22,14 +22,14 @@ type testServer struct {
 	msgs   []*nokkuv1.UploadRecordingRequest
 	opens  int
 	closed int
-	client nokkuv1connect.RecordingServiceClient
+	client nokkuv1connect.DaemonControlServiceClient
 }
 
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 	ts := &testServer{}
 	handler := connect.NewClientStreamHandlerSimple(
-		nokkuv1connect.RecordingServiceUploadRecordingProcedure,
+		nokkuv1connect.DaemonControlServiceUploadRecordingProcedure,
 		func(_ context.Context, stream *connect.ClientStream[nokkuv1.UploadRecordingRequest]) (*nokkuv1.UploadRecordingResponse, error) {
 			ts.mu.Lock()
 			ts.opens++
@@ -48,14 +48,14 @@ func newTestServer(t *testing.T) *testServer {
 		// The schema carries the stream type, without it the handler would
 		// frame the RPC as unary and never read the body.
 		connect.WithSchema(
-			nokkuv1.File_nokku_v1_recordings_proto.Services().
-				ByName("RecordingService").
+			nokkuv1.File_nokku_v1_daemon_proto.Services().
+				ByName("DaemonControlService").
 				Methods().
 				ByName("UploadRecording"),
 		),
 	)
 	mux := http.NewServeMux()
-	mux.Handle(nokkuv1connect.RecordingServiceUploadRecordingProcedure, handler)
+	mux.Handle(nokkuv1connect.DaemonControlServiceUploadRecordingProcedure, handler)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(func() {
 		// Close client connections first: httptest.Close waits for
@@ -63,7 +63,7 @@ func newTestServer(t *testing.T) *testServer {
 		srv.CloseClientConnections()
 		srv.Close()
 	})
-	ts.client = nokkuv1connect.NewRecordingServiceClient(srv.Client(), srv.URL)
+	ts.client = nokkuv1connect.NewDaemonControlServiceClient(srv.Client(), srv.URL)
 	return ts
 }
 

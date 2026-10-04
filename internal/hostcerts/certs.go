@@ -15,32 +15,29 @@ import (
 
 	"github.com/mizuchilabs/kata/fsutil"
 
-	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
-
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// The renewal window is a fraction of validity, capped at the historical
-// offset, so short-lived certs never start inside it and spin the watcher.
-const (
-	renewFraction  = 0.15
-	renewWindowCap = 7 * 24 * time.Hour
-)
+// renewFraction is the share of its validity a certificate has left when it
+// is renewed. Half of it keeps the host verifiable through a backend outage
+// of that length, and a fresh certificate never starts inside the window.
+const renewFraction = 0.5
 
 // SignFunc asks the backend to sign the host public key, given in
-// authorized_keys form.
-type SignFunc func(ctx context.Context, pub []byte) (*nokkuv1.SignSSHCertificateResponse, error)
+// authorized_keys form. The certificate comes back in the same form.
+type SignFunc func(ctx context.Context, pub []byte) (string, error)
 
 // needsRenewal returns the host public key when its certificate is missing,
-// issued for another principal or key, or inside its renewal window. ok is
-// false when there is nothing to do, including when no host key exists yet.
-func needsRenewal(targetID string) (pub []byte, ok bool) {
+// issued for another principal or key, signed by another CA than ca, or
+// inside its renewal window. ok is false when there is nothing to do,
+// including when no host key exists yet.
+func needsRenewal(targetID string, ca ssh.PublicKey) (pub []byte, ok bool) {
 	pub, err := os.ReadFile(paths.HostKeyPub())
 	if err != nil {
 		return nil, false
 	}
-	cert, err := parseCertificate(paths.HostKeyCert())
-	if err != nil || !isValid(cert, targetID) || !matchesKey(cert, pub) {
+	cert, err := Load()
+	if err != nil || !isValid(cert, targetID) || !matchesKey(cert, pub) || !signedBy(cert, ca) {
 		return pub, true
 	}
 	return nil, false
@@ -53,25 +50,32 @@ func matchesKey(cert *ssh.Certificate, pub []byte) bool {
 	return err == nil && bytes.Equal(cert.Key.Marshal(), key.Marshal())
 }
 
+func signedBy(cert *ssh.Certificate, ca ssh.PublicKey) bool {
+	return cert.SignatureKey != nil && bytes.Equal(cert.SignatureKey.Marshal(), ca.Marshal())
+}
+
 // RenewHostCerts signs and stores a fresh host certificate when it is due,
-// reporting whether one was written. force re-signs after a CA rollover.
-func RenewHostCerts(ctx context.Context, targetID string, sign SignFunc, force bool) (bool, error) {
-	pub, ok := needsRenewal(targetID)
-	if force {
-		var err error
-		if pub, err = os.ReadFile(paths.HostKeyPub()); err != nil {
-			return false, nil
-		}
-		ok = true
+// reporting whether one was written. caKey is the CA the daemon trusts, in
+// authorized_keys form. A certificate from any other CA is due and is never
+// stored, clients verify the host against the same CA. Without a CA there is
+// nothing to renew yet.
+func RenewHostCerts(ctx context.Context, targetID, caKey string, sign SignFunc) (bool, error) {
+	if caKey == "" {
+		return false, nil
 	}
+	ca, _, _, _, err := ssh.ParseAuthorizedKey([]byte(caKey))
+	if err != nil {
+		return false, fmt.Errorf("parse CA public key: %w", err)
+	}
+	pub, ok := needsRenewal(targetID, ca)
 	if !ok {
 		return false, nil
 	}
-	res, err := sign(ctx, pub)
+	signed, err := sign(ctx, pub)
 	if err != nil {
 		return false, err
 	}
-	if err = saveCertificate(res, paths.HostKeyCert()); err != nil {
+	if err = saveCertificate([]byte(signed), ca); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -79,15 +83,16 @@ func RenewHostCerts(ctx context.Context, targetID string, sign SignFunc, force b
 
 // NextRenewal returns the renewal deadline for the host certificate, or now
 // if it is already out of date or none exists.
-func NextRenewal(targetID string) time.Time {
+func NextRenewal(targetID, caKey string) time.Time {
 	now := time.Now()
 
-	cert, err := parseCertificate(paths.HostKeyCert())
+	cert, err := Load()
 	if err != nil {
 		slog.Debug("parse host certificate", "error", err)
 		return now
 	}
-	if !isValid(cert, targetID) {
+	ca, _, _, _, err := ssh.ParseAuthorizedKey([]byte(caKey))
+	if err != nil || !isValid(cert, targetID) || !signedBy(cert, ca) {
 		return now
 	}
 	if cert.ValidBefore == ssh.CertTimeInfinity {
@@ -101,31 +106,17 @@ func NextRenewal(targetID string) time.Time {
 	return renewalTime
 }
 
-// saveCertificate verifies the cert was signed by the returned CA key, then
-// stores it and the CA where the embedded SSH server reads them.
-func saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path string) error {
-	signedCert := bytes.TrimSpace([]byte(res.GetSignedCertificate()))
-	caPubKey := bytes.TrimSpace([]byte(res.GetCaPublicKey()))
-
-	cert, err := parseCertificateBytes(signedCert)
+// saveCertificate stores a signed certificate where the embedded SSH server
+// reads it, once it is a host certificate signed by ca.
+func saveCertificate(signed []byte, ca ssh.PublicKey) error {
+	cert, err := parseCertificateBytes(signed)
 	if err != nil {
 		return err
 	}
-
-	caPub, _, _, _, err := ssh.ParseAuthorizedKey(caPubKey)
-	if err != nil {
-		return err
+	if !signedBy(cert, ca) {
+		return errors.New("certificate is not signed by the trusted CA")
 	}
-
-	if cert.SignatureKey == nil || !bytes.Equal(cert.SignatureKey.Marshal(), caPub.Marshal()) {
-		return errors.New("invalid signature: certificate not signed by provided CA")
-	}
-
-	if err = fsutil.WriteIfChanged(paths.UserCAFile(), caPubKey, 0o644); err != nil {
-		return fmt.Errorf("write user CA: %w", err)
-	}
-
-	if err = fsutil.WriteIfChanged(path, ssh.MarshalAuthorizedKey(cert), 0o644); err != nil {
+	if err = fsutil.WriteIfChanged(paths.HostKeyCert(), ssh.MarshalAuthorizedKey(cert), 0o644); err != nil {
 		return fmt.Errorf("write certificate: %w", err)
 	}
 	return nil
@@ -154,8 +145,7 @@ func isValid(cert *ssh.Certificate, targetID string) bool {
 func renewalDeadline(cert *ssh.Certificate) time.Time {
 	validAfter := uint64ToUnixTime(cert.ValidAfter)
 	validBefore := uint64ToUnixTime(cert.ValidBefore)
-	window := min(time.Duration(float64(validBefore.Sub(validAfter))*renewFraction), renewWindowCap)
-	return validBefore.Add(-window)
+	return validBefore.Add(-time.Duration(float64(validBefore.Sub(validAfter)) * renewFraction))
 }
 
 func parseCertificateBytes(data []byte) (*ssh.Certificate, error) {
@@ -175,8 +165,9 @@ func parseCertificateBytes(data []byte) (*ssh.Certificate, error) {
 	return cert, nil
 }
 
-func parseCertificate(path string) (*ssh.Certificate, error) {
-	data, err := os.ReadFile(path)
+// Load reads the host certificate from disk.
+func Load() (*ssh.Certificate, error) {
+	data, err := os.ReadFile(paths.HostKeyCert())
 	if err != nil {
 		return nil, err
 	}

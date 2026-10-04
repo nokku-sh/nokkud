@@ -2,21 +2,17 @@ package client
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
-const (
-	relayDialTimeout = 5 * time.Second
-	sessionTTL       = 8 * time.Hour
-)
+const sessionTTL = 8 * time.Hour
 
 // relayStream is the part of the connect stream the relay uses, so tests can
 // drive it without a backend.
@@ -29,8 +25,9 @@ var relayClosed = &nokkuv1.DaemonRelayRequest{
 	Msg: &nokkuv1.DaemonRelayRequest_Closed{Closed: &nokkuv1.DaemonRelayClosed{}},
 }
 
-// runRelay dials back to the backend and bridges the relay to the local sshd.
-// The sshd enforces its own connection cap, so relays need none.
+// runRelay dials back to the backend and hands the stream to the sshd as a
+// connection of its own. The sshd enforces its connection cap, so relays need
+// none.
 func (c *Client) runRelay(ctx context.Context, req *nokkuv1.RelayOpen) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -40,100 +37,129 @@ func (c *Client) runRelay(ctx context.Context, req *nokkuv1.RelayOpen) {
 	// Canceling ctx also ends the stream, which unblocks its Receive.
 	ctx, cancel := context.WithTimeout(ctx, sessionTTL)
 	defer cancel()
-	stream, err := c.dss.DaemonRelay(ctx)
+	stream, err := c.ctl.DaemonRelay(ctx)
 	if err == nil {
-		err = runRelayStream(ctx, stream, loopback(c.sshAddr), req.GetRelayId())
+		// Ready must be the first message, the backend resolves its pending
+		// relay on it.
+		err = stream.Send(&nokkuv1.DaemonRelayRequest{
+			Msg: &nokkuv1.DaemonRelayRequest_Ready{Ready: &nokkuv1.DaemonRelayReady{RelayId: req.RelayId}},
+		})
 	}
 	if err != nil {
 		slog.Warn("relay failed", "relay", req.GetRelayId(), "error", err)
+		return
 	}
+	slog.Info("relay connected", "relay", req.GetRelayId())
+	c.srv.ServeConn(&relayConn{
+		stream: stream,
+		cancel: cancel,
+		remote: clientAddr(req.GetClientAddr()),
+		local:  net.TCPAddrFromAddrPort(c.sshAddr),
+	})
+	slog.Debug("relay disconnected", "relay", req.GetRelayId())
 }
 
-// runRelayStream bridges one relay stream to sshAddr until either side ends
-// or ctx is done.
-func runRelayStream(ctx context.Context, stream relayStream, sshAddr, relayID string) error {
-	// Ready must be the first message, the backend resolves its pending
-	// relay on it. Sending it before the dial makes a dial failure show up as
-	// a closed frame instead of a pending timeout.
-	if err := stream.Send(&nokkuv1.DaemonRelayRequest{
-		Msg: &nokkuv1.DaemonRelayRequest_Ready{Ready: &nokkuv1.DaemonRelayReady{RelayId: &relayID}},
-	}); err != nil {
-		return err
+// clientAddr parses the address the backend reports for the user. It has to
+// be a TCP address, the ssh stack checks source-address options against one.
+// An address that does not parse is the unspecified one, which matches no
+// source-address option.
+func clientAddr(addr string) net.Addr {
+	if ap, err := netip.ParseAddrPort(addr); err == nil {
+		return net.TCPAddrFromAddrPort(ap)
 	}
-	dialer := net.Dialer{Timeout: relayDialTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", sshAddr)
+	ip, err := netip.ParseAddr(addr)
 	if err != nil {
-		_ = stream.Send(relayClosed)
-		return fmt.Errorf("dial local sshd: %w", err)
+		ip = netip.IPv4Unspecified()
 	}
-	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
-	slog.Info("relay connected", "relay", relayID)
-
-	// Backend to sshd. When the backend is done, closing conn ends the pump
-	// below as well.
-	go func() {
-		if inErr := pumpRelayIn(stream, conn); inErr != nil {
-			slog.Debug("relay stream ended", "relay", relayID, "error", inErr)
-		}
-		_ = conn.Close()
-	}()
-
-	// sshd to backend. This is the only sender after Ready, so frames never
-	// interleave and Closed is always last.
-	if err = pumpRelayOut(stream, conn); err != nil {
-		slog.Debug("relay conn ended", "relay", relayID, "error", err)
-	}
-	_ = stream.Send(relayClosed)
-	slog.Debug("relay disconnected", "relay", relayID)
-	return nil
+	return net.TCPAddrFromAddrPort(netip.AddrPortFrom(ip, 0))
 }
 
-func pumpRelayOut(stream relayStream, conn net.Conn) error {
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := conn.Read(buf)
-		if n > 0 {
-			if sendErr := stream.Send(&nokkuv1.DaemonRelayRequest{
-				Msg: &nokkuv1.DaemonRelayRequest_Data{Data: buf[:n]},
-			}); sendErr != nil {
-				return sendErr
-			}
-		}
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-	}
+// relayConn is a relay stream as the connection the sshd serves. Its remote
+// address is the user's as the backend saw it, so audit events, SSH_CLIENT
+// and source-address options see the user and not the relay.
+type relayConn struct {
+	stream relayStream
+	// cancel ends the stream, which unblocks a pending Receive or Send.
+	cancel        context.CancelFunc
+	remote, local net.Addr
+
+	// pending is the unread tail of the last frame. Only the ssh transport's
+	// reader touches it.
+	pending []byte
+
+	// sendMu makes Closed the last frame, the stream takes one sender at a time.
+	sendMu sync.Mutex
+	closed bool
+
+	deadlineMu sync.Mutex
+	deadline   *time.Timer
 }
 
-// pumpRelayIn writes data frames to sshd until a closed frame or an error.
-func pumpRelayIn(stream relayStream, conn net.Conn) error {
-	for {
-		msg, err := stream.Receive()
+func (c *relayConn) Read(p []byte) (int, error) {
+	for len(c.pending) == 0 {
+		msg, err := c.stream.Receive()
 		if err != nil {
-			return err
+			return 0, err
 		}
 		switch m := msg.GetMsg().(type) {
 		case *nokkuv1.DaemonRelayResponse_Data:
-			if _, err = conn.Write(m.Data); err != nil {
-				return err
-			}
+			c.pending = m.Data
 		case *nokkuv1.DaemonRelayResponse_Closed:
-			return nil
+			return 0, io.EOF
 		}
 	}
+	n := copy(p, c.pending)
+	c.pending = c.pending[n:]
+	return n, nil
 }
 
-// loopback maps the sshd listen address to one the relay can dial. A
-// wildcard bind is reachable on 127.0.0.1.
-func loopback(addr netip.AddrPort) string {
-	ip := addr.Addr()
-	if !ip.IsValid() || ip.IsUnspecified() {
-		ip = netip.AddrFrom4([4]byte{127, 0, 0, 1})
+func (c *relayConn) Write(p []byte) (int, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.closed {
+		return 0, net.ErrClosed
 	}
-	return netip.AddrPortFrom(ip, addr.Port()).String()
+	// Send marshals before it returns, so the stream does not keep p.
+	if err := c.stream.Send(&nokkuv1.DaemonRelayRequest{
+		Msg: &nokkuv1.DaemonRelayRequest_Data{Data: p},
+	}); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
+
+// Close tells the backend the relay is over and ends the stream. A Write
+// stuck on a backend that stopped reading skips the frame, the canceled
+// stream unblocks it.
+func (c *relayConn) Close() error {
+	if c.sendMu.TryLock() {
+		if !c.closed {
+			c.closed = true
+			_ = c.stream.Send(relayClosed)
+		}
+		c.sendMu.Unlock()
+	}
+	c.cancel()
+	return c.SetDeadline(time.Time{})
+}
+
+// SetDeadline bounds the ssh handshake. A stream cannot time out one read,
+// so a deadline that passes ends the connection.
+func (c *relayConn) SetDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	if c.deadline != nil {
+		c.deadline.Stop()
+		c.deadline = nil
+	}
+	if !t.IsZero() {
+		c.deadline = time.AfterFunc(time.Until(t), c.cancel)
+	}
+	return nil
+}
+
+func (c *relayConn) SetReadDeadline(t time.Time) error  { return c.SetDeadline(t) }
+func (c *relayConn) SetWriteDeadline(t time.Time) error { return c.SetDeadline(t) }
+
+func (c *relayConn) RemoteAddr() net.Addr { return c.remote }
+func (c *relayConn) LocalAddr() net.Addr  { return c.local }
