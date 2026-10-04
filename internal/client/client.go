@@ -125,7 +125,7 @@ func (c *Client) enroll(ctx context.Context, token string) error {
 	// A re-enrollment may move the host to another workspace, so nothing the
 	// old one trusted may survive until the first sync.
 	c.cache.Clear()
-	for _, f := range []string{paths.UserCAFile(), paths.RetiredCAFile(), paths.HostKeyCert()} {
+	for _, f := range []string{paths.UserCAFile(), paths.HostKeyCert()} {
 		if err = os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("enroll: drop previous trust: %w", err)
 		}

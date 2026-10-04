@@ -121,24 +121,7 @@ func saveCertificate(res *nokkuv1.SignSSHCertificateResponse, path string) error
 		return errors.New("invalid signature: certificate not signed by provided CA")
 	}
 
-	// New CA: retire the current file before overwriting so the SSH server
-	// keeps trusting certs it signed, stamped now for the mtime grace window.
-	userCA := paths.UserCAFile()
-	retiredCA := paths.RetiredCAFile()
-	if current, readErr := os.ReadFile(userCA); readErr == nil &&
-		!bytes.Equal(bytes.TrimSpace(current), caPubKey) {
-		// Write before overwriting: renaming the old CA away first would
-		// leave no active CA and deny all logins until the next sync.
-		if err = fsutil.WriteIfChanged(retiredCA, bytes.TrimSpace(current), 0o644); err != nil {
-			return fmt.Errorf("retire previous CA: %w", err)
-		}
-		now := time.Now()
-		if err = os.Chtimes(retiredCA, now, now); err != nil {
-			return fmt.Errorf("stamp retired CA: %w", err)
-		}
-	}
-
-	if err = fsutil.WriteIfChanged(userCA, caPubKey, 0o644); err != nil {
+	if err = fsutil.WriteIfChanged(paths.UserCAFile(), caPubKey, 0o644); err != nil {
 		return fmt.Errorf("write user CA: %w", err)
 	}
 

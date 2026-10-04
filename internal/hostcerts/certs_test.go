@@ -347,63 +347,34 @@ func TestSaveCertificateRejectsMismatchedCA(t *testing.T) {
 	must.ErrorIs(statErr, os.ErrNotExist, "mismatched CA must not write the CA file")
 }
 
-// TestSaveCertificateRetiresPreviousCA verifies that switching to a new
-// signing CA parks the previous one in the retired file (so the SSH server
-// keeps trusting its certificates during the rollover grace window).
-func TestSaveCertificateRetiresPreviousCA(t *testing.T) {
+// TestSaveCertificateSwitchesCA verifies that a certificate from a new signing
+// CA replaces the active CA file. The backend decides how long the old key
+// stays trusted, so nothing of it is kept here.
+func TestSaveCertificateSwitchesCA(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	dir := t.TempDir()
 	t.Setenv("NOKKUD_DATA_DIR", dir)
 
-	ca1 := newTestCA(t)
-	ca2 := newTestCA(t)
 	hostPub := writeHostKey(t, dir)
 	certPath := filepath.Join(dir, "ssh_host_ecdsa_key-cert.pub")
 
-	save := func(ca testCA) {
-		t.Helper()
+	for _, ca := range []testCA{newTestCA(t), newTestCA(t)} {
 		certText, caText := signHostCert(t, ca, hostPub, "target-1", 0, ssh.CertTimeInfinity)
 		certStr, caStr := string(certText), string(caText)
 		must.NoError(saveCertificate(&nokkuv1.SignSSHCertificateResponse{
 			SignedCertificate: &certStr,
 			CaPublicKey:       &caStr,
 		}, certPath), "saveCertificate")
+
+		active, err := os.ReadFile(paths.UserCAFile())
+		must.NoError(err, "read active CA")
+		is.Equal(
+			bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca.pub)),
+			bytes.TrimSpace(active),
+			"active CA file does not hold the signing CA",
+		)
 	}
-
-	save(ca1)
-	active, err := os.ReadFile(paths.UserCAFile())
-	must.NoError(err, "read active CA")
-	is.Equal(
-		bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca1.pub)),
-		bytes.TrimSpace(active),
-		"active CA file does not hold the first CA",
-	)
-	_, statErr := os.Stat(paths.RetiredCAFile())
-	must.ErrorIs(statErr, os.ErrNotExist, "no retired CA expected after the first save")
-
-	// Saving under a second CA retires the first.
-	save(ca2)
-	active, err = os.ReadFile(paths.UserCAFile())
-	must.NoError(err, "read active CA")
-	is.Equal(
-		bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca2.pub)),
-		bytes.TrimSpace(active),
-		"active CA file does not hold the second CA",
-	)
-	var retired []byte
-	retired, err = os.ReadFile(paths.RetiredCAFile())
-	must.NoError(err, "read retired CA")
-	is.Equal(
-		bytes.TrimSpace(ssh.MarshalAuthorizedKey(ca1.pub)),
-		bytes.TrimSpace(retired),
-		"retired CA file does not hold the first CA",
-	)
-
-	// A renewal under the same CA must not retire it again.
-	save(ca2)
-	_, statErr = os.Stat(paths.RetiredCAFile())
-	is.NoError(statErr, "same-CA renewal must leave the retired CA untouched")
 }
 
 func writeCert(t testing.TB, dir string, data []byte) {

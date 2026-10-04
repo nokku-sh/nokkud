@@ -51,8 +51,6 @@ type Policy struct {
 	AllowAgentForwarding bool
 	// GatewayPorts lets -R forwards bind non-loopback addresses.
 	GatewayPorts bool
-	// DropRetiredCA stops trusting a rotated-out CA before its grace ends.
-	DropRetiredCA bool
 }
 
 // DefaultPolicy applies until the backend sends a config, and to any field
@@ -106,6 +104,7 @@ type Server struct {
 	mu         sync.RWMutex
 	cfg        *ssh.ServerConfig
 	trustedCAs map[string]struct{}
+	retiredCAs map[string]time.Time
 }
 
 // New loads the host key and trusted CAs. A missing CA file is fine on first
@@ -158,21 +157,17 @@ func PolicyFrom(cfg *nokkuv1.DaemonConfig) Policy {
 	set(&p.AllowForwarding, cfg.AllowForwarding)           //nolint:protogetter // presence check
 	set(&p.AllowAgentForwarding, cfg.AllowAgentForwarding) //nolint:protogetter // presence check
 	set(&p.GatewayPorts, cfg.GatewayPorts)                 //nolint:protogetter // presence check
-	set(&p.DropRetiredCA, cfg.DropRetiredCa)               //nolint:protogetter // presence check
 	return p
 }
 
 func (s *Server) SetPolicy(p Policy) {
-	old := s.policy.Swap(&p)
-	if old.DropRetiredCA != p.DropRetiredCA {
-		s.Reload()
-	}
+	s.policy.Store(&p)
 }
 
 // Reload rereads the trusted CAs and the host certificate. Established
 // connections keep the certificate they handshook with.
 func (s *Server) Reload() {
-	trusted, caErr := loadTrustedCAs(s.policy.Load().DropRetiredCA)
+	trusted, caErr := loadTrustedCAs()
 	switch {
 	case errors.Is(caErr, fs.ErrNotExist):
 		slog.Debug("trusted CAs not synced yet")

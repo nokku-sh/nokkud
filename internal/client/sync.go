@@ -62,8 +62,9 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 	for _, p := range res.GetPrincipals() {
 		principals[p.GetUsername()] = p.GetIds()
 	}
-	c.cache.Replace(principals, res.GetConfig(), res.GetStateVersion())
+	c.cache.Replace(principals, res.GetConfig(), res.GetRetiredCaKeys(), res.GetStateVersion())
 	c.srv.SetPolicy(sshd.PolicyFrom(res.GetConfig()))
+	c.srv.SetRetiredCAs(res.GetRetiredCaKeys())
 	c.srv.DropRevoked()
 	return c.cache.Save()
 }

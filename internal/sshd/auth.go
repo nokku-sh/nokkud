@@ -5,48 +5,27 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
 	"slices"
 	"time"
 
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
-// retiredCAGrace keeps certificates signed by a rolled-over CA valid until
-// they expire (user TTLs are at most 7 days).
-const retiredCAGrace = 8 * 24 * time.Hour
-
 var errNoCertificates = errors.New("sshd: only certificate authentication is supported")
 
-// loadTrustedCAs returns the active CA public keys plus, within retiredCAGrace
-// of a rollover, the retired CA. With dropRetired the retired CA is not trusted
-// and its file is removed, so trust cannot come back.
-func loadTrustedCAs(dropRetired bool) ([]ssh.PublicKey, error) {
+// loadTrustedCAs returns the active CA public keys.
+func loadTrustedCAs() ([]ssh.PublicKey, error) {
 	userCA := paths.UserCAFile()
 	keys, err := parseCAFile(userCA)
 	if err != nil {
 		return nil, err
-	}
-
-	// Best-effort. A corrupt or missing retired file must never take down
-	// authentication, which the active CA still provides.
-	retiredCA := paths.RetiredCAFile()
-	if dropRetired {
-		if removeErr := os.Remove(retiredCA); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-			slog.Debug("remove retired CA", "error", removeErr)
-		}
-	} else if st, statErr := os.Stat(retiredCA); statErr == nil {
-		if time.Since(st.ModTime()) < retiredCAGrace {
-			if retired, parseErr := parseCAFile(retiredCA); parseErr == nil {
-				keys = append(keys, retired...)
-			}
-		}
 	}
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("sshd: no CA public keys found in %s", userCA)
@@ -95,8 +74,29 @@ func caKeys(keys []ssh.PublicKey) map[string]struct{} {
 func (s *Server) trustedCA(key ssh.PublicKey) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, ok := s.trustedCAs[string(key.Marshal())]
-	return ok
+	wire := key.Marshal()
+	if _, ok := s.trustedCAs[string(wire)]; ok {
+		return true
+	}
+	until, ok := s.retiredCAs[string(wire)]
+	return ok && time.Now().Before(until)
+}
+
+// SetRetiredCAs replaces the rolled-over CA keys the backend still trusts,
+// each until its deadline. An emergency rollover sends none.
+func (s *Server) SetRetiredCAs(keys []*nokkuv1.RetiredCAKey) {
+	retired := make(map[string]time.Time, len(keys))
+	for _, k := range keys {
+		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(k.GetPublicKey()))
+		if err != nil {
+			slog.Warn("skipping unreadable retired CA", "error", err)
+			continue
+		}
+		retired[string(pub.Marshal())] = k.GetTrustedUntil().AsTime()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.retiredCAs = retired
 }
 
 // publicKeyCallback authenticates a user certificate whose principals are
