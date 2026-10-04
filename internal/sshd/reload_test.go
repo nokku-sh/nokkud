@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"github.com/nokku-sh/mon/tpm"
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
@@ -55,85 +57,42 @@ func TestServerReloadPicksUpCA(t *testing.T) {
 	is.True(srv.trustedCA(ca.pub), "reloaded server does not trust the CA that landed on disk")
 }
 
-// TestLoadTrustedCAsRetiredGrace verifies the retired CA stays trusted for
-// the rollover grace window and drops off afterwards, while the active CA
-// always remains trusted. With drop_retired_ca the retired CA is dropped at
-// once and its file removed.
-func TestLoadTrustedCAsRetiredGrace(t *testing.T) {
+// TestRetiredCATrustedUntilDeadline verifies a rolled-over CA stays trusted
+// until the deadline the backend set, and that an empty list, as sent after an
+// emergency rollover, drops it at once. The active CA is never affected.
+func TestRetiredCATrustedUntilDeadline(t *testing.T) {
 	is := assert.New(t)
-	must := require.New(t)
 	active := newTestCA(t)
 	retired := newTestCA(t)
-	configDir := t.TempDir()
-	t.Setenv("NOKKUD_DATA_DIR", configDir)
+	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 
-	writeCAFile := func(name string, ca testCA) {
-		t.Helper()
-		must.NoError(os.WriteFile(
-			filepath.Join(configDir, name),
-			ssh.MarshalAuthorizedKey(ca.pub),
-			0o644,
-		))
-	}
-	trusts := func(keys []ssh.PublicKey, ca testCA) bool {
-		t.Helper()
-		for _, k := range keys {
-			if bytes.Equal(k.Marshal(), ca.pub.Marshal()) {
-				return true
-			}
+	srv, err := New(Options{
+		Principals: func(string) []string { return nil },
+		TrustedCAs: []ssh.PublicKey{active.pub},
+	})
+	require.NoError(t, err)
+	defer srv.hostKeyDev.Close()
+
+	retiredKey := func(until time.Time) []*nokkuv1.RetiredCAKey {
+		return []*nokkuv1.RetiredCAKey{
+			{PublicKey: new(string(ssh.MarshalAuthorizedKey(retired.pub))), TrustedUntil: timestamppb.New(until)},
+			{PublicKey: new("garbage"), TrustedUntil: timestamppb.New(until)},
 		}
-		return false
 	}
 
-	writeCAFile("nokku_ca.pub", active)
-	keys, err := loadTrustedCAs(false)
-	must.NoError(err)
-	is.True(trusts(keys, active), "active CA must be trusted")
-	is.False(trusts(keys, retired), "no retired CA present")
+	is.False(srv.trustedCA(retired.pub), "no retired CA synced yet")
 
-	// A fresh retired CA (recent mtime) is trusted alongside the active one.
-	writeCAFile("nokku_ca.previous.pub", retired)
-	keys, err = loadTrustedCAs(false)
-	must.NoError(err)
-	is.True(trusts(keys, active), "active CA must stay trusted during the grace window")
-	is.True(trusts(keys, retired), "retired CA must stay trusted during the grace window")
+	srv.SetRetiredCAs(retiredKey(time.Now().Add(time.Hour)))
+	is.True(srv.trustedCA(retired.pub), "retired CA must be trusted before its deadline")
+	is.True(srv.trustedCA(active.pub), "active CA must stay trusted")
 
-	// After the grace window the retired CA is no longer trusted.
-	old := time.Now().Add(-retiredCAGrace - time.Hour)
-	must.NoError(os.Chtimes(filepath.Join(configDir, "nokku_ca.previous.pub"), old, old))
-	keys, err = loadTrustedCAs(false)
-	must.NoError(err)
-	is.False(trusts(keys, retired), "retired CA must stop being trusted after the grace window")
-	is.True(trusts(keys, active), "active CA must remain trusted")
+	srv.SetRetiredCAs(retiredKey(time.Now().Add(-time.Minute)))
+	is.False(srv.trustedCA(retired.pub), "retired CA must not be trusted past its deadline")
 
-	// A corrupt retired CA must not break authentication.
-	must.NoError(os.WriteFile(
-		filepath.Join(configDir, "nokku_ca.previous.pub"),
-		[]byte("garbage"),
-		0o644,
-	))
-	keys, err = loadTrustedCAs(false)
-	must.NoError(err, "corrupt retired CA must not fail the load")
-	is.True(trusts(keys, active), "active CA must remain trusted with a corrupt retired CA")
-
-	// With drop_retired_ca a fresh retired CA is not trusted, and its file is
-	// removed so trust cannot come back on a later load.
-	writeCAFile("nokku_ca.previous.pub", retired)
-	keys, err = loadTrustedCAs(true)
-	must.NoError(err)
-	is.True(trusts(keys, active), "active CA must stay trusted when dropping the retired CA")
-	is.False(trusts(keys, retired), "retired CA must not be trusted inside the grace window")
-
-	_, statErr := os.Stat(filepath.Join(configDir, "nokku_ca.previous.pub"))
-	is.True(os.IsNotExist(statErr), "retired CA file must be removed")
-
-	keys, err = loadTrustedCAs(false)
-	must.NoError(err)
-	is.False(trusts(keys, retired), "a removed retired CA must not come back")
-
-	// Removing an already absent file is not a failure.
-	_, err = loadTrustedCAs(true)
-	must.NoError(err)
+	srv.SetRetiredCAs(retiredKey(time.Now().Add(time.Hour)))
+	srv.SetRetiredCAs(nil)
+	is.False(srv.trustedCA(retired.pub), "an empty list must drop the retired CA at once")
+	is.True(srv.trustedCA(active.pub), "active CA must stay trusted")
 }
 
 // TestServerReloadRefreshesHostCerts verifies Reload adopts a newly written

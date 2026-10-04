@@ -8,13 +8,14 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/mizuchilabs/kata v0.1.15
 	github.com/nokku-sh/mon v0.1.4
-	github.com/nokku-sh/protos v0.2.1
+	github.com/nokku-sh/protos v0.2.2-0.20261004200507-1827ddf36725
 	github.com/pkg/sftp v1.13.11
 	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.14.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -23,5 +24,4 @@ require (
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 )

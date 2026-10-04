@@ -122,9 +122,10 @@ control stream to the backend.
 - **Per-connection channel cap.** Sessions plus port and agent forwards count
   against `MaxChannels` for the life of each channel, so one authorized
   connection cannot exhaust the daemon's file descriptors or goroutines.
-- **Retired CA grace window.** After a CA rollover the previous CA stays
-  trusted for a grace window so certificates it signed keep working. The
-  backend can set `drop_retired_ca` to stop trusting it immediately.
+- **Retired CA deadline.** After a CA rollover the backend sends the previous
+  key with a deadline, and the daemon trusts it until then so certificates it
+  signed keep working. An emergency rollover sends no previous key, which
+  stops that trust at the next sync.
 - **`/etc/nologin` is honored.** When the file exists, logins are refused for
   every user except root, matching OpenSSH, so a machine can be put into
   maintenance.

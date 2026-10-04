@@ -160,6 +160,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	srv.SetRetiredCAs(cache.RetiredCAs())
 	var lc net.ListenConfig
 	l, err := lc.Listen(ctx, "tcp", cmd.String("ssh-addr"))
 	if err != nil {

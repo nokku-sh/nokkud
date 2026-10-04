@@ -14,7 +14,6 @@ const (
 	signerStateFilename = "state.json"
 	hostSignerFilename  = "ssh_host_signer.json"
 	userCAFilename      = "nokku_ca.pub"
-	retiredCAFilename   = "nokku_ca.previous.pub"
 	recordsDir          = "recordings"
 	hostKeyName         = "ssh_host_ecdsa_key"
 )
@@ -35,8 +34,6 @@ func CacheFile() string { return filepath.Join(dataDir(), cacheFilename) }
 func SignerStateFile() string { return filepath.Join(dataDir(), signerStateFilename) }
 
 func UserCAFile() string { return filepath.Join(dataDir(), userCAFilename) }
-
-func RetiredCAFile() string { return filepath.Join(dataDir(), retiredCAFilename) }
 
 // HostSignerStateFile is the tpm.Signer state backing the host identity.
 func HostSignerStateFile() string { return filepath.Join(dataDir(), hostSignerFilename) }
