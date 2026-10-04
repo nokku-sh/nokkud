@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -475,8 +476,12 @@ func TestShellStartsLikeOpenSSH(t *testing.T) {
 			case <-time.After(20 * time.Second):
 				t.Fatal("the shell did not exit")
 			}
-			// A pty echoes the typed line too, so match the answer as a whole line.
-			must.Contains(strings.Split(strings.ReplaceAll(out.String(), "\r", ""), "\n"), tt.want)
+			// A pty echoes the typed line and bash puts a bracketed paste escape before the answer.
+			lines := strings.Split(strings.ReplaceAll(out.String(), "\r", ""), "\n")
+			must.True(
+				slices.ContainsFunc(lines, func(l string) bool { return strings.HasSuffix(l, tt.want) }),
+				"no line ends with %q: %q", tt.want, lines,
+			)
 		})
 	}
 }
