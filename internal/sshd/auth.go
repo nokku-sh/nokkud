@@ -10,21 +10,9 @@ import (
 
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	"golang.org/x/crypto/ssh"
-
-	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 var errNoCertificates = errors.New("sshd: only certificate authentication is supported")
-
-// caKeys indexes CA public keys by wire encoding so lookups never marshal on
-// the auth path.
-func caKeys(keys []ssh.PublicKey) map[string]struct{} {
-	set := make(map[string]struct{}, len(keys))
-	for _, k := range keys {
-		set[string(k.Marshal())] = struct{}{}
-	}
-	return set
-}
 
 func (s *Server) trustedCA(key ssh.PublicKey) bool {
 	return s.trustedCAWire(string(key.Marshal()))
@@ -156,7 +144,7 @@ func (s *Server) verifiedPublicKey(
 ) (*ssh.Permissions, error) {
 	sysUser, err := s.lookupAccount(conn.User())
 	if err == nil {
-		err = sysutil.LoginAllowed(sysUser, s.nologinFile)
+		err = loginAllowed(sysUser, s.nologinFile)
 	}
 	if err != nil {
 		return nil, s.deny(conn, err)

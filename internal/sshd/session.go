@@ -21,7 +21,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/recording"
-	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 // webSessionKeyIDPrefix marks control-plane user certificates for a web
@@ -39,7 +38,7 @@ type session struct {
 	conn    *ssh.ServerConn
 	st      *connState
 	reqs    <-chan *ssh.Request
-	sysUser *sysutil.Account
+	sysUser *account
 
 	// Exec'd commands use ctx, so a disconnect reaps them even if the
 	// request stream misbehaves.
@@ -400,7 +399,11 @@ func (sess *session) exit(code int) {
 func (sess *session) exitProcess(st *os.ProcessState) {
 	name, code, signaled := processSignal(st)
 	if !signaled {
-		sess.exit(int(exitCodeOf(st)))
+		status := 1
+		if st != nil && st.Exited() {
+			status = st.ExitCode()
+		}
+		sess.exit(status)
 		return
 	}
 	if name == "" {
@@ -470,7 +473,7 @@ func (sess *session) shellCmd() (*exec.Cmd, error) {
 	}
 	cmd.Dir = sess.sysUser.Home
 	cmd.Env = sess.buildEnv()
-	attr, err := sysutil.SysProcAttr(sess.sysUser)
+	attr, err := sysProcAttr(sess.sysUser)
 	if err != nil {
 		return nil, err
 	}
@@ -536,7 +539,7 @@ func (sess *session) runPTY() {
 			n, readErr := sess.Read(buf)
 			if n > 0 {
 				// Only echoed input is recorded, so password prompts never are.
-				if sess.rec != nil && sysutil.EchoEnabled(sess.ptmx.Fd()) {
+				if sess.rec != nil && echoEnabled(sess.ptmx.Fd()) {
 					sess.rec.RecordInput(buf[:n])
 				}
 				if _, writeErr := sess.ptmx.Write(buf[:n]); writeErr != nil {
@@ -729,7 +732,7 @@ func (sess *session) relay(cmd *exec.Cmd, stdin io.WriteCloser, stdout io.ReadCl
 }
 
 func (sess *session) buildEnv() []string {
-	env := sysutil.CmdEnv(sess.sysUser)
+	env := cmdEnv(sess.sysUser)
 	env = append(env, sess.env...)
 	if sess.conn != nil {
 		// The same two variables sshd sets. bash only reads ~/.bashrc for a
@@ -761,16 +764,6 @@ func splitHostPort(a net.Addr) (string, string) {
 		return a.String(), ""
 	}
 	return host, port
-}
-
-func exitCodeOf(st *os.ProcessState) uint32 {
-	if st == nil {
-		return 1
-	}
-	if st.Exited() {
-		return exitCodeToU32(st.ExitCode())
-	}
-	return 1
 }
 
 // exitCodeToU32 maps a process exit code to the SSH exit-status value. POSIX

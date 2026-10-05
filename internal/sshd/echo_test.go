@@ -1,4 +1,4 @@
-package sysutil
+package sshd
 
 import (
 	"testing"
@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// EchoEnabled must track the pty's ECHO flag so recordings can omit input
+// echoEnabled must track the pty's ECHO flag so recordings can omit input
 // while password prompts have echo disabled.
 func TestEchoEnabled(t *testing.T) {
 	t.Parallel()
@@ -22,7 +22,7 @@ func TestEchoEnabled(t *testing.T) {
 	defer tty.Close()
 
 	fd := ptmx.Fd()
-	is.True(EchoEnabled(fd))
+	is.True(echoEnabled(fd))
 
 	termios, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
 	must.NoError(err)
@@ -30,11 +30,11 @@ func TestEchoEnabled(t *testing.T) {
 	noEcho := *termios
 	noEcho.Lflag &^= unix.ECHO
 	must.NoError(unix.IoctlSetTermios(int(fd), unix.TCSETS, &noEcho))
-	is.False(EchoEnabled(fd))
+	is.False(echoEnabled(fd))
 
 	must.NoError(unix.IoctlSetTermios(int(fd), unix.TCSETS, termios))
-	is.True(EchoEnabled(fd))
+	is.True(echoEnabled(fd))
 
 	// A bogus fd must fail closed (no leak on error).
-	is.False(EchoEnabled(^uintptr(0)))
+	is.False(echoEnabled(^uintptr(0)))
 }

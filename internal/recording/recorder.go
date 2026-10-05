@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
-	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 const (
@@ -118,7 +117,7 @@ func (t *sinkTee) Write(p []byte) (int, error) {
 // New starts a recording under the records dir, enforcing retention. A nil
 // Recorder is a valid no-op, so callers may keep going after an error.
 func New(opts Options) (*Recorder, error) {
-	if err := sysutil.CheckDiskSpace(paths.RecordsDir()); err != nil {
+	if err := checkDiskSpace(paths.RecordsDir()); err != nil {
 		return nil, err
 	}
 

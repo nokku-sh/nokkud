@@ -18,8 +18,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
-
-	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 const (
@@ -67,20 +65,17 @@ type Options struct {
 	Log           *slog.Logger
 	Policy        Policy
 	RecordingSink RecordingSink
-	// TrustedCAs seeds the CA set until SetTrust replaces it. Tests only.
-	TrustedCAs []ssh.PublicKey
-	// NologinFile defaults to /etc/nologin. Tests only.
-	NologinFile string
 }
 
 type Server struct {
 	principals    func(username string) []string
 	log           *slog.Logger
 	recordingSink RecordingSink
-	nologinFile   string
-	policy        atomic.Pointer[Policy]
+	// Tests point it away from /etc/nologin.
+	nologinFile string
+	policy      atomic.Pointer[Policy]
 	// Tests swap the lookup to shape the account.
-	lookupAccount func(name string) (*sysutil.Account, error)
+	lookupAccount func(name string) (*account, error)
 
 	// Limits live on the server so tests can shrink them.
 	conns chan struct{}
@@ -119,8 +114,8 @@ func New(opts Options) (*Server, error) {
 		principals:     opts.Principals,
 		log:            cmp.Or(opts.Log, slog.Default()),
 		recordingSink:  opts.RecordingSink,
-		nologinFile:    opts.NologinFile,
-		lookupAccount:  sysutil.LookupAccount,
+		nologinFile:    nologinPath,
+		lookupAccount:  lookupAccount,
 		conns:          make(chan struct{}, maxConns),
 		startups:       make(chan struct{}, maxStartups),
 		localStartups:  make(chan struct{}, maxStartups),
@@ -128,10 +123,6 @@ func New(opts Options) (*Server, error) {
 		live:           map[*ssh.ServerConn]struct{}{},
 		maxChannels:    maxChannels,
 		aliveInterval:  aliveInterval,
-		trustedCAs:     caKeys(opts.TrustedCAs),
-	}
-	if s.nologinFile == "" {
-		s.nologinFile = sysutil.NologinFile
 	}
 	s.policy.Store(&opts.Policy)
 	var err error
