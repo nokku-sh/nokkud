@@ -11,7 +11,8 @@ import (
 )
 
 // Expired recordings go first, then the oldest ones until the rest fits the
-// space limit. Files that are not recordings are never touched.
+// space limit. Files that are not recordings, and recordings still being
+// written, are never touched.
 func TestEnforceRetention(t *testing.T) {
 	dir := newRecordsDir(t)
 	is := assert.New(t)
@@ -30,6 +31,10 @@ func TestEnforceRetention(t *testing.T) {
 	write("older.cast.gz", maxTotalSpace/2+1, 2*time.Hour)
 	write("newest.cast.gz", 1, time.Hour)
 	write("notes.txt", 1, maxAge+time.Hour)
+	write("active.cast.gz", 1, maxAge+time.Hour)
+	activePath := filepath.Join(dir, "active.cast.gz")
+	active.Store(activePath, struct{}{})
+	t.Cleanup(func() { active.Delete(activePath) })
 
 	must.NoError(enforceRetention())
 
@@ -39,5 +44,5 @@ func TestEnforceRetention(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	is.Equal([]string{"newest.cast.gz", "notes.txt", "older.cast.gz"}, names)
+	is.Equal([]string{"active.cast.gz", "newest.cast.gz", "notes.txt", "older.cast.gz"}, names)
 }

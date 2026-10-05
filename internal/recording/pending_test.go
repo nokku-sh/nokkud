@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,14 +36,14 @@ func recordOnce(t *testing.T, sink *resultSink) {
 	<-sink.done
 }
 
-func TestRecorderMarksConfirmedUpload(t *testing.T) {
+func TestRecorderRemovesConfirmedUpload(t *testing.T) {
 	dir := newRecordsDir(t)
 	recordOnce(t, &resultSink{done: make(chan struct{})})
 
 	require.Eventually(t, func() bool {
-		m, _ := filepath.Glob(filepath.Join(dir, "*"+uploadedSuffix))
-		return len(m) == 1
-	}, time.Second, 10*time.Millisecond, "confirmed upload was not marked")
+		entries, err := os.ReadDir(dir)
+		return err == nil && len(entries) == 0
+	}, time.Second, 10*time.Millisecond, "confirmed upload was not removed")
 }
 
 func TestRecorderKeepsFailedUploadPending(t *testing.T) {
@@ -59,9 +58,7 @@ func TestRecorderKeepsFailedUploadPending(t *testing.T) {
 		}
 		_, busy := active.Load(m[0])
 		return !busy
-	}, time.Second, 10*time.Millisecond)
-	m, _ := filepath.Glob(filepath.Join(dir, "*"+uploadedSuffix))
-	assert.Empty(t, m, "a failed upload must stay pending")
+	}, time.Second, 10*time.Millisecond, "a failed upload must stay pending")
 }
 
 func TestUploadPending(t *testing.T) {
@@ -98,9 +95,9 @@ func TestUploadPending(t *testing.T) {
 	is.Equal(data, sent, "the file must be uploaded byte for byte")
 	is.NotNil(msgs[len(msgs)-1].GetFinal())
 
-	left, _ := filepath.Glob(filepath.Join(dir, "*"+castSuffix))
-	must.Len(left, 1)
-	is.True(strings.HasSuffix(left[0], uploadedSuffix))
+	left, err := os.ReadDir(dir)
+	must.NoError(err)
+	is.Empty(left, "an uploaded recording must not stay on disk")
 
 	// Nothing is left to upload.
 	must.NoError(UploadPending(t.Context(), ts.client))

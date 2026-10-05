@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"connectrpc.com/connect"
@@ -22,20 +21,16 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// A recording keeps the plain suffix until the backend confirmed the whole
-// upload, so everything else is still pending.
-const (
-	castSuffix     = ".cast.gz"
-	uploadedSuffix = ".uploaded" + castSuffix
-)
+const castSuffix = ".cast.gz"
 
 // active holds the paths of recordings still being written or live uploaded.
 var active sync.Map
 
-func markUploaded(path string) {
-	done := strings.TrimSuffix(path, castSuffix) + uploadedSuffix
-	if err := os.Rename(path, done); err != nil {
-		slog.Warn("mark recording uploaded", "path", path, "error", err)
+// removeUploaded drops the local copy once the backend has the whole
+// recording, so every file left in the records dir is active or pending.
+func removeUploaded(path string) {
+	if err := os.Remove(path); err != nil {
+		slog.Warn("remove uploaded recording", "path", path, "error", err)
 	}
 }
 
@@ -49,9 +44,6 @@ func UploadPending(ctx context.Context, client nokkuv1connect.DaemonControlServi
 		return err
 	}
 	for _, path := range matches {
-		if strings.HasSuffix(path, uploadedSuffix) {
-			continue
-		}
 		if _, busy := active.Load(path); busy {
 			continue
 		}
@@ -64,7 +56,7 @@ func UploadPending(ctx context.Context, client nokkuv1connect.DaemonControlServi
 		if err != nil {
 			return fmt.Errorf("upload %s: %w", filepath.Base(path), err)
 		}
-		markUploaded(path)
+		removeUploaded(path)
 	}
 	return nil
 }

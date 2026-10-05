@@ -21,7 +21,8 @@ const (
 )
 
 // enforceRetention removes recordings older than maxAge, then the oldest ones
-// while the rest exceeds maxTotalSpace.
+// while the rest exceeds maxTotalSpace. Uploaded recordings are gone already,
+// so whatever it removes never reached the backend.
 func enforceRetention() error {
 	recordsDir := paths.RecordsDir()
 	entries, err := os.ReadDir(recordsDir)
@@ -39,15 +40,17 @@ func enforceRetention() error {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), castSuffix) {
 			continue
 		}
+		// Unlinking an open file frees no space, it would only lose the recording.
+		if _, busy := active.Load(filepath.Join(recordsDir, e.Name())); busy {
+			continue
+		}
 		var info os.FileInfo
 		info, err = e.Info()
 		if err != nil {
 			continue
 		}
 		if info.ModTime().Before(cutoff) {
-			if err = os.Remove(filepath.Join(recordsDir, info.Name())); err != nil {
-				slog.Debug("remove expired file", "path", info.Name(), "error", err)
-			}
+			dropPending(recordsDir, info.Name(), "expired")
 			continue
 		}
 		kept = append(kept, info)
@@ -59,12 +62,17 @@ func enforceRetention() error {
 	})
 	for total > maxTotalSpace && len(kept) > 0 {
 		total -= kept[0].Size()
-		if err = os.Remove(filepath.Join(recordsDir, kept[0].Name())); err != nil {
-			slog.Debug("remove over-limit file", "path", kept[0].Name(), "error", err)
-		}
+		dropPending(recordsDir, kept[0].Name(), "over the space limit")
 		kept = kept[1:]
 	}
 	return nil
+}
+
+func dropPending(dir, name, reason string) {
+	slog.Warn("dropping a recording that was never uploaded", "path", name, "reason", reason)
+	if err := os.Remove(filepath.Join(dir, name)); err != nil {
+		slog.Debug("remove recording", "path", name, "error", err)
+	}
 }
 
 // recordingPattern builds a timestamped [os.CreateTemp] pattern. The session
