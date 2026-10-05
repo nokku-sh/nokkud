@@ -23,9 +23,9 @@ var newHostSigner = tpm.NewSigner
 // identity change just gets a fresh key and the sync renews the cert.
 func loadHostKey() (ssh.Signer, io.Closer, error) {
 	signer, err := newHostSigner(tpm.SignerOptions{
-		Salt:             []byte(hostKeySalt),
-		StatePath:        paths.HostSignerStateFile(),
-		OnIdentityChange: tpm.RecreateIdentity,
+		Salt:      []byte(hostKeySalt),
+		StatePath: paths.HostSignerStateFile(),
+		Recreate:  true,
 	})
 	if err != nil {
 		return nil, nil, err

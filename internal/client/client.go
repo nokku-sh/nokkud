@@ -72,16 +72,12 @@ func New(ctx context.Context, cache *state.Cache, config *state.Config, opts Opt
 	}
 	// The identity is bound to the enrollment, so only a new enrollment may
 	// replace a changed one. It registers the new key anyway.
-	onChange := tpm.FailOnIdentityChange
-	if opts.EnrollToken != "" {
-		onChange = tpm.RecreateIdentity
-	}
-	proofer, err := dpopclient.NewProofer(
-		[]byte(signerSalt),
-		paths.SignerStateFile(),
-		opts.RequireTPM,
-		onChange,
-	)
+	proofer, err := dpopclient.NewProofer(tpm.SignerOptions{
+		Salt:       []byte(signerSalt),
+		StatePath:  paths.SignerStateFile(),
+		RequireTPM: opts.RequireTPM,
+		Recreate:   opts.EnrollToken != "",
+	})
 	if err != nil {
 		return nil, err
 	}
