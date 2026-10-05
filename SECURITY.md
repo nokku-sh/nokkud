@@ -157,8 +157,11 @@ control stream to the backend.
   (output only). SFTP (and so modern `scp`) is audited as a `subsystem`
   event, the file contents are not recorded. Recordings stream to the backend
   live, and any the backend did not fully receive (offline, upload error,
-  crash) are uploaded again every few minutes. Recordings have size- and
-  age-based retention.
+  crash) are uploaded again every few minutes. Once the backend confirms a
+  recording, the local file is deleted, so the backend holds the only copy
+  and its retention applies. A recording still waiting for upload is dropped
+  with a warning in the log after 30 days, or oldest first once the waiting
+  ones pass 1 GiB.
 - **Recording fails open, except at the size cap.** A session that cannot
   be recorded (under 512 MiB free, a file error) still runs, so a full disk
   never locks admins out, but every gap raises a `recording_degraded` audit

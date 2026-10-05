@@ -336,7 +336,7 @@ func (r *Recorder) closeLocked() {
 			slog.Warn("recording upload incomplete, retrying later", "error", err)
 			return
 		}
-		markUploaded(r.path)
+		removeUploaded(r.path)
 	}()
 }
 
