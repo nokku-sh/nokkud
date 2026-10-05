@@ -20,7 +20,7 @@ func TestIsNoiseInterface(t *testing.T) {
 		{"dummy0", true},
 		{"cali-ab12", true},
 		{"flannel.1", true},
-		{"bond1", true},
+		{"bond1", false},
 		{"eth0", false},
 		{"enp3s0", false},
 		{"wg0", false},
