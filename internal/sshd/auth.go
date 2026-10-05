@@ -154,7 +154,7 @@ func (s *Server) verifiedPublicKey(
 	perms *ssh.Permissions,
 	_ string,
 ) (*ssh.Permissions, error) {
-	sysUser, err := sysutil.LookupAccount(conn.User())
+	sysUser, err := s.lookupAccount(conn.User())
 	if err == nil {
 		err = sysutil.LoginAllowed(sysUser, s.nologinFile)
 	}

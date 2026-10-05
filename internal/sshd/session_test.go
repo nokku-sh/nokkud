@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -510,4 +511,98 @@ func TestSessionConnectionEnv(t *testing.T) {
 		local+" "+localPort+" "+serverPort+"|"+local+" "+localPort+" "+server+" "+serverPort,
 		string(out),
 	)
+}
+
+// TestMissingHomeRunsInRoot verifies a user who cannot enter the home
+// directory gets sshd's warning and runs in /.
+func TestMissingHomeRunsInRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+	ca := newTestCA(t)
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) {
+		lookup := s.lookupAccount
+		s.lookupAccount = func(name string) (*sysutil.Account, error) {
+			account, err := lookup(name)
+			if err == nil {
+				account.Home = missing
+			}
+			return account, err
+		}
+	})
+	defer closeFn()
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	require.NoError(t, err, "dial")
+	defer client.Close()
+	warning := "Could not chdir to home directory " + missing + ": No such file or directory"
+
+	t.Run("command", func(t *testing.T) {
+		sess, sessErr := client.NewSession()
+		require.NoError(t, sessErr, "new session")
+		defer sess.Close()
+		var stdout, stderr bytes.Buffer
+		sess.Stdout, sess.Stderr = &stdout, &stderr
+		require.NoError(t, sess.Run("pwd"))
+		assert.Equal(t, "/\n", stdout.String())
+		assert.Contains(t, stderr.String(), warning+"\n")
+	})
+
+	t.Run("command on a pty", func(t *testing.T) {
+		sess, sessErr := client.NewSession()
+		require.NoError(t, sessErr, "new session")
+		defer sess.Close()
+		require.NoError(t, sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "request pty")
+		out, outErr := sess.Output("pwd")
+		require.NoError(t, outErr)
+		assert.Equal(t, warning+"\r\n/\r\n", string(out), "the warning comes first")
+	})
+}
+
+// TestNoTermWithoutPTY verifies a session without a pty has no TERM, like
+// under sshd, not even the daemon's own.
+func TestNoTermWithoutPTY(t *testing.T) {
+	t.Setenv("TERM", "screen")
+	ca := newTestCA(t)
+	addr, closeFn := startTestServer(t, ca)
+	defer closeFn()
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	require.NoError(t, err, "dial")
+	defer client.Close()
+	sess, err := client.NewSession()
+	require.NoError(t, err, "new session")
+	defer sess.Close()
+
+	// What nokkud handed the shell. bash sets TERM=dumb for itself when it has none.
+	out, err := sess.Output(`tr '\0' '\n' </proc/$$/environ | grep '^TERM=' || echo unset`)
+	require.NoError(t, err)
+	assert.Equal(t, "unset\n", string(out))
+}
+
+// TestFullRecordingEndsSession verifies a session is closed when its
+// recording reaches the size limit, so nothing runs unrecorded.
+func TestFullRecordingEndsSession(t *testing.T) {
+	ca := newTestCA(t)
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{Record: true}}, func(s *Server) {
+		require.NoError(t, paths.Verify(), "verify paths")
+		s.maxRecording = 1024
+	})
+	defer closeFn()
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	require.NoError(t, err, "dial")
+	defer client.Close()
+	sess, err := client.NewSession()
+	require.NoError(t, err, "new session")
+	defer sess.Close()
+	var stderr bytes.Buffer
+	sess.Stderr = &stderr
+
+	done := make(chan error, 1)
+	go func() { done <- sess.Run("head -c 200000 /dev/urandom | base64; exec sleep 30") }()
+	select {
+	case err = <-done:
+		exitErr, ok := errors.AsType[*ssh.ExitError](err)
+		require.True(t, ok, "want an exit status, got %v", err)
+		assert.Equal(t, 1, exitErr.ExitStatus())
+	case <-time.After(15 * time.Second):
+		t.Fatal("the session went on unrecorded")
+	}
+	assert.Contains(t, stderr.String(), "the recording of this session is full")
 }

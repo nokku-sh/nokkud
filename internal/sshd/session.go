@@ -2,6 +2,8 @@ package sshd
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"uuid"
 
@@ -308,7 +311,7 @@ func (sess *session) ptyReq(req *ssh.Request) {
 		}
 	}
 	sess.ptmx, sess.tty = ptmx, tty
-	// A client without TERM sends an empty one. Like OpenSSH, keep the default.
+	// A client without TERM sends an empty one, buildEnv then sets the default.
 	if r.Term != "" {
 		sess.setEnv("TERM", r.Term)
 	}
@@ -475,21 +478,49 @@ func (sess *session) shellCmd() (*exec.Cmd, error) {
 	return cmd, nil
 }
 
+// startInHome starts the session's process in the user's home. The chdir
+// happens in the child after the credential drop, so only a failed start
+// shows that the user cannot enter it. Like sshd, the process then runs in /
+// and the caller prints the returned notice.
+func (sess *session) startInHome(start func(*exec.Cmd) error) (cmd *exec.Cmd, notice string, err error) {
+	if cmd, err = sess.shellCmd(); err != nil {
+		return nil, "", err
+	}
+	if err = start(cmd); err == nil {
+		return cmd, "", nil
+	}
+	errno, ok := errors.AsType[syscall.Errno](err)
+	if !ok {
+		return nil, "", err
+	}
+	retry, retryErr := sess.shellCmd()
+	if retryErr != nil {
+		return nil, "", err
+	}
+	retry.Dir = "/"
+	if start(retry) != nil {
+		return nil, "", err
+	}
+	reason := errno.Error()
+	return retry, fmt.Sprintf(
+		"Could not chdir to home directory %s: %s%s",
+		sess.sysUser.Home, strings.ToUpper(reason[:1]), reason[1:],
+	), nil
+}
+
 // runPTY runs the shell or the command in the session's pty and relays bytes
 // until it exits.
 func (sess *session) runPTY() {
 	defer sess.ptmx.Close()
 	defer sess.tty.Close()
 
-	cmd, err := sess.shellCmd()
+	cmd, notice, err := sess.startInHome(func(cmd *exec.Cmd) error {
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = sess.tty, sess.tty, sess.tty
+		// The pty becomes the controlling terminal of the new session.
+		cmd.SysProcAttr.Setctty = true
+		return cmd.Start()
+	})
 	if err != nil {
-		sess.exit(1)
-		return
-	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = sess.tty, sess.tty, sess.tty
-	// The pty becomes the controlling terminal of the new session.
-	cmd.SysProcAttr.Setctty = true
-	if err = cmd.Start(); err != nil {
 		slog.Debug("start pty command failed", "error", err)
 		sess.exit(1)
 		return
@@ -522,6 +553,9 @@ func (sess *session) runPTY() {
 	if sess.rec != nil {
 		out = recOut{w: sess, rec: sess.rec}
 	}
+	if notice != "" {
+		_, _ = io.WriteString(out, notice+"\r\n")
+	}
 	_, _ = io.Copy(out, sess.ptmx)
 	_ = sess.ptmx.Close()
 	_ = cmd.Wait()
@@ -534,20 +568,28 @@ func (sess *session) runPTY() {
 // runPlain runs the shell or the command without a pty, the non-interactive
 // `ssh host command` path.
 func (sess *session) runPlain() {
-	cmd, err := sess.shellCmd()
-	if err != nil {
-		sess.exit(1)
-		return
-	}
-
 	// Plain sessions record too: non-interactive exec is exactly where
 	// sensitive output (cat, curl, git) leaves the machine.
 	sess.startRecorder(80, 24)
 
-	// Stderr goes to the extended data stream like sshd. Length-prefixed
-	// protocols break if stderr bytes interleave with stdout.
-	cmd.Stderr = sess.Stderr()
-	sess.runProcess(cmd)
+	var stdin io.WriteCloser
+	var stdout io.ReadCloser
+	cmd, notice, err := sess.startInHome(func(cmd *exec.Cmd) (err error) {
+		// Stderr goes to the extended data stream like sshd. Length-prefixed
+		// protocols break if stderr bytes interleave with stdout.
+		cmd.Stderr = sess.Stderr()
+		stdin, stdout, err = startPiped(cmd)
+		return err
+	})
+	if err != nil {
+		slog.Debug("start command failed", "error", err)
+		sess.exit(1)
+		return
+	}
+	if notice != "" {
+		_, _ = io.WriteString(sess.Stderr(), notice+"\n")
+	}
+	sess.relay(cmd, stdin, stdout)
 }
 
 // startRecorder builds the recorder when recording is on. No-op when off or
@@ -582,7 +624,8 @@ func (sess *session) startRecorder(width, height int) {
 		User:      sess.sysUser.Name,
 		Term:      term,
 		Sink:      sink,
-		OnLimit:   func() { sess.recordingDegraded("size limit reached, rest of the session not recorded") },
+		OnLimit:   sess.recordingFull,
+		MaxSize:   sess.server.maxRecording,
 	})
 	if err != nil {
 		// Recording fails open so a full disk never locks admins out, but
@@ -595,6 +638,19 @@ func (sess *session) startRecorder(width, height int) {
 		return
 	}
 	sess.rec = rec
+}
+
+// recordingFull ends the session at the recording's size limit, so nothing
+// runs unrecorded and flooding output cannot switch recording off.
+func (sess *session) recordingFull() {
+	sess.recordingDegraded("size limit reached, session ended")
+	notice := "nokkud: the recording of this session is full, closing it"
+	if sess.ptmx != nil {
+		_, _ = io.WriteString(sess, "\r\n"+notice+"\r\n")
+	} else {
+		_, _ = io.WriteString(sess.Stderr(), notice+"\n")
+	}
+	sess.exit(1)
 }
 
 func (sess *session) recordingDegraded(reason string) {
@@ -615,33 +671,24 @@ func (t recOut) Write(p []byte) (int, error) {
 	return t.w.Write(p)
 }
 
-// runProcess relays the channel to cmd's stdin and stdout, then reports the
-// exit. The caller configures cmd first.
-func (sess *session) runProcess(cmd *exec.Cmd) {
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		slog.Debug("process stdin pipe failed", "error", err)
-		sess.exit(1)
-		return
+// startPiped starts cmd with pipes on stdin and stdout. A failed start closes
+// both.
+func startPiped(cmd *exec.Cmd) (stdin io.WriteCloser, stdout io.ReadCloser, err error) {
+	if stdin, err = cmd.StdinPipe(); err != nil {
+		return nil, nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
+	if stdout, err = cmd.StdoutPipe(); err != nil {
 		_ = stdin.Close()
-		slog.Debug("process stdout pipe failed", "error", err)
-		sess.exit(1)
-		return
+		return nil, nil, err
 	}
-
 	// Bounds Wait when a background process keeps stderr open.
 	cmd.WaitDelay = time.Second
+	return stdin, stdout, cmd.Start()
+}
 
-	if err = cmd.Start(); err != nil {
-		slog.Debug("start command failed", "error", err)
-		_ = stdin.Close()
-		_ = stdout.Close()
-		sess.exit(1)
-		return
-	}
+// relay copies between the channel and the started cmd's pipes, then reports
+// the exit.
+func (sess *session) relay(cmd *exec.Cmd, stdin io.WriteCloser, stdout io.ReadCloser) {
 	sess.setProc(cmd.Process)
 	stop := context.AfterFunc(sess.ctx, func() { _ = stdout.Close() })
 	defer stop()
@@ -697,6 +744,10 @@ func (sess *session) buildEnv() []string {
 	}
 	if sess.ptmx != nil {
 		env = append(env, "SSH_TTY="+sess.tty.Name())
+		// Like sshd, only a pty session has a TERM.
+		if _, ok := sess.envValue("TERM"); !ok {
+			env = append(env, "TERM=xterm-256color")
+		}
 	}
 	if sess.agentSock != "" {
 		env = append(env, "SSH_AUTH_SOCK="+sess.agentSock)

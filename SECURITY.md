@@ -159,7 +159,8 @@ control stream to the backend.
   live, and any the backend did not fully receive (offline, upload error,
   crash) are uploaded again every few minutes. Recordings have size- and
   age-based retention.
-- **Recording fails open.** A session that cannot be recorded (under 512 MiB
-  free, the 50 MB per-recording cap, a file error) still runs, so a full disk
+- **Recording fails open, except at the size cap.** A session that cannot
+  be recorded (under 512 MiB free, a file error) still runs, so a full disk
   never locks admins out, but every gap raises a `recording_degraded` audit
-  event with the reason.
+  event with the reason. A recording that reaches the 50 MB cap ends its
+  session with a notice, so flooding output cannot switch recording off.
