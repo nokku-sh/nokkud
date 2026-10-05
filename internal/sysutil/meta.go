@@ -14,7 +14,7 @@ import (
 var noisePrefixes = []string{
 	"docker", "veth", "br-", "virbr", "vmnet",
 	"vboxnet", "vnic", "vethernet",
-	"lo", "dummy", "bond", "teql", "gre", "sit",
+	"lo", "dummy", "teql", "gre", "sit",
 	"ip6tnl", "ip6gre",
 	"cali", "flannel", "cni",
 	"kube", "weave",
