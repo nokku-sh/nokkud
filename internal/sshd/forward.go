@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-
-	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 // tcpipChannelData is the payload of a direct-tcpip (RFC 4254 7.2) or
@@ -32,7 +30,7 @@ type tcpipForwardData struct {
 // connState tracks one connection's -R listeners and channel slots.
 type connState struct {
 	conn     *ssh.ServerConn
-	user     *sysutil.Account
+	user     *account
 	channels chan struct{}
 
 	mu       sync.Mutex
@@ -40,7 +38,7 @@ type connState struct {
 }
 
 func newConnState(conn *ssh.ServerConn, limit int) *connState {
-	sysUser, _ := conn.Permissions.ExtraData[accountKey].(*sysutil.Account)
+	sysUser, _ := conn.Permissions.ExtraData[accountKey].(*account)
 	return &connState{
 		conn:     conn,
 		user:     sysUser,

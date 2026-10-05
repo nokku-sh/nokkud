@@ -1,4 +1,4 @@
-package sysutil
+package recording
 
 import (
 	"fmt"
@@ -8,9 +8,9 @@ import (
 // minFreeDisk leaves room for the system, small cloud disks rarely have more.
 const minFreeDisk = 512 << 20
 
-// CheckDiskSpace errors when fewer than minFreeDisk bytes are free on path's
+// checkDiskSpace errors when fewer than minFreeDisk bytes are free on path's
 // filesystem, so recording bails before filling the disk.
-func CheckDiskSpace(path string) error {
+func checkDiskSpace(path string) error {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
 		return fmt.Errorf("statfs failed: %w", err)

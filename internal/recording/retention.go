@@ -3,12 +3,14 @@ package recording
 import (
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
-	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 const (
@@ -18,8 +20,8 @@ const (
 	maxAge = 30 * 24 * time.Hour
 )
 
-// enforceRetention removes old recordings based on time and total space
-// constraints.
+// enforceRetention removes recordings older than maxAge, then the oldest ones
+// while the rest exceeds maxTotalSpace.
 func enforceRetention() error {
 	recordsDir := paths.RecordsDir()
 	entries, err := os.ReadDir(recordsDir)
@@ -30,10 +32,11 @@ func enforceRetention() error {
 		return err
 	}
 
-	var files []os.FileInfo
+	cutoff := time.Now().Add(-maxAge)
+	var kept []os.FileInfo
+	var total int64
 	for _, e := range entries {
-		if e.IsDir() ||
-			(!strings.HasSuffix(e.Name(), ".cast") && !strings.HasSuffix(e.Name(), ".cast.gz")) {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), castSuffix) {
 			continue
 		}
 		var info os.FileInfo
@@ -41,10 +44,26 @@ func enforceRetention() error {
 		if err != nil {
 			continue
 		}
-		files = append(files, info)
+		if info.ModTime().Before(cutoff) {
+			if err = os.Remove(filepath.Join(recordsDir, info.Name())); err != nil {
+				slog.Debug("remove expired file", "path", info.Name(), "error", err)
+			}
+			continue
+		}
+		kept = append(kept, info)
+		total += info.Size()
 	}
 
-	sysutil.PruneOldest(recordsDir, files, maxAge, maxTotalSpace)
+	slices.SortFunc(kept, func(a, b os.FileInfo) int {
+		return a.ModTime().Compare(b.ModTime())
+	})
+	for total > maxTotalSpace && len(kept) > 0 {
+		total -= kept[0].Size()
+		if err = os.Remove(filepath.Join(recordsDir, kept[0].Name())); err != nil {
+			slog.Debug("remove over-limit file", "path", kept[0].Name(), "error", err)
+		}
+		kept = kept[1:]
+	}
 	return nil
 }
 

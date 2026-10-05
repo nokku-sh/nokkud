@@ -1,3 +1,4 @@
+// Package sysutil reports facts about the host: its users, addresses and metadata.
 package sysutil
 
 import (

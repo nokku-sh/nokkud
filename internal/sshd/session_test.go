@@ -20,7 +20,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
-	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 func TestRecoverPanic(t *testing.T) {
@@ -240,11 +239,11 @@ func TestPlainSessionRecorded(t *testing.T) {
 	}
 	srv, err := New(Options{
 		Principals:    principals,
-		TrustedCAs:    []ssh.PublicKey{ca.pub},
 		Policy:        Policy{Record: true},
 		RecordingSink: factory,
 	})
 	must.NoError(err, "new server")
+	srv.SetTrust(string(ssh.MarshalAuthorizedKey(ca.pub)), nil)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	must.NoError(err, "listen")
 	defer func() { _ = l.Close() }()
@@ -301,7 +300,9 @@ func TestLoginDeniedByNologin(t *testing.T) {
 	must.NoError(os.WriteFile(nologin, []byte("maintenance\n"), 0o644))
 
 	ca := newTestCA(t)
-	addr, closeFn := startTestServerOpts(t, ca, Options{NologinFile: nologin, Policy: Policy{AllowForwarding: true}})
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{AllowForwarding: true}}, func(s *Server) {
+		s.nologinFile = nologin
+	})
 	defer closeFn()
 	echo := testEchoServer(t)
 	defer echo.Close()
@@ -360,11 +361,11 @@ func TestRecordingCorrelatesWebSessionID(t *testing.T) {
 			}
 			srv, err := New(Options{
 				Principals:    principals,
-				TrustedCAs:    []ssh.PublicKey{ca.pub},
 				Policy:        Policy{Record: true},
 				RecordingSink: factory,
 			})
 			must.NoError(err, "new server")
+			srv.SetTrust(string(ssh.MarshalAuthorizedKey(ca.pub)), nil)
 			l, err := net.Listen("tcp", "127.0.0.1:0")
 			must.NoError(err, "listen")
 			defer func() { _ = l.Close() }()
@@ -432,7 +433,7 @@ func TestServerSecondPtyRejected(t *testing.T) {
 // shell request gets a login shell, argv[0] with a dash, so the profile is
 // read. A command runs under the shell's plain name. A pty changes neither.
 func TestShellStartsLikeOpenSSH(t *testing.T) {
-	account, err := sysutil.LookupAccount(currentUser(t))
+	account, err := lookupAccount(currentUser(t))
 	require.NoError(t, err)
 	shell := filepath.Base(account.Shell)
 
@@ -520,7 +521,7 @@ func TestMissingHomeRunsInRoot(t *testing.T) {
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) {
 		lookup := s.lookupAccount
-		s.lookupAccount = func(name string) (*sysutil.Account, error) {
+		s.lookupAccount = func(name string) (*account, error) {
 			account, err := lookup(name)
 			if err == nil {
 				account.Home = missing

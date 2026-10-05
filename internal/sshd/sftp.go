@@ -7,8 +7,6 @@ import (
 	"os/exec"
 
 	"github.com/pkg/sftp"
-
-	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 // sftpServerCmd re-execs the daemon as the sftp-server. Tests swap it to
@@ -49,7 +47,7 @@ func (sess *session) runSFTP() {
 		sess.exit(1)
 		return
 	}
-	attr, err := sysutil.SysProcAttr(sess.sysUser)
+	attr, err := sysProcAttr(sess.sysUser)
 	if err != nil {
 		sess.exit(1)
 		return

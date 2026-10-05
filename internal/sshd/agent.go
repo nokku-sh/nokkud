@@ -11,8 +11,6 @@ import (
 	"sync"
 
 	"golang.org/x/crypto/ssh"
-
-	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 const (
@@ -49,7 +47,7 @@ func (sess *session) agentRequest(req *ssh.Request) bool {
 
 // newAgentSock creates a Unix socket only the session user can reach. The
 // MkdirTemp dir is root-owned and 0700, so both dir and socket get chowned.
-func newAgentSock(sysUser *sysutil.Account) (ln net.Listener, sock string, err error) {
+func newAgentSock(sysUser *account) (ln net.Listener, sock string, err error) {
 	dir, err := os.MkdirTemp("", "auth-agent")
 	if err != nil {
 		return nil, "", err

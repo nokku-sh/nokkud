@@ -1,5 +1,4 @@
-// Package sysutil provides OS-level helpers for the SSH server: user resolution, session env, shells, disk.
-package sysutil
+package sshd
 
 import (
 	"bytes"
@@ -11,15 +10,16 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
-// NologinFile is the maintenance lockout file, matching OpenSSH: only root may
+// nologinPath is the maintenance lockout file, matching OpenSSH: only root may
 // log in while it exists.
-const NologinFile = "/etc/nologin"
+const nologinPath = "/etc/nologin"
 
-// Account is a local account as the password database has it.
-type Account struct {
+// account is a local account as the password database has it.
+type account struct {
 	Name  string
 	UID   uint32
 	GID   uint32
@@ -27,9 +27,9 @@ type Account struct {
 	Shell string
 }
 
-// LoginAllowed reports whether the account may log in. Root is never blocked,
+// loginAllowed reports whether the account may log in. Root is never blocked,
 // so an operator can still get in to fix the machine.
-func LoginAllowed(a *Account, nologinPath string) error {
+func loginAllowed(a *account, nologinPath string) error {
 	if a.UID == 0 {
 		return nil
 	}
@@ -43,9 +43,9 @@ func LoginAllowed(a *Account, nologinPath string) error {
 	return fmt.Errorf("logins are disabled: %s", strings.TrimSpace(string(msg)))
 }
 
-// LookupAccount resolves a local account through getent, so NSS and LDAP
+// lookupAccount resolves a local account through getent, so NSS and LDAP
 // users resolve too. A static binary cannot see those on its own.
-func LookupAccount(name string) (*Account, error) {
+func lookupAccount(name string) (*account, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// #nosec G204 - name passed the principals lookup, which only holds valid usernames.
@@ -63,7 +63,7 @@ func LookupAccount(name string) (*Account, error) {
 	if uidErr != nil || gidErr != nil {
 		return nil, fmt.Errorf("user %q has a bad passwd entry", name)
 	}
-	return &Account{
+	return &account{
 		Name: name,
 		UID:  uint32(uid),
 		GID:  uint32(gid),
@@ -75,7 +75,7 @@ func LookupAccount(name string) (*Account, error) {
 }
 
 // groupIDs returns the account's supplementary group ids.
-func groupIDs(a *Account) ([]uint32, error) {
+func groupIDs(a *account) ([]uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "id", "-G", a.Name).Output() // #nosec G204
@@ -93,9 +93,9 @@ func groupIDs(a *Account) ([]uint32, error) {
 	return ids, nil
 }
 
-// CmdEnv builds the account's session environment: a fresh HOME/USER/
+// cmdEnv builds the account's session environment: a fresh HOME/USER/
 // SHELL/PATH plus a locale allowlist. TERM is the session's to set.
-func CmdEnv(a *Account) []string {
+func cmdEnv(a *account) []string {
 	envMap := map[string]string{
 		"HOME":    a.Home,
 		"USER":    a.Name,
@@ -125,4 +125,22 @@ func CmdEnv(a *Account) []string {
 		env = append(env, k+"="+v)
 	}
 	return env
+}
+
+// sysProcAttr builds session process attributes: a new session, plus a
+// credentials drop to the account and its groups when running as root.
+func sysProcAttr(a *account) (*syscall.SysProcAttr, error) {
+	attr := &syscall.SysProcAttr{Setsid: true}
+
+	// Non-root may not call setgroups(2) even to keep its own groups (EPERM),
+	// so Credential here would make every session fail at exec.
+	if os.Geteuid() != 0 {
+		return attr, nil
+	}
+	groups, err := groupIDs(a)
+	if err != nil {
+		return nil, err
+	}
+	attr.Credential = &syscall.Credential{Uid: a.UID, Gid: a.GID, Groups: groups}
+	return attr, nil
 }

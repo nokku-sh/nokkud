@@ -114,9 +114,9 @@ func startTestServerOpts(
 
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	extra.Principals = principals
-	extra.TrustedCAs = []ssh.PublicKey{ca.pub}
 	srv, err := New(extra)
 	require.NoError(t, err, "new server")
+	srv.SetTrust(string(ssh.MarshalAuthorizedKey(ca.pub)), nil)
 	for _, tweak := range tweaks {
 		tweak(srv)
 	}
@@ -378,9 +378,9 @@ func TestServerLivePrincipals(t *testing.T) {
 		Principals: func(username string) []string {
 			return cache.GetUUIDs(username)
 		},
-		TrustedCAs: []ssh.PublicKey{ca.pub},
 	})
 	must.NoError(err, "new server")
+	srv.SetTrust(string(ssh.MarshalAuthorizedKey(ca.pub)), nil)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	must.NoError(err, "listen")
 	go srv.Serve(t.Context(), l)
