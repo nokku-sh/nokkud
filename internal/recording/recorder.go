@@ -20,7 +20,7 @@ import (
 
 const (
 	// maxSize caps a recording's compressed size on disk. Recording stops
-	// there and the session goes on, the cut is audited.
+	// there and OnLimit ends the session.
 	maxSize = 50 << 20
 	// maxIdleTime is the maximum gap between events recorded in the cast.
 	maxIdleTime = 2 * time.Second
@@ -58,8 +58,10 @@ type Options struct {
 	// Sink, when set, receives every flushed batch in addition to the local file.
 	// A nil error from its Close confirms the upload.
 	Sink io.WriteCloser
-	// OnLimit is called once when the recording stops at maxSize.
+	// OnLimit is called once when the recording stops at MaxSize.
 	OnLimit func()
+	// MaxSize defaults to 50 MB. Tests shrink it.
+	MaxSize int64
 }
 
 // Recorder writes session events to a single gzipped asciicast v3 file.
@@ -67,6 +69,7 @@ type Recorder struct {
 	mu        sync.Mutex
 	path      string
 	onLimit   func()
+	maxSize   int64
 	cw        *countingWriter
 	gw        *gzip.Writer
 	enc       *json.Encoder
@@ -175,6 +178,7 @@ func New(opts Options) (*Recorder, error) {
 	rec := &Recorder{
 		path:      path,
 		onLimit:   opts.OnLimit,
+		maxSize:   cmp.Or(opts.MaxSize, maxSize),
 		cw:        cw,
 		gw:        gw,
 		enc:       enc,
@@ -221,7 +225,7 @@ func (r *Recorder) event(eventType string, data []byte) {
 		r.mu.Unlock()
 		return
 	}
-	if r.cw.written < maxSize {
+	if r.cw.written < r.maxSize {
 		r.emit(eventType, data)
 		r.mu.Unlock()
 		return
@@ -229,7 +233,7 @@ func (r *Recorder) event(eventType string, data []byte) {
 	r.closeLocked()
 	r.mu.Unlock()
 
-	slog.Warn("recording size limit reached, stopping", "size", maxSize)
+	slog.Warn("recording size limit reached, stopping", "size", r.maxSize)
 	if r.onLimit != nil {
 		r.onLimit()
 	}

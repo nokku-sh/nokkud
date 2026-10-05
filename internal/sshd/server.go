@@ -79,6 +79,8 @@ type Server struct {
 	recordingSink RecordingSink
 	nologinFile   string
 	policy        atomic.Pointer[Policy]
+	// Tests swap the lookup to shape the account.
+	lookupAccount func(name string) (*sysutil.Account, error)
 
 	// Limits live on the server so tests can shrink them.
 	conns chan struct{}
@@ -88,6 +90,7 @@ type Server struct {
 	localStartups chan struct{}
 	maxChannels   int
 	aliveInterval time.Duration
+	maxRecording  int64
 
 	startupMu      sync.Mutex
 	sourceStartups map[netip.Addr]int
@@ -117,6 +120,7 @@ func New(opts Options) (*Server, error) {
 		log:            cmp.Or(opts.Log, slog.Default()),
 		recordingSink:  opts.RecordingSink,
 		nologinFile:    opts.NologinFile,
+		lookupAccount:  sysutil.LookupAccount,
 		conns:          make(chan struct{}, maxConns),
 		startups:       make(chan struct{}, maxStartups),
 		localStartups:  make(chan struct{}, maxStartups),

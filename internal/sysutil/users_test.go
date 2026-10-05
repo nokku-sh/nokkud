@@ -101,14 +101,14 @@ func TestCmdEnv(t *testing.T) {
 		"LOGNAME": "alice",
 		"SHELL":   "/bin/sh",
 		"LANG":    "de_DE.UTF-8",
-		"TERM":    "screen-256color",
 		"TZ":      "Europe/Berlin",
 	} {
 		is.Equal(want, got[key])
 	}
 	is.NotEmpty(got["PATH"])
 
-	for _, leaked := range []string{"DISPLAY", "XAUTHORITY", "SSH_AUTH_SOCK", "SSH_CONNECTION", "LD_PRELOAD", "BASH_ENV"} {
+	// TERM is the session's to set, the daemon's own never passes.
+	for _, leaked := range []string{"TERM", "DISPLAY", "XAUTHORITY", "SSH_AUTH_SOCK", "SSH_CONNECTION", "LD_PRELOAD", "BASH_ENV"} {
 		is.NotContains(got, leaked)
 	}
 }

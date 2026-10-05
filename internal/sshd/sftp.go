@@ -2,6 +2,7 @@ package sshd
 
 import (
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 
@@ -55,5 +56,11 @@ func (sess *session) runSFTP() {
 	}
 	cmd.SysProcAttr = attr
 	cmd.Dir = home
-	sess.runProcess(cmd)
+	stdin, stdout, err := startPiped(cmd)
+	if err != nil {
+		slog.Debug("start sftp failed", "error", err)
+		sess.exit(1)
+		return
+	}
+	sess.relay(cmd, stdin, stdout)
 }
