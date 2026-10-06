@@ -41,7 +41,10 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		}
 		return errDaemonRejected
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED:
-	case nokkuv1.DaemonStatus_DAEMON_STATUS_UNSPECIFIED, nokkuv1.DaemonStatus_DAEMON_STATUS_PENDING:
+	case nokkuv1.DaemonStatus_DAEMON_STATUS_PENDING:
+		// A pending answer carries no principals and no CA. Applying it drops
+		// what an earlier approval synced, so taking the approval back works.
+	case nokkuv1.DaemonStatus_DAEMON_STATUS_UNSPECIFIED:
 		return nil
 	}
 

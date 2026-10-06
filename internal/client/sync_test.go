@@ -32,12 +32,17 @@ type fakeBackend struct {
 
 	ca    string
 	signs atomic.Int32
+	// pending answers like a backend that has not approved the daemon.
+	pending atomic.Bool
 }
 
 func (b *fakeBackend) SyncDaemon(
 	context.Context,
 	*nokkuv1.SyncDaemonRequest,
 ) (*nokkuv1.SyncDaemonResponse, error) {
+	if b.pending.Load() {
+		return &nokkuv1.SyncDaemonResponse{Status: nokkuv1.DaemonStatus_DAEMON_STATUS_PENDING.Enum()}, nil
+	}
 	return &nokkuv1.SyncDaemonResponse{
 		Status:       nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED.Enum(),
 		CaPublicKey:  &b.ca,
@@ -139,4 +144,23 @@ func TestSyncAppliesStateWithoutHostCert(t *testing.T) {
 	active, _ = loaded.CAs()
 	is.Equal(backend.ca, active)
 	is.Equal([]string{"subject-1"}, loaded.GetUUIDs("deploy"))
+}
+
+// An approval that is taken back must not leave the host serving what it
+// synced while it was approved.
+func TestSyncPendingDropsTrust(t *testing.T) {
+	backend := &fakeBackend{ca: newTestCAKey(t)}
+	c := newSyncClient(t, backend)
+	require.NoError(t, c.syncDaemon(t.Context()))
+	require.NotEmpty(t, c.cache.GetUUIDs("deploy"))
+
+	backend.pending.Store(true)
+	require.NoError(t, c.syncDaemon(t.Context()))
+	assert.Empty(t, c.cache.GetUUIDs("deploy"), "a pending daemon still honors its old grants")
+	active, _ := c.cache.CAs()
+	assert.Empty(t, active, "a pending daemon still trusts its old CA")
+
+	loaded := state.NewCache()
+	require.NoError(t, loaded.Load())
+	assert.Empty(t, loaded.GetUUIDs("deploy"), "the old grants are still on disk")
 }
