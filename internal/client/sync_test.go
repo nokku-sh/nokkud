@@ -47,7 +47,9 @@ func (b *fakeBackend) SyncDaemon(
 		Status:       nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED.Enum(),
 		CaPublicKey:  &b.ca,
 		StateVersion: new(int64(7)),
-		Principals:   []*nokkuv1.PrincipalUsers{{Username: new("deploy"), Ids: []string{"subject-1"}}},
+		Principals: []*nokkuv1.PrincipalUsers{
+			{Username: new("deploy"), CertPrincipals: []string{"subject-1"}},
+		},
 	}, nil
 }
 
@@ -80,7 +82,7 @@ func newSyncClient(t *testing.T, backend *fakeBackend) *Client {
 	t.Cleanup(api.Close)
 
 	cache := state.NewCache()
-	srv, err := sshd.New(sshd.Options{Principals: cache.GetUUIDs})
+	srv, err := sshd.New(sshd.Options{Principals: cache.CertPrincipals})
 	require.NoError(t, err)
 	// Serve owns the host key, so it has to run for the key to be released.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -115,7 +117,7 @@ func TestSyncAppliesStateWithoutHostCert(t *testing.T) {
 	c := newSyncClient(t, backend)
 
 	must.NoError(c.syncDaemon(t.Context()), "a sync must not fail on the host certificate")
-	is.Equal([]string{"subject-1"}, c.cache.GetUUIDs("deploy"), "the grant did not land")
+	is.Equal([]string{"subject-1"}, c.cache.CertPrincipals("deploy"), "the grant did not land")
 	active, _ := c.cache.CAs()
 	is.Equal(backend.ca, active, "the CA did not land")
 	is.EqualValues(7, c.cache.GetStateVersion())
@@ -143,7 +145,7 @@ func TestSyncAppliesStateWithoutHostCert(t *testing.T) {
 	must.NoError(loaded.Load())
 	active, _ = loaded.CAs()
 	is.Equal(backend.ca, active)
-	is.Equal([]string{"subject-1"}, loaded.GetUUIDs("deploy"))
+	is.Equal([]string{"subject-1"}, loaded.CertPrincipals("deploy"))
 }
 
 // An approval that is taken back must not leave the host serving what it
@@ -152,15 +154,15 @@ func TestSyncPendingDropsTrust(t *testing.T) {
 	backend := &fakeBackend{ca: newTestCAKey(t)}
 	c := newSyncClient(t, backend)
 	require.NoError(t, c.syncDaemon(t.Context()))
-	require.NotEmpty(t, c.cache.GetUUIDs("deploy"))
+	require.NotEmpty(t, c.cache.CertPrincipals("deploy"))
 
 	backend.pending.Store(true)
 	require.NoError(t, c.syncDaemon(t.Context()))
-	assert.Empty(t, c.cache.GetUUIDs("deploy"), "a pending daemon still honors its old grants")
+	assert.Empty(t, c.cache.CertPrincipals("deploy"), "a pending daemon still honors its old grants")
 	active, _ := c.cache.CAs()
 	assert.Empty(t, active, "a pending daemon still trusts its old CA")
 
 	loaded := state.NewCache()
 	require.NoError(t, loaded.Load())
-	assert.Empty(t, loaded.GetUUIDs("deploy"), "the old grants are still on disk")
+	assert.Empty(t, loaded.CertPrincipals("deploy"), "the old grants are still on disk")
 }

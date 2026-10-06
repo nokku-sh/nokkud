@@ -24,9 +24,9 @@ func TestCacheRejectsInvalidPrincipals(t *testing.T) {
 		"":          {"uuid-1"},
 	}, nil, "", nil, 0)
 
-	is.Empty(c.GetUUIDs("../../etc"))
-	is.Empty(c.GetUUIDs("0start"))
-	is.Empty(c.GetUUIDs(""))
+	is.Empty(c.CertPrincipals("../../etc"))
+	is.Empty(c.CertPrincipals("0start"))
+	is.Empty(c.CertPrincipals(""))
 }
 
 func TestCacheReplaceCopiesInput(t *testing.T) {
@@ -38,20 +38,20 @@ func TestCacheReplaceCopiesInput(t *testing.T) {
 	c.Replace(map[string][]string{"alice": uuids}, nil, "", nil, 0)
 	uuids[0] = "mutated"
 
-	is.Equal([]string{"uuid-1", "uuid-2"}, c.GetUUIDs("alice"))
+	is.Equal([]string{"uuid-1", "uuid-2"}, c.CertPrincipals("alice"))
 }
 
-func TestCacheGetUUIDsReturnsCopy(t *testing.T) {
+func TestCacheCertPrincipalsReturnsCopy(t *testing.T) {
 	t.Parallel()
 	is := assert.New(t)
 	c := NewCache()
 	c.Replace(map[string][]string{"alice": {"uuid-1", "uuid-2"}}, nil, "", nil, 0)
 
-	got := c.GetUUIDs("alice")
+	got := c.CertPrincipals("alice")
 	got[0] = "mutated"
 
-	is.True(slices.Contains(c.GetUUIDs("alice"), "uuid-1"))
-	is.False(slices.Contains(c.GetUUIDs("alice"), "mutated"))
+	is.True(slices.Contains(c.CertPrincipals("alice"), "uuid-1"))
+	is.False(slices.Contains(c.CertPrincipals("alice"), "mutated"))
 }
 
 func TestCacheSaveLoadRoundTrip(t *testing.T) {
@@ -68,8 +68,8 @@ func TestCacheSaveLoadRoundTrip(t *testing.T) {
 
 	loaded := NewCache()
 	must.NoError(loaded.Load())
-	is.True(slices.Contains(loaded.GetUUIDs("alice"), "uuid-1"))
-	is.True(slices.Contains(loaded.GetUUIDs("bob"), "uuid-3"))
+	is.True(slices.Contains(loaded.CertPrincipals("alice"), "uuid-1"))
+	is.True(slices.Contains(loaded.CertPrincipals("bob"), "uuid-3"))
 }
 
 func TestCacheLoadMissingFileIsNotAnError(t *testing.T) {
@@ -96,7 +96,7 @@ func TestCacheDaemonConfigRoundTrip(t *testing.T) {
 	loaded := NewCache()
 	must.NoError(loaded.Load())
 	is.True(loaded.DaemonConfig().GetRecordSessions())
-	is.True(slices.Contains(loaded.GetUUIDs("alice"), "uuid-1"))
+	is.True(slices.Contains(loaded.CertPrincipals("alice"), "uuid-1"))
 }
 
 func TestCacheClearDropsSyncedConfig(t *testing.T) {
@@ -122,14 +122,14 @@ func TestCacheLoadIgnoresCorruptedFile(t *testing.T) {
 
 	loaded := NewCache()
 	must.NoError(loaded.Load())
-	is.Empty(loaded.GetUUIDs("alice"))
+	is.Empty(loaded.CertPrincipals("alice"))
 
 	// The next save replaces the corrupt file.
 	loaded.Replace(map[string][]string{"bob": {"uuid-2"}}, nil, "", nil, 0)
 	must.NoError(loaded.Save())
 	again := NewCache()
 	must.NoError(again.Load())
-	is.Equal([]string{"uuid-2"}, again.GetUUIDs("bob"))
+	is.Equal([]string{"uuid-2"}, again.CertPrincipals("bob"))
 }
 
 func TestCacheClear(t *testing.T) {
@@ -139,11 +139,11 @@ func TestCacheClear(t *testing.T) {
 	c.Replace(map[string][]string{"alice": {"uuid-1"}}, nil, "", nil, 0)
 	c.Clear()
 
-	is.Empty(c.GetUUIDs("alice"))
+	is.Empty(c.CertPrincipals("alice"))
 
 	// Clearing must not leave a nil map behind. Subsequent writes must work.
 	c.Replace(map[string][]string{"bob": {"uuid-2"}}, nil, "", nil, 0)
-	is.Equal([]string{"uuid-2"}, c.GetUUIDs("bob"))
+	is.Equal([]string{"uuid-2"}, c.CertPrincipals("bob"))
 }
 
 func TestCacheConcurrentAccess(t *testing.T) {
@@ -163,8 +163,8 @@ func TestCacheConcurrentAccess(t *testing.T) {
 					principal: {"uuid-1", "uuid-2"},
 					"other":   {"uuid-3"},
 				}, nil, "", nil, 0)
-				_ = c.GetUUIDs(principal)
-				_ = c.GetUUIDs("other")
+				_ = c.CertPrincipals(principal)
+				_ = c.CertPrincipals("other")
 			}
 		})
 	}
@@ -172,8 +172,8 @@ func TestCacheConcurrentAccess(t *testing.T) {
 
 	// No data corruption after concurrent access.
 	is.True(
-		slices.Contains(c.GetUUIDs("user"), "uuid-1") ||
-			slices.Contains(c.GetUUIDs("user2"), "uuid-1"),
+		slices.Contains(c.CertPrincipals("user"), "uuid-1") ||
+			slices.Contains(c.CertPrincipals("user2"), "uuid-1"),
 	)
 }
 
@@ -199,9 +199,9 @@ func TestCacheReplace(t *testing.T) {
 	is.Equal("ssh-ed25519 BBBB", active)
 	is.Len(retired, 1)
 
-	is.Empty(c.GetUUIDs("stale"))
-	is.Equal([]string{"uuid-1", "uuid-2"}, c.GetUUIDs("alice"))
-	is.Empty(c.GetUUIDs("../../etc"))
+	is.Empty(c.CertPrincipals("stale"))
+	is.Equal([]string{"uuid-1", "uuid-2"}, c.CertPrincipals("alice"))
+	is.Empty(c.CertPrincipals("../../etc"))
 	is.EqualValues(7, c.GetStateVersion())
 	is.True(c.DaemonConfig().GetRecordSessions())
 

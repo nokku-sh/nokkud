@@ -50,7 +50,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 
 	principals := make(map[string][]string, len(res.GetPrincipals()))
 	for _, p := range res.GetPrincipals() {
-		principals[p.GetUsername()] = p.GetIds()
+		principals[p.GetUsername()] = p.GetCertPrincipals()
 	}
 	previousCA, _ := c.cache.CAs()
 	c.cache.Replace(principals, res.GetConfig(), res.GetCaPublicKey(), res.GetRetiredCaKeys(), res.GetStateVersion())

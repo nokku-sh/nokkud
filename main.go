@@ -153,7 +153,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	srv, err := sshd.New(sshd.Options{
-		Principals:    cache.GetUUIDs,
+		Principals:    cache.CertPrincipals,
 		Policy:        sshd.PolicyFrom(cache.DaemonConfig()),
 		RecordingSink: cl.RecordingSink,
 	})
