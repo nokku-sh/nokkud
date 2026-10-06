@@ -128,6 +128,11 @@ func (u *Uploader) sendLoop(ctx context.Context) {
 		if err := stream.Send(&nokkuv1.UploadRecordingRequest{
 			Msg: &nokkuv1.UploadRecordingRequest_Chunk{Chunk: chunk},
 		}); err != nil {
+			// A failed send only says the backend ended the stream. Its
+			// answer says why, like a workspace that is full.
+			if _, answer := stream.CloseAndReceive(); answer != nil {
+				err = answer
+			}
 			u.fail("send recording chunk", err)
 			broken = true
 		}

@@ -2,10 +2,12 @@ package recording
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -134,4 +136,45 @@ func TestUploaderZeroSlicesAreNoop(t *testing.T) {
 	must.NoError(u.Close())
 	_, opens, _ := ts.snapshot()
 	is.Zero(opens)
+}
+
+// TestUploaderReportsWhyTheBackendRefused verifies the reason reaches the log
+// and the caller when the backend ends the upload, like a full workspace.
+func TestUploaderReportsWhyTheBackendRefused(t *testing.T) {
+	handler := connect.NewClientStreamHandlerSimple(
+		nokkuv1connect.DaemonControlServiceUploadRecordingProcedure,
+		func(_ context.Context, stream *connect.ClientStream[nokkuv1.UploadRecordingRequest]) (*nokkuv1.UploadRecordingResponse, error) {
+			stream.Receive()
+			return nil, connect.NewError(
+				connect.CodeResourceExhausted,
+				errors.New("the recording storage of this workspace is full"),
+			)
+		},
+		connect.WithSchema(
+			nokkuv1.File_nokku_v1_daemon_proto.Services().
+				ByName("DaemonControlService").
+				Methods().
+				ByName("UploadRecording"),
+		),
+	)
+	mux := http.NewServeMux()
+	mux.Handle(nokkuv1connect.DaemonControlServiceUploadRecordingProcedure, handler)
+	// HTTP/2 like the daemon, HTTP/1.1 does not end a request body early.
+	srv := httptest.NewUnstartedServer(mux)
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(func() {
+		srv.CloseClientConnections()
+		srv.Close()
+	})
+	client := nokkuv1connect.NewDaemonControlServiceClient(srv.Client(), srv.URL)
+
+	u := NewUploader(context.Background(), client, "s1", "user")
+	for range 200 {
+		_, err := u.Write(make([]byte, 32<<10))
+		require.NoError(t, err, "the session never sees an upload problem")
+		time.Sleep(time.Millisecond)
+	}
+	err := u.Close()
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err), "got %v", err)
 }
