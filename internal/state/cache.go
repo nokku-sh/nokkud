@@ -41,12 +41,14 @@ func NewCache() *Cache {
 	}
 }
 
-// GetUUIDs returns a copy of the principal's UUIDs.
-func (c *Cache) GetUUIDs(principal string) []string {
+// CertPrincipals returns a copy of the certificate principals that may log in
+// as username. The backend builds them, one per subject for this server and
+// account, and they are only ever compared as whole strings.
+func (c *Cache) CertPrincipals(username string) []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return slices.Clone(c.principals[principal])
+	return slices.Clone(c.principals[username])
 }
 
 func (c *Cache) GetStateVersion() int64 {

@@ -98,11 +98,19 @@ control stream to the backend.
 - **Certificate-only authentication.** No passwords, no keyboard-interactive,
   no PAM. A login requires a user certificate signed by the workspace CA whose
   principal is mapped to the requested local user in the daemon's cache.
+- **A certificate is for one server and its accounts.** The backend signs a
+  user certificate for one server, with one principal per account the user
+  is granted there at that moment. The daemon compares principals as whole
+  strings, so a certificate for another server or account opens nothing.
 - **Offline window is bounded by certificate lifetime.** When the backend is
   unreachable, authentication still works against the cached CA key and
-  principal map, but user certificates expire (backend-clamped TTL), so stale
-  access grants can never outlive the cert. Revocation of a user while
-  offline takes effect at the latest when that user's certificate expires.
+  principal map. A revoke that never reaches the daemon still ends with the
+  user's last certificate, since the backend signs no new one without the
+  grant. A daemon that syncs applies a revoke at once and closes the
+  connections that were open on it.
+- **An approval can be taken back.** A daemon set back to pending drops its
+  principals and its CA at the next sync, and the backend signs no
+  certificates for its server until it is approved again.
 - **Client environment is whitelisted.** Sessions accept only locale/terminal
   variables (`TERM`, `LANG`, `LC_*`, `TZ`, ...) from clients, never
   shell/loader-affecting variables (`PATH`, `LD_*`, `BASH_ENV`, `ENV`) or

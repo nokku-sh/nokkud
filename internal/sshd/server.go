@@ -59,7 +59,8 @@ var DefaultPolicy = Policy{Record: true, AllowForwarding: true, AllowAgentForwar
 type RecordingSink func(ctx context.Context, sessionID, username string) io.WriteCloser
 
 type Options struct {
-	// Principals returns the subject UUIDs allowed to log in as username.
+	// Principals returns the certificate principals allowed to log in as
+	// username. They are compared as whole strings.
 	Principals func(username string) []string
 	// Log gets the audit events. Nil means the default logger.
 	Log           *slog.Logger

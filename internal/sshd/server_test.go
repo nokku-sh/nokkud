@@ -271,6 +271,31 @@ func TestServerDeniesWrongPrincipal(t *testing.T) {
 	is.Error(err, "expected auth to fail with unauthorized principal")
 }
 
+// A certificate is signed for one server and one account. The principal is
+// compared as a whole, so one for another server or account opens nothing.
+func TestServerDeniesCertificateOfAnotherServerOrAccount(t *testing.T) {
+	ca := newTestCA(t)
+	cur := currentUser(t)
+	here := "subject@this-server:" + cur
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) {
+		s.principals = func(username string) []string {
+			if username == cur {
+				return []string{here}
+			}
+			return nil
+		}
+	})
+	defer closeFn()
+
+	for _, principal := range []string{"subject@other-server:" + cur, "subject@this-server:other", "subject"} {
+		_, err := dial(t, addr, cur, userCert(t, ca, principal))
+		require.Error(t, err, "a certificate for %q logged in", principal)
+	}
+	client, err := dial(t, addr, cur, userCert(t, ca, here))
+	require.NoError(t, err, "the certificate for this server and account")
+	_ = client.Close()
+}
+
 func TestServerDeniesNoRules(t *testing.T) {
 	is := assert.New(t)
 	ca := newTestCA(t)
@@ -376,7 +401,7 @@ func TestServerLivePrincipals(t *testing.T) {
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	srv, err := New(Options{
 		Principals: func(username string) []string {
-			return cache.GetUUIDs(username)
+			return cache.CertPrincipals(username)
 		},
 	})
 	must.NoError(err, "new server")

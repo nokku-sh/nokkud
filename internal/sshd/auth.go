@@ -58,8 +58,9 @@ func (s *Server) SetTrust(active string, retiredKeys []*nokkuv1.RetiredCAKey) {
 	s.retiredCAs = retired
 }
 
-// publicKeyCallback authenticates a user certificate whose principals are
-// subject UUIDs.
+// publicKeyCallback authenticates a user certificate. Its principals each name
+// a subject, this server and an account, and one has to match the list synced
+// for the requested account as a whole string.
 func (s *Server) publicKeyCallback(
 	conn ssh.ConnMetadata,
 	key ssh.PublicKey,

@@ -61,7 +61,7 @@ func main() {
 
 	policy := sshd.DefaultPolicy
 	policy.Record = false
-	opts := sshd.Options{Principals: cache.GetUUIDs, Policy: policy}
+	opts := sshd.Options{Principals: cache.CertPrincipals, Policy: policy}
 	if *allowNonRoot {
 		// Without privilege dropping every session runs as this account, so
 		// only this account may log in.
@@ -73,7 +73,7 @@ func main() {
 			if username != self.Username {
 				return nil
 			}
-			return cache.GetUUIDs(username)
+			return cache.CertPrincipals(username)
 		}
 	}
 
