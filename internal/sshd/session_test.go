@@ -262,7 +262,7 @@ func TestPlainSessionRecorded(t *testing.T) {
 	stdout, err := sess.StdoutPipe()
 	must.NoError(err, "stdout pipe")
 
-	must.NoError(sess.Start("cat"), "start")
+	must.NoError(sess.Start("cat; echo on-stderr >&2"), "start")
 	_, err = io.WriteString(stdin, "piped-input\n")
 	must.NoError(err)
 	must.NoError(stdin.Close())
@@ -285,6 +285,7 @@ func TestPlainSessionRecorded(t *testing.T) {
 	cast, err := io.ReadAll(gr)
 	must.NoError(err, "read recording")
 	is.Contains(string(cast), `"o"`, "plain sessions must still record output")
+	is.Contains(string(cast), "on-stderr", "stderr leaves the machine too, so it is recorded")
 	is.NotContains(string(cast), `"i"`, "plain sessions must not record stdin")
 }
 

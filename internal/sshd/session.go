@@ -581,6 +581,9 @@ func (sess *session) runPlain() {
 		// Stderr goes to the extended data stream like sshd. Length-prefixed
 		// protocols break if stderr bytes interleave with stdout.
 		cmd.Stderr = sess.Stderr()
+		if sess.rec != nil {
+			cmd.Stderr = recOut{w: sess.Stderr(), rec: sess.rec}
+		}
 		stdin, stdout, err = startPiped(cmd)
 		return err
 	})
