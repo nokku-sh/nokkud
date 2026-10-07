@@ -12,93 +12,103 @@
   <a href="https://github.com/nokku-sh/nokkud/blob/main/LICENSE"><img src="https://img.shields.io/github/license/nokku-sh/nokkud?label=License" alt="License"></a>
 </p>
 
-# nokkud: The Edge Daemon
+# nokkud
 
-`nokkud` is the Nokku daemon for your servers. It serves as an embedded SSH server that automatically renews host certificates and strictly enforces access policies synced from the Nokku backend.
+`nokkud` is the Nokku daemon for your servers. It runs its own small SSH server on port 4022, next to your normal `sshd`. It checks Nokku certificates, keeps the list of who may log in up to date and renews the host certificate.
 
-## Why `nokkud`?
+- **No proxy in the path.** Every server serves its own SSH connections.
+- **Works when the core is down.** Logins are checked against the last synced access list.
+- **Your `sshd` stays yours.** It is never touched and stays on port 22 as your way back in.
 
-- **Zero Bottlenecks:** Every enrolled server serves its own SSH connections directly. No central proxy means lower latency and no single point of failure for data-plane traffic.
-- **Offline Resiliency:** If the backend control plane is unavailable, principal checks use the last local cache. You are never locked out.
-- **Break-Glass Safety:** Your system `sshd` is never touched. It stays safely on port 22 as a fallback, while Nokku traffic runs on port 4022.
-- **TPM 2.0**: machines with a TPM (or a vTPM on AWS, GCP, Azure, Proxmox, ...) sign with a key generated inside the TPM that never leaves it. The key is derived deterministically, so it survives reboots without storing anything.
-- **Software fallback**: machines without a TPM use an ECDSA P-256 key wrapped with a key derived from the machine's fingerprint (`/etc/machine-id` and friends). That wrap only prevents copying the state file to another machine; it is not encryption against anyone who can already read the file, because the machine fingerprint is public. The key is only as strong as the file permissions. On servers with a TPM, run with `--require-tpm` so the daemon refuses to fall back.
+`nokkud` is one of three parts. [`nokku`](https://github.com/nokku-sh/nokku) is the core that decides who may log in where. [`nk`](https://github.com/nokku-sh/nk) is the CLI on your own machine.
 
-## Install & Firewall
+## Quick start
 
-Install the daemon. The installer sets up the systemd or OpenRC service:
+Install it. The installer also sets up the systemd or OpenRC service:
 
 ```bash
 curl -fsSL https://get.nokku.sh/nokkud | sudo sh
 ```
 
-The installer adds the Cloudsmith repository and installs your distro's
-package (deb, rpm, apk). Other distros and pinned versions
-(`--version <x.y.z>` or `NOKKUD_VERSION=<x.y.z>`) get the release tarball from
-GitHub.
-
-Prefer manual packages? See the [package repository](https://broadcasts.cloudsmith.com/nokku/nokkud) for apt/dnf/apk install instructions.
-
-Open port 4022 on your firewall (nokkud serves SSH directly):
-
-```bash
-sudo ufw allow nokkud # 4022/tcp
-# OR
-sudo firewall-cmd --permanent --add-service=nokkud # 4022/tcp
-sudo firewall-cmd --reload
-```
-
-## Enroll the Server
-
-Generate an enrollment token in the Nokku web app, then run:
+Create an enrollment token in the Nokku web app, under **Infrastructure, Daemons**. Then enroll the server and start the daemon:
 
 ```bash
 sudo nokkud enroll
 sudo systemctl restart nokkud
 ```
 
-`nokkud enroll` prompts for the token without echoing it, enrolls, and exits.
-For unattended installs set `NOKKUD_ENROLL_TOKEN` instead. The token is never
-taken from the command line, where any local user could read it from the
-process list. Until the host is enrolled the service exits with a clear error
-and systemd does not restart it. Enrolling again moves the host to another
-workspace and drops everything the old one trusted.
+`nokkud enroll` asks for the token and does not echo it.
 
-Everything `nokkud` owns lives under `/var/lib/nokkud/`. On a TPM machine the signing key never leaves the TPM; without one, the software key is stored wrapped to the machine fingerprint. The daemon authenticates with DPoP, and the session token it holds is bound to that key.
+On a self-hosted core, point the daemon at it:
 
-### Manual install
+```bash
+sudo nokkud --api https://nokku.example.com enroll
+```
 
-Download the release tarball for your architecture from
-[Releases](https://github.com/nokku-sh/nokkud/releases), then run the bundled
-installer:
+The server shows up in the web app. Unless the token approves it automatically, someone has to approve it there before it serves logins.
+
+## Network
+
+Sessions reach the server in one of two ways, and `nk` tries both at once.
+
+**Directly on port 4022.** This is the fastest path. Open the port for the networks your users connect from:
+
+```bash
+sudo ufw allow nokkud                                # Debian, Ubuntu
+sudo firewall-cmd --permanent --add-service=nokkud   # Fedora, RHEL
+sudo firewall-cmd --reload
+```
+
+On a cloud server, also allow TCP 4022 in the provider's firewall or security group.
+
+**Through the relay.** The daemon keeps an outbound connection to the core, and sessions can travel over it. Nothing has to be opened, and the session stays encrypted end to end.
+
+## Enrollment
+
+- **Unattended installs:** set `NOKKUD_ENROLL_TOKEN` instead of answering the prompt. The token is never taken from the command line, where any local user could read it from the process list.
+- **Before enrollment** the service exits with a clear error, and systemd does not restart it.
+- **Enrolling again** is safe. With a token from another workspace it moves the server there and drops everything the old one trusted.
+
+Everything `nokkud` owns lives under `/var/lib/nokkud/`.
+
+## Install options
+
+The installer adds the Cloudsmith repository and installs your distro's package (deb, rpm or apk). Other distros and pinned versions get the release tarball from GitHub. Pin a version with `--version <x.y.z>` or `NOKKUD_VERSION=<x.y.z>`.
+
+Prefer to add the package repository yourself? The [package repository](https://broadcasts.cloudsmith.com/nokku/nokkud) has the apt, dnf and apk instructions.
+
+<details>
+<summary><b>Manual install from the tarball</b></summary>
+
+Download the tarball for your architecture from [Releases](https://github.com/nokku-sh/nokkud/releases), then run the bundled installer:
 
 ```bash
 tar -xzf nokkud_linux_amd64.tar.gz
 sudo ./install.sh
 ```
 
-Prefer to place things yourself? Copy
-[packaging/systemd/nokkud.service](packaging/systemd/nokkud.service) to
-`/etc/systemd/system/nokkud.service`, then register and start it:
+Prefer to place things yourself? Copy [packaging/systemd/nokkud.service](packaging/systemd/nokkud.service) to `/etc/systemd/system/nokkud.service`, then register and start it:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now nokkud
 ```
 
-Running OpenRC or another init system? Use
-[packaging/openrc/nokkud.openrc](packaging/openrc/nokkud.openrc) as a starting
-point.
+On OpenRC or another init system, use [packaging/openrc/nokkud.openrc](packaging/openrc/nokkud.openrc) as a starting point.
+
+</details>
 
 ## Configuration
 
-| Flag            | Environment           | Purpose                                              |
-| --------------- | --------------------- | ---------------------------------------------------- |
-| `--api`         | `NOKKUD_API_URL`      | Backend URL                                          |
-| `--ssh-addr`    | `NOKKUD_SSH_ADDR`     | Embedded SSH server listen address (default `:4022`) |
-| `--debug`       | `NOKKUD_DEBUG`        | Debug logging                                        |
-| `--insecure`    | `NOKKUD_INSECURE`     | Disable TLS verification (insecure!)                 |
-| `--require-tpm` | `NOKKUD_REQUIRE_TPM`  | Require a TPM and refuse software fallback           |
+| Flag            | Environment          | Purpose                                             |
+| --------------- | -------------------- | --------------------------------------------------- |
+| `--api`         | `NOKKUD_API_URL`     | Address of the core                                 |
+| `--ssh-addr`    | `NOKKUD_SSH_ADDR`    | Where the SSH server listens. Default `:4022`       |
+| `--require-tpm` | `NOKKUD_REQUIRE_TPM` | Require a TPM 2.0 and refuse the software key       |
+| `--insecure`    | `NOKKUD_INSECURE`    | Turn off TLS verification. For testing only         |
+| `--debug`       | `NOKKUD_DEBUG`       | Debug logging                                       |
+
+Session rules like recording and port forwarding are set in the web app, per daemon or as a workspace default.
 
 ## Operations
 
@@ -107,26 +117,30 @@ sudo systemctl status nokkud
 sudo journalctl -u nokkud -f
 ```
 
-> [!NOTE]
-> If the backend is unavailable, principal checks use the last local cache. Policy updates and certificate renewals resume once the daemon reconnects.
+When the core is unreachable, logins keep working from the last synced access list. Access changes and certificate renewals resume once the daemon reconnects.
+
+A restart or a package upgrade ends the sessions that are open on the daemon.
 
 ## Uninstall
 
-Reset the daemon first to remove its backend registration and all local state (this stops Nokku access. The trusted CA, host certificate, and principal cache go with it):
+Reset the daemon first. This removes the server from Nokku and deletes all local state, so Nokku access to the server stops:
 
 ```bash
 sudo nokkud reset
 ```
 
-Then stop and disable the service and remove the binary:
+Then remove the package (`apt remove nokkud`, `dnf remove nokkud` or `apk del nokkud`). After a manual install, stop the service and remove the binary instead:
 
 ```bash
 sudo systemctl disable --now nokkud
-rm -f /usr/bin/nokkud
+sudo rm -f /usr/bin/nokkud
 ```
 
-If you installed from a package, remove the package instead (`apt remove nokkud`,
-`dnf remove nokkud`, or `apk del nokkud`).
+## More
+
+- [Documentation](https://nokku.sh/docs), with the guide for [adding a server](https://nokku.sh/docs/guides/add-server-daemon)
+- [SECURITY.md](./SECURITY.md), for how the daemon protects its key, how its SSH server behaves, and for reporting a vulnerability
+- [CONTRIBUTING.md](./CONTRIBUTING.md), for building from source
 
 ## Hosting
 
