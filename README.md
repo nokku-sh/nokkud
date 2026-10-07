@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/nokku-sh/nokkud/releases"><img src="https://img.shields.io/github/v/tag/nokku-sh/nokkud?label=Version" alt="Version"></a>
-  <a href="https://github.com/nokku-sh/nokkud/actions"><img src="https://img.shields.io/github/actions/workflow/status/nokku-sh/nokkud/test.yaml?branch=main&label=Build" alt="Build"></a>
+  <a href="https://github.com/nokku-sh/nokkud/actions"><img src="https://img.shields.io/github/actions/workflow/status/nokku-sh/nokkud/ci.yaml?branch=main&label=Build" alt="Build"></a>
   <a href="https://github.com/nokku-sh/nokkud/blob/main/LICENSE"><img src="https://img.shields.io/github/license/nokku-sh/nokkud?label=License" alt="License"></a>
 </p>
 
