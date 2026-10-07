@@ -15,10 +15,10 @@ import (
 	"github.com/mizuchilabs/kata/buildinfo"
 	"github.com/mizuchilabs/kata/logx"
 	"github.com/mizuchilabs/kata/sigx"
-	"github.com/nokku-sh/mon/tpm"
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
 
+	"github.com/nokku-sh/mon/tpm"
 	"github.com/nokku-sh/nokkud/internal/client"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"

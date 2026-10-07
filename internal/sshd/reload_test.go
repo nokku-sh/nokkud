@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokku-sh/mon/tpm"
-	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/nokku-sh/mon/tpm"
 	"github.com/nokku-sh/nokkud/internal/paths"
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
 // TestSetTrust verifies the server starts trusting no CA, takes the active

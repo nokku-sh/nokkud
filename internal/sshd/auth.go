@@ -8,8 +8,9 @@ import (
 	"slices"
 	"time"
 
-	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	"golang.org/x/crypto/ssh"
+
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
 var errNoCertificates = errors.New("sshd: only certificate authentication is supported")

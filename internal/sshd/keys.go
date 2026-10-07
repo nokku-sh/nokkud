@@ -6,9 +6,9 @@ import (
 	"io"
 	"os"
 
-	"github.com/nokku-sh/mon/tpm"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/nokku-sh/mon/tpm"
 	"github.com/nokku-sh/nokkud/internal/hostcerts"
 	"github.com/nokku-sh/nokkud/internal/paths"
 )

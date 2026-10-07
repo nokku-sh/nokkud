@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
-	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
 // TestServerMaxConnections verifies the concurrent connection cap: an
