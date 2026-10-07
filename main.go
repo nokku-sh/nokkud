@@ -67,7 +67,7 @@ SSH certificates. The host sshd on port 22 is never touched.`,
 				Usage: "Enroll this host with Nokku, then exit",
 				Description: `Prompts for the enrollment token from the Nokku web app, or reads
 NOKKUD_ENROLL_TOKEN for unattended installs. The token never goes on the command line.
-Run it again to move the host to another workspace. Restart the service afterwards.`,
+Run it again to move the host to another Nokku. Restart the service afterwards.`,
 				Action: enroll,
 			},
 			{

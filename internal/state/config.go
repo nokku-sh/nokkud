@@ -12,7 +12,6 @@ const DefaultAPIURL = "https://app.nokku.sh"
 // Config is the persisted enrollment state. The backend-synced daemon config
 // lives in [Cache].
 type Config struct {
-	WorkspaceID  string `json:"workspace_id,omitempty"`
 	TargetID     string `json:"target_id,omitempty"`
 	DaemonID     string `json:"daemon_id,omitempty"`
 	APIURL       string `json:"api_url,omitempty"`

@@ -21,7 +21,6 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	must := require.New(t)
 
 	c := new(Config)
-	c.WorkspaceID = "ws-1"
 	c.TargetID = "tgt-1"
 	c.DaemonID = "daemon-1"
 	c.APIURL = "https://api.example.com"
@@ -30,7 +29,6 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 
 	loaded := new(Config)
 	must.NoError(loaded.Load())
-	is.Equal("ws-1", loaded.WorkspaceID)
 	is.Equal("tgt-1", loaded.TargetID)
 	is.Equal("daemon-1", loaded.DaemonID)
 	is.Equal("https://api.example.com", loaded.APIURL)
@@ -50,20 +48,20 @@ func TestConfigLoadIgnoresCorruptedFile(t *testing.T) {
 	must := require.New(t)
 
 	c := new(Config)
-	c.WorkspaceID = "ws-1"
+	c.TargetID = "tgt-1"
 	must.NoError(c.Save())
 	must.NoError(os.WriteFile(paths.ConfigFile(), []byte("{not json"), 0o600))
 
 	loaded := new(Config)
 	must.NoError(loaded.Load())
-	is.Empty(loaded.WorkspaceID)
+	is.Empty(loaded.TargetID)
 
 	// The next save replaces the corrupt file.
-	loaded.WorkspaceID = "ws-2"
+	loaded.TargetID = "tgt-2"
 	must.NoError(loaded.Save())
 	again := new(Config)
 	must.NoError(again.Load())
-	is.Equal("ws-2", again.WorkspaceID)
+	is.Equal("tgt-2", again.TargetID)
 }
 
 func TestConfigSaveSkipsUnchanged(t *testing.T) {
@@ -72,7 +70,7 @@ func TestConfigSaveSkipsUnchanged(t *testing.T) {
 	must := require.New(t)
 
 	c := new(Config)
-	c.WorkspaceID = "ws-1"
+	c.TargetID = "tgt-1"
 	must.NoError(c.Save())
 	fi, err := os.Stat(paths.ConfigFile())
 	must.NoError(err)
@@ -88,7 +86,7 @@ func TestConfigSaveWritesWithPrivatePerms(t *testing.T) {
 	must := require.New(t)
 
 	c := new(Config)
-	c.WorkspaceID = "ws-1"
+	c.TargetID = "tgt-1"
 	must.NoError(c.Save())
 	fi, err := os.Stat(paths.ConfigFile())
 	must.NoError(err)
@@ -102,7 +100,7 @@ func TestConfigFileNeverContainsPaths(t *testing.T) {
 
 	dataDir := os.Getenv("NOKKUD_DATA_DIR")
 	c := new(Config)
-	c.WorkspaceID = "ws-1"
+	c.TargetID = "tgt-1"
 	must.NoError(c.Save())
 	data, err := os.ReadFile(paths.ConfigFile())
 	must.NoError(err)

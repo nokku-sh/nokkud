@@ -108,16 +108,15 @@ func (c *Client) enroll(ctx context.Context, token string) error {
 	if err != nil {
 		return fmt.Errorf("enroll: %w", err)
 	}
-	if res.GetWorkspaceId() == "" || res.GetTargetId() == "" || res.GetId() == "" || res.GetAccessToken() == "" {
+	if res.GetTargetId() == "" || res.GetId() == "" || res.GetAccessToken() == "" {
 		return errors.New("enroll: backend returned an incomplete enrollment")
 	}
-	// A re-enrollment may move the host to another workspace, so nothing the
+	// A re-enrollment may move the host to another Nokku, so nothing the
 	// old one trusted may survive until the first sync.
 	c.cache.Clear()
 	if err = os.Remove(paths.HostKeyCert()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("enroll: drop previous host certificate: %w", err)
 	}
-	c.config.WorkspaceID = res.GetWorkspaceId()
 	c.config.TargetID = res.GetTargetId()
 	c.config.DaemonID = res.GetId()
 	c.config.SessionToken = res.GetAccessToken()
