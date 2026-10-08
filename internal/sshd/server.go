@@ -268,6 +268,8 @@ func (s *Server) handleConn(nc net.Conn, relayed bool) {
 	}()
 	slog.Info("connection established",
 		"user", conn.User(), "remote", conn.RemoteAddr(), "client", string(conn.ClientVersion()))
+	// A sync that ran during the handshake could not see this connection yet.
+	s.DropRevoked()
 
 	st := newConnState(conn, s.maxChannels)
 	defer st.close()

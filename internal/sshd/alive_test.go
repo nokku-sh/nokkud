@@ -345,6 +345,47 @@ func TestDropRevoked(t *testing.T) {
 	}
 }
 
+// TestRevokeDuringHandshake verifies a revoke that lands while a login is
+// still in its handshake ends that connection too. The sync's DropRevoked
+// cannot see it yet.
+func TestRevokeDuringHandshake(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+	var revoked atomic.Bool
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) {
+		allowed := s.principals
+		s.principals = func(username string) []string {
+			if revoked.Load() {
+				return nil
+			}
+			return allowed(username)
+		}
+		// The account lookup runs after the principal check, so this revoke
+		// lands in the middle of the handshake.
+		lookup := s.lookupAccount
+		s.lookupAccount = func(name string) (*account, error) {
+			revoked.Store(true)
+			s.DropRevoked()
+			return lookup(name)
+		}
+	})
+	defer closeFn()
+
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err)
+	defer client.Close()
+	gone := make(chan struct{})
+	go func() {
+		_ = client.Wait()
+		close(gone)
+	}()
+	select {
+	case <-gone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a login revoked during its handshake stayed open")
+	}
+}
+
 // TestDropRevokedCA verifies a connection ends once the CA that signed its
 // certificate is no longer trusted, as after an emergency rollover.
 func TestDropRevokedCA(t *testing.T) {
