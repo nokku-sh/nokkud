@@ -50,9 +50,8 @@ type Options struct {
 	Width     int
 	Height    int
 	Title     string // stored in the asciicast header
-	Label     string // short human-usable label for the filename
 	SessionID string // correlates the recording with the session's audit events
-	User      string // the local account, needed to upload the file later
+	User      string // the local account, labels the file and is needed to upload it later
 	Term      string // the session's TERM
 	// Sink, when set, receives every flushed batch in addition to the local file.
 	// A nil error from its Close confirms the upload.
@@ -71,7 +70,6 @@ type Recorder struct {
 	maxSize   int64
 	cw        *countingWriter
 	gw        *gzip.Writer
-	enc       *json.Encoder
 	sink      io.WriteCloser
 	lastEvent time.Time
 	// msCarry carries the fractional-millisecond rounding error to the next
@@ -121,13 +119,9 @@ func New(opts Options) (*Recorder, error) {
 		return nil, err
 	}
 
-	label := opts.Title
-	if opts.Label != "" {
-		label = opts.Label
-	}
 	// CreateTemp adds a random part, so sessions started in the same second
 	// never collide. It also creates the file 0600.
-	pattern := recordingPattern(time.Now(), toSnakeCase(label), opts.SessionID)
+	pattern := recordingPattern(time.Now(), toSnakeCase(opts.User), opts.SessionID)
 	f, err := os.CreateTemp(paths.RecordsDir(), pattern)
 	if err != nil {
 		return nil, fmt.Errorf("create recording file: %w", err)
@@ -180,7 +174,6 @@ func New(opts Options) (*Recorder, error) {
 		maxSize:   cmp.Or(opts.MaxSize, maxSize),
 		cw:        cw,
 		gw:        gw,
-		enc:       enc,
 		sink:      opts.Sink,
 		lastEvent: time.Now(),
 		done:      make(chan struct{}),

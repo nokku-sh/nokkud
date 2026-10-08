@@ -73,7 +73,8 @@ type session struct {
 }
 
 // recOut feeds written bytes to the recorder before passing them on. Recorder
-// methods swallow their errors, so a failing recording never disturbs the stream.
+// methods swallow their errors, so a failing recording never disturbs the
+// stream. A nil recorder records nothing.
 type recOut struct {
 	w   io.Writer
 	rec *recording.Recorder
@@ -166,9 +167,7 @@ func (sess *session) handleRequests() {
 		_ = sess.ptmx.Close()
 		_ = sess.tty.Close()
 	}
-	if sess.rec != nil {
-		sess.rec.Close()
-	}
+	sess.rec.Close()
 }
 
 func (sess *session) handleCommand(req *ssh.Request) bool {
@@ -438,10 +437,8 @@ func (sess *session) finish(code int, send func()) {
 	sess.exited = true
 	sess.cancel()
 
-	if sess.rec != nil {
-		sess.rec.RecordExit(code)
-		sess.rec.Close()
-	}
+	sess.rec.RecordExit(code)
+	sess.rec.Close()
 
 	ev := sess.event(eventSessionEnd)
 	ev.ExitCode = code
@@ -552,10 +549,7 @@ func (sess *session) runPTY() {
 		}
 	})
 
-	var out io.Writer = sess
-	if sess.rec != nil {
-		out = recOut{w: sess, rec: sess.rec}
-	}
+	out := recOut{w: sess, rec: sess.rec}
 	if notice != "" {
 		_, _ = io.WriteString(out, notice+"\r\n")
 	}
@@ -580,10 +574,7 @@ func (sess *session) runPlain() {
 	cmd, notice, err := sess.startInHome(func(cmd *exec.Cmd) (err error) {
 		// Stderr goes to the extended data stream like sshd. Length-prefixed
 		// protocols break if stderr bytes interleave with stdout.
-		cmd.Stderr = sess.Stderr()
-		if sess.rec != nil {
-			cmd.Stderr = recOut{w: sess.Stderr(), rec: sess.rec}
-		}
+		cmd.Stderr = recOut{w: sess.Stderr(), rec: sess.rec}
 		stdin, stdout, err = startPiped(cmd)
 		return err
 	})
@@ -625,7 +616,6 @@ func (sess *session) startRecorder(width, height int) {
 		Width:     width,
 		Height:    height,
 		Title:     "ssh-" + sess.sysUser.Name,
-		Label:     sess.sysUser.Name,
 		SessionID: recSessionID,
 		User:      sess.sysUser.Name,
 		Term:      term,
@@ -703,10 +693,7 @@ func (sess *session) relay(cmd *exec.Cmd, stdin io.WriteCloser, stdout io.ReadCl
 
 	// Only output is recorded on the plain path: without a PTY there is no
 	// echo signal, so input cannot be told apart and is never captured.
-	var outW io.Writer = sess
-	if sess.rec != nil {
-		outW = recOut{w: sess, rec: sess.rec}
-	}
+	outW := recOut{w: sess, rec: sess.rec}
 
 	relay.Go(func() {
 		defer stdin.Close()
