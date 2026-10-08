@@ -37,6 +37,8 @@ type session struct {
 	st      *connState
 	reqs    <-chan *ssh.Request
 	sysUser *account
+	// The certificate principal auth matched, reported with the recording.
+	principal string
 
 	// Exec'd commands use ctx, so a disconnect reaps them even if the
 	// request stream misbehaves.
@@ -96,6 +98,7 @@ func (s *Server) serveSession(st *connState, newCh ssh.NewChannel) {
 		st:        st,
 		reqs:      reqs,
 		sysUser:   st.user,
+		principal: st.principal,
 		ctx:       ctx,
 		cancel:    cancel,
 		sessionID: uuid.NewV7().String(),
@@ -603,7 +606,7 @@ func (sess *session) startRecorder(width, height int) {
 			context.WithoutCancel(sess.ctx),
 			recSessionID,
 			sess.sysUser.Name,
-			sess.st.principal,
+			sess.principal,
 		)
 	}
 	term, _ := sess.envValue("TERM")
@@ -613,7 +616,7 @@ func (sess *session) startRecorder(width, height int) {
 		Title:     "ssh-" + sess.sysUser.Name,
 		SessionID: recSessionID,
 		User:      sess.sysUser.Name,
-		Principal: sess.st.principal,
+		Principal: sess.principal,
 		Term:      term,
 		Sink:      sink,
 		OnLimit:   sess.recordingFull,
