@@ -264,10 +264,7 @@ func newDaemonClient(
 	cache *state.Cache,
 	cfg *state.Config,
 ) (*client.Client, error) {
-	cl, err := client.New(ctx, cache, cfg, client.Options{
-		RequireTPM:  cmd.Bool("require-tpm"),
-		EnrollToken: token,
-	})
+	cl, err := client.New(ctx, cache, cfg, cmd.Bool("require-tpm"), token)
 	if errors.Is(err, tpm.ErrIdentityChanged) {
 		return nil, fmt.Errorf(
 			"the daemon signing key no longer matches this machine, re-enroll with `sudo nokkud enroll`: %w",

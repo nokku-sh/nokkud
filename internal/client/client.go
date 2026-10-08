@@ -43,11 +43,6 @@ const signerSalt = "nokku-daemon"
 
 var errDaemonRejected = errors.New("daemon rejected by backend")
 
-type Options struct {
-	RequireTPM  bool
-	EnrollToken string
-}
-
 type Client struct {
 	cache  *state.Cache
 	config *state.Config
@@ -63,8 +58,14 @@ type Client struct {
 	renew chan struct{}
 }
 
-// New builds the backend clients and enrolls when opts carries a token.
-func New(ctx context.Context, cache *state.Cache, config *state.Config, opts Options) (*Client, error) {
+// New builds the backend clients and enrolls when enrollToken is set.
+func New(
+	ctx context.Context,
+	cache *state.Cache,
+	config *state.Config,
+	requireTPM bool,
+	enrollToken string,
+) (*Client, error) {
 	httpc, err := dpopclient.NewHTTPClient(false, dialTimeout)
 	if err != nil {
 		return nil, err
@@ -74,8 +75,8 @@ func New(ctx context.Context, cache *state.Cache, config *state.Config, opts Opt
 	proofer, err := dpopclient.NewProofer(tpm.SignerOptions{
 		Salt:       []byte(signerSalt),
 		StatePath:  paths.SignerStateFile(),
-		RequireTPM: opts.RequireTPM,
-		Recreate:   opts.EnrollToken != "",
+		RequireTPM: requireTPM,
+		Recreate:   enrollToken != "",
 	})
 	if err != nil {
 		return nil, err
@@ -90,8 +91,8 @@ func New(ctx context.Context, cache *state.Cache, config *state.Config, opts Opt
 	})
 	c.ctl = nokkuv1connect.NewDaemonControlServiceClient(httpc, apiURL, connect.WithInterceptors(c.dpop))
 
-	if opts.EnrollToken != "" {
-		if err = c.enroll(ctx, opts.EnrollToken); err != nil {
+	if enrollToken != "" {
+		if err = c.enroll(ctx, enrollToken); err != nil {
 			return nil, err
 		}
 	}
