@@ -44,7 +44,6 @@ const signerSalt = "nokku-daemon"
 var errDaemonRejected = errors.New("daemon rejected by backend")
 
 type Options struct {
-	Insecure    bool
 	RequireTPM  bool
 	EnrollToken string
 }
@@ -66,7 +65,7 @@ type Client struct {
 
 // New builds the backend clients and enrolls when opts carries a token.
 func New(ctx context.Context, cache *state.Cache, config *state.Config, opts Options) (*Client, error) {
-	httpc, err := dpopclient.NewHTTPClient(opts.Insecure, dialTimeout)
+	httpc, err := dpopclient.NewHTTPClient(false, dialTimeout)
 	if err != nil {
 		return nil, err
 	}

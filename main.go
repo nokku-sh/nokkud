@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -104,11 +105,6 @@ Run it again to move the host to another Nokku. Restart the service afterwards.`
 				Sources: cli.EnvVars("NOKKUD_DEBUG"),
 			},
 			&cli.BoolFlag{
-				Name:    "insecure",
-				Usage:   "Disable TLS verification (only use for testing)",
-				Sources: cli.EnvVars("NOKKUD_INSECURE"),
-			},
-			&cli.BoolFlag{
 				Name:    "require-tpm",
 				Usage:   "Require a TPM 2.0 for request signing, refuse the software fallback key",
 				Sources: cli.EnvVars("NOKKUD_REQUIRE_TPM"),
@@ -121,7 +117,7 @@ Run it again to move the host to another Nokku. Restart the service afterwards.`
 			},
 			&cli.StringFlag{
 				Name:    "api",
-				Usage:   "Nokku API URL",
+				Usage:   "Nokku API URL, https only",
 				Sources: cli.EnvVars("NOKKUD_API_URL"),
 			},
 		},
@@ -219,7 +215,28 @@ func loadState(cmd *cli.Command) (*state.Cache, *state.Config, error) {
 	if cfg.APIURL == "" {
 		cfg.APIURL = state.DefaultAPIURL
 	}
+	if err := checkAPIURL(cfg.APIURL); err != nil {
+		return nil, nil, err
+	}
 	return cache, cfg, cfg.Save()
+}
+
+// checkAPIURL refuses plain http to anything but this machine. A sync answer
+// carries the CA the daemon trusts, so whoever can change it in transit can
+// log in as root.
+func checkAPIURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("API URL: %w", err)
+	}
+	ip, _ := netip.ParseAddr(u.Hostname())
+	switch {
+	case u.Scheme == "https":
+		return nil
+	case u.Scheme == "http" && (u.Hostname() == "localhost" || ip.IsLoopback()):
+		return nil
+	}
+	return fmt.Errorf("the API URL %q must use https, plain http is only accepted for localhost", raw)
 }
 
 // enrollToken reads the token from the env, or prompts on a terminal. Tokens
@@ -248,7 +265,6 @@ func newDaemonClient(
 	cfg *state.Config,
 ) (*client.Client, error) {
 	cl, err := client.New(ctx, cache, cfg, client.Options{
-		Insecure:    cmd.Bool("insecure"),
 		RequireTPM:  cmd.Bool("require-tpm"),
 		EnrollToken: token,
 	})

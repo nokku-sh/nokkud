@@ -102,10 +102,9 @@ On OpenRC or another init system, use [packaging/openrc/nokkud.openrc](packaging
 
 | Flag            | Environment          | Purpose                                             |
 | --------------- | -------------------- | --------------------------------------------------- |
-| `--api`         | `NOKKUD_API_URL`     | Address of the core                                 |
+| `--api`         | `NOKKUD_API_URL`     | Address of the core, `https` only                   |
 | `--ssh-addr`    | `NOKKUD_SSH_ADDR`    | Where the SSH server listens. Default `:4022`       |
 | `--require-tpm` | `NOKKUD_REQUIRE_TPM` | Require a TPM 2.0 and refuse the software key       |
-| `--insecure`    | `NOKKUD_INSECURE`    | Turn off TLS verification. For testing only         |
 | `--debug`       | `NOKKUD_DEBUG`       | Debug logging                                       |
 
 Session rules like recording and port forwarding are set in the web app, per daemon or as a workspace default.

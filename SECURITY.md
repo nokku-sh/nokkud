@@ -55,6 +55,10 @@ Every signing identity is ECDSA P-256. The daemon authenticates to the core with
 - **Without a TPM**, the daemon uses a software key wrapped with a key derived from the machine fingerprint (`/etc/machine-id` and friends). That only stops someone from copying the state file to another machine. It is not encryption against anyone who can read the file, because the fingerprint is public. The key is only as strong as the file permissions.
 - **Run with `--require-tpm` on servers that have a TPM.** The daemon then refuses to fall back to the software key.
 
+### The connection to the core
+
+The daemon talks to the core over TLS 1.3 and verifies its certificate. There is no switch to turn that off. A plain `http` API URL is refused unless it points at localhost, which is meant for development. The core's answers carry the CA the daemon trusts, so nobody may be able to change them in transit.
+
 ### Local state
 
 Enrollment state and the cached access list live under `/var/lib/nokkud/`, protected by the daemon's privileges. Treat the directory as sensitive.
