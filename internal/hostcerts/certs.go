@@ -82,7 +82,8 @@ func RenewHostCerts(ctx context.Context, targetID, caKey string, sign SignFunc) 
 }
 
 // NextRenewal returns the renewal deadline for the host certificate, or now
-// if it is already out of date or none exists.
+// if it is already out of date or none exists. A certificate that never
+// expires is looked at again in a day.
 func NextRenewal(targetID, caKey string) time.Time {
 	now := time.Now()
 
@@ -95,8 +96,9 @@ func NextRenewal(targetID, caKey string) time.Time {
 	if err != nil || !isValid(cert, targetID) || !signedBy(cert, ca) {
 		return now
 	}
+	// Nothing to renew. A CA change wakes the watcher by itself.
 	if cert.ValidBefore == ssh.CertTimeInfinity {
-		return now
+		return now.Add(24 * time.Hour)
 	}
 
 	renewalTime := renewalDeadline(cert)

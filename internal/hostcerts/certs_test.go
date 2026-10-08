@@ -223,7 +223,7 @@ func TestNextRenewal(t *testing.T) {
 		)
 	})
 
-	t.Run("infinity certificate is ignored", func(t *testing.T) {
+	t.Run("a certificate that never expires is not polled", func(t *testing.T) {
 		is := assert.New(t)
 		dir := t.TempDir()
 		hostPub := writeHostKey(t, dir)
@@ -232,7 +232,7 @@ func TestNextRenewal(t *testing.T) {
 
 		t.Setenv("NOKKUD_DATA_DIR", dir)
 		got := NextRenewal("target-1", caKey)
-		is.False(got.After(now.Add(time.Minute)), "NextRenewal with only an infinity cert = %v, want ~now", got)
+		is.True(got.After(now.Add(time.Hour)), "NextRenewal with a never expiring cert = %v, want far ahead", got)
 	})
 
 	t.Run("outdated certificate schedules immediately", func(t *testing.T) {
