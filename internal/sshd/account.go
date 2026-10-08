@@ -96,33 +96,19 @@ func groupIDs(a *account) ([]uint32, error) {
 // cmdEnv builds the account's session environment: a fresh HOME/USER/
 // SHELL/PATH plus a locale allowlist. TERM is the session's to set.
 func cmdEnv(a *account) []string {
-	envMap := map[string]string{
-		"HOME":    a.Home,
-		"USER":    a.Name,
-		"LOGNAME": a.Name,
-		"SHELL":   a.Shell,
-		"PATH":    "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
+	env := []string{
+		"HOME=" + a.Home,
+		"USER=" + a.Name,
+		"LOGNAME=" + a.Name,
+		"SHELL=" + a.Shell,
+		"PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
 	}
-
 	// Only innocuous locale variables are inherited. Connection variables are
 	// set per session, so the admin's agent socket cannot leak.
-	passThrough := []string{
-		"LANG",
-		"LC_ALL",
-		"LC_CTYPE",
-		"TZ",
-		"MAIL",
-	}
-
-	for _, key := range passThrough {
+	for _, key := range []string{"LANG", "LC_ALL", "LC_CTYPE", "TZ", "MAIL"} {
 		if val, exists := os.LookupEnv(key); exists {
-			envMap[key] = val
+			env = append(env, key+"="+val)
 		}
-	}
-
-	var env []string
-	for k, v := range envMap {
-		env = append(env, k+"="+v)
 	}
 	return env
 }
