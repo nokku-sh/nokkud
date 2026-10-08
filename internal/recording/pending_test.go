@@ -95,6 +95,8 @@ func TestUploadPending(t *testing.T) {
 	must.NotEmpty(msgs)
 	is.Equal("0199aaaa-0000-7000-8000-000000000001", msgs[0].GetMeta().GetRecordingId())
 	is.Equal("alice", msgs[0].GetMeta().GetUsername())
+	is.WithinDuration(time.Now(), msgs[0].GetMeta().GetStartedAt().AsTime(), time.Minute,
+		"a late upload says when the session began")
 	var sent []byte
 	for _, m := range msgs[1 : len(msgs)-1] {
 		sent = append(sent, m.GetChunk()...)

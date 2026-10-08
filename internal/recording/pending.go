@@ -12,8 +12,10 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	"github.com/nokku-sh/protos/gen/nokku/v1/nokkuv1connect"
@@ -83,9 +85,12 @@ func uploadFile(ctx context.Context, client nokkuv1connect.DaemonControlServiceC
 		}
 		return nil
 	}
-	if err = send(&nokkuv1.UploadRecordingRequest{Msg: &nokkuv1.UploadRecordingRequest_Meta{
-		Meta: &nokkuv1.RecordingMeta{RecordingId: &hdr.SessionID, Username: &hdr.User},
-	}}); err != nil {
+	meta := &nokkuv1.RecordingMeta{RecordingId: &hdr.SessionID, Username: &hdr.User}
+	// The session is over, so the backend is told when it began.
+	if hdr.Timestamp > 0 {
+		meta.StartedAt = timestamppb.New(time.Unix(hdr.Timestamp, 0))
+	}
+	if err = send(&nokkuv1.UploadRecordingRequest{Msg: &nokkuv1.UploadRecordingRequest_Meta{Meta: meta}}); err != nil {
 		return err
 	}
 	buf := make([]byte, 32<<10)
