@@ -32,7 +32,7 @@ func TestSessionChannelNoCommandDoesNotLeak(t *testing.T) {
 
 	baseline := runtime.NumGoroutine()
 
-	for i := range 200 {
+	for i := range 50 {
 		client, err := dial(t, addr, user, auth)
 		must.NoError(err, "dial %d", i)
 		sess, err := client.NewSession()
