@@ -27,7 +27,8 @@ type tcpipForwardData struct {
 	BindPort uint32
 }
 
-// connState tracks one connection's -R listeners and channel slots.
+// connState tracks one connection's -R listeners and channel slots. A slot is
+// held by each open channel and each -R listener.
 type connState struct {
 	conn     *ssh.ServerConn
 	user     *account
@@ -136,13 +137,16 @@ func (s *Server) tcpipForward(st *connState, payload []byte) (bool, []byte) {
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	// A nil map means the connection is already tearing down.
-	if st.forwards == nil || st.forwards[addr] != nil {
+	// A nil map means the connection is already tearing down. The listener
+	// holds a channel slot until acceptForwarded returns, else one connection
+	// could open listeners until the daemon is out of descriptors.
+	if st.forwards == nil || st.forwards[addr] != nil || !st.acquireChannel() {
 		return false, nil
 	}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
+		st.releaseChannel()
 		return false, nil
 	}
 	// A port 0 forward is kept under the port it got, the client cancels it
@@ -189,6 +193,7 @@ func forwardAddr(f tcpipForwardData, gateway bool) string {
 // acceptForwarded hands listener connections to the client as forwarded-tcpip
 // channels, echoing bindAddr so the client matches its -R forward.
 func (s *Server) acceptForwarded(st *connState, ln net.Listener, bindAddr string) {
+	defer st.releaseChannel()
 	for {
 		c, err := ln.Accept()
 		if err != nil {

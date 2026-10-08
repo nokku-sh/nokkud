@@ -189,6 +189,39 @@ func TestServerRemoteForwardPortZero(t *testing.T) {
 	is.Error(err, "the cancelled forward still listens")
 }
 
+// TestServerRemoteForwardListenersCapped verifies -R listeners draw from the
+// connection's channel budget, so one connection cannot open them without end.
+func TestServerRemoteForwardListenersCapped(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{AllowForwarding: true}},
+		func(s *Server) { s.maxChannels = 2 })
+	defer closeFn()
+
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err, "dial")
+	defer client.Close()
+
+	first, err := client.Listen("tcp", "127.0.0.1:0")
+	must.NoError(err, "first forward")
+	second, err := client.Listen("tcp", "127.0.0.1:0")
+	must.NoError(err, "second forward")
+	defer second.Close()
+
+	_, err = client.Listen("tcp", "127.0.0.1:0")
+	must.Error(err, "third forward accepted past the cap")
+
+	must.NoError(first.Close(), "cancel the first forward")
+	must.Eventually(func() bool {
+		ln, lerr := client.Listen("tcp", "127.0.0.1:0")
+		if lerr != nil {
+			return false
+		}
+		_ = ln.Close()
+		return true
+	}, 5*time.Second, 20*time.Millisecond, "a cancelled forward never released its slot")
+}
+
 // TestServerRemoteForwardLocalhost verifies a -R forward requested on the
 // hostname "localhost" works: clients key their forward by the requested
 // address, so the server must report it back verbatim even though the listener
