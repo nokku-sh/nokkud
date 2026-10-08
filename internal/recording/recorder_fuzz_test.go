@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
@@ -89,6 +90,7 @@ func FuzzRecordEvents(f *testing.F) {
 		}
 
 		var sawOutput, sawInput bool
+		var output, input strings.Builder
 		for _, line := range lines[1:] {
 			var parts []json.RawMessage
 			if err = json.Unmarshal(line, &parts); err != nil {
@@ -114,10 +116,10 @@ func FuzzRecordEvents(f *testing.F) {
 			switch typ {
 			case "o":
 				sawOutput = true
-				assertPayload(t, payload, data)
+				output.WriteString(payload)
 			case "i":
 				sawInput = true
-				assertPayload(t, payload, data)
+				input.WriteString(payload)
 			case "r":
 				// resize events are server-generated, skip
 			default:
@@ -127,6 +129,10 @@ func FuzzRecordEvents(f *testing.F) {
 		if !sawOutput || !sawInput {
 			t.Fatalf("recording missing output/input events (o=%v i=%v)", sawOutput, sawInput)
 		}
+		// A character cut short at the end of the input is held back and
+		// recorded at close, so the payload of a type can span two events.
+		assertPayload(t, output.String(), data)
+		assertPayload(t, input.String(), data)
 	})
 }
 

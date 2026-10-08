@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
@@ -75,6 +76,9 @@ type Recorder struct {
 	// msCarry carries the fractional-millisecond rounding error to the next
 	// interval so the written intervals sum to the real time.
 	msCarry float64
+	// partial holds, per event type, the head of a multi-byte character the
+	// last event ended in.
+	partial map[string][]byte
 	// exitCode is the session's exit status written last, so the x event
 	// stays the final event.
 	exitCode *int
@@ -176,6 +180,7 @@ func New(opts Options) (*Recorder, error) {
 		gw:        gw,
 		sink:      opts.Sink,
 		lastEvent: time.Now(),
+		partial:   map[string][]byte{},
 		done:      make(chan struct{}),
 	}
 	active.Store(path, struct{}{})
@@ -218,7 +223,15 @@ func (r *Recorder) event(eventType string, data []byte) {
 		return
 	}
 	if r.cw.written < r.maxSize {
-		r.emit(eventType, data)
+		// A read can end inside a multi-byte character, and encoding the two
+		// halves apart turns both into replacement runes. The head waits for
+		// the next event of its type.
+		if head := r.partial[eventType]; len(head) > 0 {
+			data = append(head, data...)
+		}
+		cut := len(data) - incompleteTail(data)
+		r.partial[eventType] = bytes.Clone(data[cut:])
+		r.emit(eventType, data[:cut])
 		r.mu.Unlock()
 		return
 	}
@@ -247,6 +260,20 @@ func (r *Recorder) emit(eventType string, data []byte) {
 		slog.Error("write recording event", "error", err)
 	}
 	r.dirty = true
+}
+
+// incompleteTail returns the length of the multi-byte character p ends in the
+// middle of, or 0 when p ends on a character boundary.
+func incompleteTail(p []byte) int {
+	for i := 1; i < utf8.UTFMax && i <= len(p); i++ {
+		if tail := p[len(p)-i:]; utf8.RuneStart(tail[0]) {
+			if utf8.FullRune(tail) {
+				return 0
+			}
+			return i
+		}
+	}
+	return 0
 }
 
 // marshalEventData encodes a string as JSON without escaping <, >, and &, so
@@ -305,6 +332,12 @@ func (r *Recorder) closeLocked() {
 	r.closed = true
 	close(r.done)
 
+	// A character the stream never completed is recorded as it stands.
+	for _, eventType := range []string{"o", "i"} {
+		if tail := r.partial[eventType]; len(tail) > 0 {
+			r.emit(eventType, tail)
+		}
+	}
 	if r.exitCode != nil {
 		r.emit("x", []byte(strconv.Itoa(*r.exitCode)))
 	}

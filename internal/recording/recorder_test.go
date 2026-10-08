@@ -151,6 +151,30 @@ func recRecordAndReadEvents(
 	check(events)
 }
 
+// TestRecorderKeepsSplitCharacters verifies a multi-byte character that two
+// reads split is recorded whole, not as replacement runes. A character the
+// stream never completes is still recorded.
+func TestRecorderKeepsSplitCharacters(t *testing.T) {
+	recordsDir := newRecordsDir(t)
+	rec, err := New(Options{Width: 80, Height: 24, SessionID: "s1"})
+	require.NoError(t, err, "new recorder")
+
+	euro := []byte("€")
+	rec.RecordOutput(append([]byte("a"), euro[:2]...))
+	rec.RecordOutput(append([]byte{euro[2]}, 'b'))
+	rec.RecordOutput(euro[:1])
+
+	recRecordAndReadEvents(t, recordsDir, rec, func(events []eventLine) {
+		var out strings.Builder
+		for _, ev := range events {
+			if ev.Code == "o" {
+				out.Write(ev.Data)
+			}
+		}
+		assert.Equal(t, "a€b�", out.String())
+	})
+}
+
 // TestRecorderNoHTMLEscape verifies event data is marshaled without HTML
 // escapes, so terminal output like pipes/angles stays readable in the raw
 // cast instead of `\u003c`.
