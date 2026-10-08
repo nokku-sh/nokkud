@@ -3,7 +3,6 @@ package sshd
 import (
 	"testing"
 
-	"github.com/creack/pty"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -16,25 +15,26 @@ func TestEchoEnabled(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	ptmx, tty, err := pty.Open()
+	ptmx, tty, err := openPTY()
 	must.NoError(err)
 	defer ptmx.Close()
 	defer tty.Close()
 
-	fd := ptmx.Fd()
-	is.True(echoEnabled(fd))
+	is.True(echoEnabled(ptmx))
 
-	termios, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
+	fd := int(tty.Fd())
+	termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
 	must.NoError(err)
 
 	noEcho := *termios
 	noEcho.Lflag &^= unix.ECHO
-	must.NoError(unix.IoctlSetTermios(int(fd), unix.TCSETS, &noEcho))
-	is.False(echoEnabled(fd))
+	must.NoError(unix.IoctlSetTermios(fd, unix.TCSETS, &noEcho))
+	is.False(echoEnabled(ptmx))
 
-	must.NoError(unix.IoctlSetTermios(int(fd), unix.TCSETS, termios))
-	is.True(echoEnabled(fd))
+	must.NoError(unix.IoctlSetTermios(fd, unix.TCSETS, termios))
+	is.True(echoEnabled(ptmx))
 
-	// A bogus fd must fail closed (no leak on error).
-	is.False(echoEnabled(^uintptr(0)))
+	// A closed pty must fail closed (no leak on error).
+	must.NoError(ptmx.Close())
+	is.False(echoEnabled(ptmx))
 }

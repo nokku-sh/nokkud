@@ -255,6 +255,38 @@ func TestServerBackgroundProcessReleasesConnection(t *testing.T) {
 	}, 8*time.Second, 50*time.Millisecond, "background process kept the connection slot")
 }
 
+// TestServerBackgroundProcessOnPTYReleasesConnection is the pty variant: a
+// process that keeps the terminal open cannot pin the slot either. It ignores
+// SIGHUP, like a job an interactive shell put in the background.
+func TestServerBackgroundProcessOnPTYReleasesConnection(t *testing.T) {
+	must := require.New(t)
+	ca := newTestCA(t)
+	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.conns = make(chan struct{}, 1) })
+	defer closeFn()
+
+	auth := userCert(t, ca, testPrincipal)
+	user := currentUser(t)
+
+	c1, err := dial(t, addr, user, auth)
+	must.NoError(err, "first connection")
+	sess, err := c1.NewSession()
+	must.NoError(err, "new session")
+	must.NoError(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "request pty")
+	must.NoError(sess.Start(`(trap "" HUP; exec sleep 15) &`), "start")
+	// Let the shell exit, only the background sleep is left.
+	time.Sleep(300 * time.Millisecond)
+	c1.Close()
+
+	assert.Eventually(t, func() bool {
+		c2, derr := dial(t, addr, user, auth)
+		if derr == nil {
+			c2.Close()
+			return true
+		}
+		return false
+	}, 8*time.Second, 50*time.Millisecond, "background process on the pty kept the connection slot")
+}
+
 // TestStartupSlotsPerSource verifies one remote address cannot take every
 // pre-auth slot, and that loopback draws from its own budget.
 func TestStartupSlotsPerSource(t *testing.T) {

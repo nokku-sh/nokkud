@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -17,7 +16,6 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/nokku-sh/nokkud/internal/recording"
@@ -289,13 +287,13 @@ func (sess *session) ptyReq(req *ssh.Request) {
 		_ = req.Reply(false, nil)
 		return
 	}
-	ptmx, tty, err := pty.Open()
+	ptmx, tty, err := openPTY()
 	if err != nil {
 		slog.Debug("open pty failed", "error", err)
 		_ = req.Reply(false, nil)
 		return
 	}
-	if err = pty.Setsize(ptmx, winsize(r.Width, r.Height)); err != nil {
+	if err = setWinsize(ptmx, r.Width, r.Height); err != nil {
 		_ = ptmx.Close()
 		_ = tty.Close()
 		_ = req.Reply(false, nil)
@@ -321,21 +319,13 @@ func (sess *session) ptyReq(req *ssh.Request) {
 func (sess *session) windowChange(req *ssh.Request) {
 	var w struct{ Cols, Rows, W, H uint32 }
 	if ssh.Unmarshal(req.Payload, &w) == nil && sess.ptmx != nil {
-		if err := pty.Setsize(sess.ptmx, winsize(w.Cols, w.Rows)); err != nil {
+		if err := setWinsize(sess.ptmx, w.Cols, w.Rows); err != nil {
 			slog.Debug("resize pty failed", "error", err)
 		} else {
 			sess.rec.RecordResize(int(w.Cols), int(w.Rows))
 		}
 	}
 	_ = req.Reply(true, nil)
-}
-
-// winsize clamps a client's window size to what the tty can hold.
-func winsize(cols, rows uint32) *pty.Winsize {
-	return &pty.Winsize{
-		Cols: uint16(min(cols, math.MaxUint16)),
-		Rows: uint16(min(rows, math.MaxUint16)),
-	}
 }
 
 // signal forwards a channel signal to the running process. Signals that
@@ -528,6 +518,10 @@ func (sess *session) runPTY() {
 	sess.setProc(cmd.Process)
 	// Drop our slave end, so the master reports EOF once the child exits.
 	_ = sess.tty.Close()
+	// A background process can keep the slave open after the client is gone.
+	// Closing the master hangs it up, as sshd does when a connection ends.
+	stop := context.AfterFunc(sess.ctx, func() { _ = sess.ptmx.Close() })
+	defer stop()
 
 	var input sync.WaitGroup
 	input.Go(func() {
@@ -536,7 +530,7 @@ func (sess *session) runPTY() {
 			n, readErr := sess.Read(buf)
 			if n > 0 {
 				// Only echoed input is recorded, so password prompts never are.
-				if sess.rec != nil && echoEnabled(sess.ptmx.Fd()) {
+				if sess.rec != nil && echoEnabled(sess.ptmx) {
 					sess.rec.RecordInput(buf[:n])
 				}
 				if _, writeErr := sess.ptmx.Write(buf[:n]); writeErr != nil {

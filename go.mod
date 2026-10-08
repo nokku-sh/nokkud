@@ -5,7 +5,6 @@ go 1.27
 require (
 	connectrpc.com/connect v1.21.0
 	github.com/cenkalti/backoff/v7 v7.0.1
-	github.com/creack/pty v1.1.24
 	github.com/mizuchilabs/kata v0.1.15
 	github.com/nokku-sh/mon v0.1.7
 	github.com/nokku-sh/protos v0.2.5
