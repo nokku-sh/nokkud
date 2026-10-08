@@ -1,14 +1,21 @@
 package recording
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
+	"github.com/nokku-sh/protos/gen/nokku/v1/nokkuv1connect"
 )
 
 // resultSink reports a fixed upload result from Close.
@@ -103,4 +110,52 @@ func TestUploadPending(t *testing.T) {
 	must.NoError(UploadPending(t.Context(), ts.client))
 	_, opens, _ = ts.snapshot()
 	is.Equal(1, opens)
+}
+
+// A full workspace refuses the upload. The file stays, and the answer keeps
+// its code on the way out, the retry loop reads it to wait longer.
+func TestUploadPendingReportsAFullWorkspace(t *testing.T) {
+	dir := newRecordsDir(t)
+	handler := connect.NewClientStreamHandlerSimple(
+		nokkuv1connect.DaemonControlServiceUploadRecordingProcedure,
+		func(_ context.Context, stream *connect.ClientStream[nokkuv1.UploadRecordingRequest]) (*nokkuv1.UploadRecordingResponse, error) {
+			stream.Receive()
+			return nil, connect.NewError(
+				connect.CodeResourceExhausted,
+				errors.New("the recording storage of this workspace is full"),
+			)
+		},
+		connect.WithSchema(
+			nokkuv1.File_nokku_v1_daemon_proto.Services().
+				ByName("DaemonControlService").
+				Methods().
+				ByName("UploadRecording"),
+		),
+	)
+	mux := http.NewServeMux()
+	mux.Handle(nokkuv1connect.DaemonControlServiceUploadRecordingProcedure, handler)
+	// HTTP/2 like the daemon, HTTP/1.1 does not end a request body early.
+	srv := httptest.NewUnstartedServer(mux)
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(func() {
+		srv.CloseClientConnections()
+		srv.Close()
+	})
+	client := nokkuv1connect.NewDaemonControlServiceClient(srv.Client(), srv.URL)
+
+	recordOnce(t, &resultSink{err: errors.New("backend down"), done: make(chan struct{})})
+	require.Eventually(t, func() bool {
+		m, _ := filepath.Glob(filepath.Join(dir, "*"+castSuffix))
+		if len(m) != 1 {
+			return false
+		}
+		_, busy := active.Load(m[0])
+		return !busy
+	}, time.Second, 10*time.Millisecond)
+
+	err := UploadPending(t.Context(), client)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err), "got %v", err)
+	left, _ := filepath.Glob(filepath.Join(dir, "*"+castSuffix))
+	assert.Len(t, left, 1, "a refused recording must stay on disk")
 }

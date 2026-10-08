@@ -36,6 +36,9 @@ const (
 	// retryUploadsEvery is how often recordings the backend missed are
 	// uploaded again.
 	retryUploadsEvery = 5 * time.Minute
+	// retryUploadsWhenFull is the wait once the backend said the workspace
+	// is full. Every refused upload is a failed call in its audit log.
+	retryUploadsWhenFull = time.Hour
 )
 
 // signerSalt namespaces the daemon's DPoP key. Salt registry: mon/README.md.
@@ -135,18 +138,25 @@ func (c *Client) RecordingSink(ctx context.Context, sessionID, username string) 
 // retryUploads uploads recordings whose live upload never completed, such as
 // sessions recorded while the backend was down.
 func (c *Client) retryUploads(ctx context.Context) {
-	t := time.NewTicker(retryUploadsEvery)
-	defer t.Stop()
 	for {
-		if err := recording.UploadPending(ctx, c.ctl); err != nil {
+		err := recording.UploadPending(ctx, c.ctl)
+		if err != nil {
 			slog.Debug("recording upload retry failed", "error", err)
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(uploadRetryWait(err)):
 		}
 	}
+}
+
+// uploadRetryWait is how long to wait after a round of pending uploads.
+func uploadRetryWait(err error) time.Duration {
+	if connect.CodeOf(err) == connect.CodeResourceExhausted {
+		return retryUploadsWhenFull
+	}
+	return retryUploadsEvery
 }
 
 // Run syncs, keeps the host cert fresh, and holds the control stream open
