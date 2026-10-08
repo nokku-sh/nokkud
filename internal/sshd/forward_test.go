@@ -164,6 +164,31 @@ func TestServerRemoteForward(t *testing.T) {
 	is.Equal("pong", string(buf))
 }
 
+// TestServerRemoteForwardPortZero verifies -R 0 forwards: each one gets its own
+// port, and cancelling one closes its listener.
+func TestServerRemoteForwardPortZero(t *testing.T) {
+	is := assert.New(t)
+	must := require.New(t)
+	ca := newTestCA(t)
+	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{AllowForwarding: true}})
+	defer closeFn()
+
+	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
+	must.NoError(err, "dial")
+	defer client.Close()
+
+	first, err := client.Listen("tcp", "127.0.0.1:0")
+	must.NoError(err, "first port 0 forward")
+	second, err := client.Listen("tcp", "127.0.0.1:0")
+	must.NoError(err, "second port 0 forward")
+	defer second.Close()
+	is.NotEqual(first.Addr().String(), second.Addr().String())
+
+	must.NoError(first.Close(), "cancel the first forward")
+	_, err = net.DialTimeout("tcp", first.Addr().String(), time.Second)
+	is.Error(err, "the cancelled forward still listens")
+}
+
 // TestServerRemoteForwardLocalhost verifies a -R forward requested on the
 // hostname "localhost" works: clients key their forward by the requested
 // address, so the server must report it back verbatim even though the listener

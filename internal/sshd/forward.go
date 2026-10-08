@@ -131,7 +131,8 @@ func (s *Server) tcpipForward(st *connState, payload []byte) (bool, []byte) {
 	if f.BindPort != 0 && f.BindPort < 1024 && st.user.UID != 0 {
 		return false, nil
 	}
-	addr := forwardAddr(f, s.policy.Load().GatewayPorts)
+	gateway := s.policy.Load().GatewayPorts
+	addr := forwardAddr(f, gateway)
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -144,12 +145,15 @@ func (s *Server) tcpipForward(st *connState, payload []byte) (bool, []byte) {
 	if err != nil {
 		return false, nil
 	}
-	st.forwards[addr] = ln
+	// A port 0 forward is kept under the port it got, the client cancels it
+	// by that one.
+	f.BindPort = uint32(addrPort(ln.Addr()).Port())
+	st.forwards[forwardAddr(f, gateway)] = ln
 	ev := connEvent(st.conn, eventRemoteForward)
 	ev.Target = ln.Addr().String()
 	s.emit(ev)
 	go s.acceptForwarded(st, ln, f.BindAddr)
-	return true, ssh.Marshal(struct{ Port uint32 }{uint32(addrPort(ln.Addr()).Port())})
+	return true, ssh.Marshal(struct{ Port uint32 }{f.BindPort})
 }
 
 func (s *Server) cancelTCPIPForward(st *connState, payload []byte) bool {
