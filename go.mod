@@ -1,6 +1,6 @@
 module github.com/nokku-sh/nokkud
 
-go 1.27
+go 1.27.2
 
 require (
 	connectrpc.com/connect v1.21.0
