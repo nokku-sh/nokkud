@@ -47,7 +47,7 @@ func (b *fakeBackend) SyncDaemon(
 		Status:       nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED.Enum(),
 		CaPublicKey:  &b.ca,
 		StateVersion: new(int64(7)),
-		Principals: []*nokkuv1.PrincipalUsers{
+		Principals: []*nokkuv1.AccountPrincipals{
 			{Username: new("deploy"), CertPrincipals: []string{"subject-1"}},
 		},
 	}, nil

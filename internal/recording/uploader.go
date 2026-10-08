@@ -24,6 +24,7 @@ type Uploader struct {
 	client    nokkuv1connect.DaemonControlServiceClient
 	sessionID string
 	username  string
+	principal string
 
 	chunks chan []byte
 	mu     sync.Mutex
@@ -38,13 +39,14 @@ type Uploader struct {
 func NewUploader(
 	ctx context.Context,
 	client nokkuv1connect.DaemonControlServiceClient,
-	sessionID, username string,
+	sessionID, username, principal string,
 ) *Uploader {
 	ctx, cancel := context.WithCancel(ctx)
 	u := &Uploader{
 		client:    client,
 		sessionID: sessionID,
 		username:  username,
+		principal: principal,
 		chunks:    make(chan []byte, maxBufferedChunks),
 		done:      make(chan struct{}),
 		cancel:    cancel,
@@ -166,6 +168,7 @@ func (u *Uploader) open(ctx context.Context) (
 			Meta: &nokkuv1.RecordingMeta{
 				RecordingId: &u.sessionID,
 				Username:    &u.username,
+				Principal:   &u.principal,
 			},
 		},
 	}); err != nil {

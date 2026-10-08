@@ -30,9 +30,11 @@ type tcpipForwardData struct {
 // connState tracks one connection's -R listeners and channel slots. A slot is
 // held by each open channel and each -R listener.
 type connState struct {
-	conn     *ssh.ServerConn
-	user     *account
-	channels chan struct{}
+	conn *ssh.ServerConn
+	user *account
+	// The certificate principal auth matched, reported with the recording.
+	principal string
+	channels  chan struct{}
 
 	mu       sync.Mutex
 	forwards map[string]net.Listener
@@ -41,10 +43,11 @@ type connState struct {
 func newConnState(conn *ssh.ServerConn, limit int) *connState {
 	sysUser, _ := conn.Permissions.ExtraData[accountKey].(*account)
 	return &connState{
-		conn:     conn,
-		user:     sysUser,
-		channels: make(chan struct{}, limit),
-		forwards: make(map[string]net.Listener),
+		conn:      conn,
+		user:      sysUser,
+		principal: conn.Permissions.Extensions["nokku-principal"],
+		channels:  make(chan struct{}, limit),
+		forwards:  make(map[string]net.Listener),
 	}
 }
 

@@ -227,7 +227,7 @@ func TestPlainSessionRecorded(t *testing.T) {
 	must.NoError(paths.Verify(), "verify paths")
 
 	sink := &captureSink{closed: make(chan struct{})}
-	factory := func(context.Context, string, string) io.WriteCloser { return sink }
+	factory := func(context.Context, string, string, string) io.WriteCloser { return sink }
 
 	cur := currentUser(t)
 	ca := newTestCA(t)
@@ -345,7 +345,7 @@ func TestRecordingCorrelatesWebSessionID(t *testing.T) {
 			var mu sync.Mutex
 			var gotID string
 			sink := &captureSink{closed: make(chan struct{})}
-			factory := func(_ context.Context, sessionID, _ string) io.WriteCloser {
+			factory := func(_ context.Context, sessionID, _, _ string) io.WriteCloser {
 				mu.Lock()
 				gotID = sessionID
 				mu.Unlock()

@@ -85,7 +85,7 @@ func uploadFile(ctx context.Context, client nokkuv1connect.DaemonControlServiceC
 		}
 		return nil
 	}
-	meta := &nokkuv1.RecordingMeta{RecordingId: &hdr.SessionID, Username: &hdr.User}
+	meta := &nokkuv1.RecordingMeta{RecordingId: &hdr.SessionID, Username: &hdr.User, Principal: &hdr.Principal}
 	// The session is over, so the backend is told when it began.
 	if hdr.Timestamp > 0 {
 		meta.StartedAt = timestamppb.New(time.Unix(hdr.Timestamp, 0))

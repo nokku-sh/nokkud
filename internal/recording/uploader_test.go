@@ -83,7 +83,7 @@ func TestUploaderStreamsPlaintext(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	u := NewUploader(context.Background(), ts.client, "s1", "user")
+	u := NewUploader(context.Background(), ts.client, "s1", "user", "")
 
 	_, err := u.Write([]byte("terminal output"))
 	must.NoError(err)
@@ -109,7 +109,7 @@ func TestUploaderKeepsLocalOnFailure(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	u := NewUploader(context.Background(), ts.client, "s1", "user")
+	u := NewUploader(context.Background(), ts.client, "s1", "user", "")
 
 	_, err := u.Write([]byte("first"))
 	must.NoError(err)
@@ -128,7 +128,7 @@ func TestUploaderZeroSlicesAreNoop(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 
-	u := NewUploader(context.Background(), ts.client, "s1", "user")
+	u := NewUploader(context.Background(), ts.client, "s1", "user", "")
 
 	n, err := u.Write(nil)
 	must.NoError(err)
@@ -169,7 +169,7 @@ func TestUploaderReportsWhyTheBackendRefused(t *testing.T) {
 	})
 	client := nokkuv1connect.NewDaemonControlServiceClient(srv.Client(), srv.URL)
 
-	u := NewUploader(context.Background(), client, "s1", "user")
+	u := NewUploader(context.Background(), client, "s1", "user", "")
 	for range 200 {
 		_, err := u.Write(make([]byte, 32<<10))
 		require.NoError(t, err, "the session never sees an upload problem")

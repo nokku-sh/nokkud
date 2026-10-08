@@ -131,8 +131,8 @@ func (c *Client) enroll(ctx context.Context, token string) error {
 }
 
 // RecordingSink streams one session recording to the backend.
-func (c *Client) RecordingSink(ctx context.Context, sessionID, username string) io.WriteCloser {
-	return recording.NewUploader(ctx, c.ctl, sessionID, username)
+func (c *Client) RecordingSink(ctx context.Context, sessionID, username, principal string) io.WriteCloser {
+	return recording.NewUploader(ctx, c.ctl, sessionID, username, principal)
 }
 
 // retryUploads uploads recordings whose live upload never completed, such as

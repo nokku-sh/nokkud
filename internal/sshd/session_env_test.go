@@ -68,7 +68,7 @@ func TestRecorderSessionIDFromEnv(t *testing.T) {
 			captured := make(chan string, 1)
 			srv := &Server{}
 			srv.policy.Store(&Policy{Record: true})
-			srv.recordingSink = func(_ context.Context, sessionID, _ string) io.WriteCloser {
+			srv.recordingSink = func(_ context.Context, sessionID, _, _ string) io.WriteCloser {
 				captured <- sessionID
 				return nopSink{}
 			}

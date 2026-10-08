@@ -603,6 +603,7 @@ func (sess *session) startRecorder(width, height int) {
 			context.WithoutCancel(sess.ctx),
 			recSessionID,
 			sess.sysUser.Name,
+			sess.st.principal,
 		)
 	}
 	term, _ := sess.envValue("TERM")
@@ -612,6 +613,7 @@ func (sess *session) startRecorder(width, height int) {
 		Title:     "ssh-" + sess.sysUser.Name,
 		SessionID: recSessionID,
 		User:      sess.sysUser.Name,
+		Principal: sess.st.principal,
 		Term:      term,
 		Sink:      sink,
 		OnLimit:   sess.recordingFull,

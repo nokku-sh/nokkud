@@ -56,7 +56,7 @@ var DefaultPolicy = Policy{Record: true, AllowForwarding: true, AllowAgentForwar
 
 // RecordingSink opens the upload stream for one session's recording. The ctx
 // outlives the session teardown.
-type RecordingSink func(ctx context.Context, sessionID, username string) io.WriteCloser
+type RecordingSink func(ctx context.Context, sessionID, username, principal string) io.WriteCloser
 
 type Options struct {
 	// Principals returns the certificate principals allowed to log in as

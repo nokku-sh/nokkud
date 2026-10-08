@@ -37,6 +37,7 @@ type header struct {
 	Title     string `json:"title,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
 	User      string `json:"user,omitempty"`
+	Principal string `json:"principal,omitempty"`
 }
 
 // term is the terminal info block of an asciicast v3 header.
@@ -53,6 +54,7 @@ type Options struct {
 	Title     string // stored in the asciicast header
 	SessionID string // correlates the recording with the session's audit events
 	User      string // the local account, labels the file and is needed to upload it later
+	Principal string // the certificate principal auth matched, names who was logged in
 	Term      string // the session's TERM
 	// Sink, when set, receives every flushed batch in addition to the local file.
 	// A nil error from its Close confirms the upload.
@@ -158,6 +160,7 @@ func New(opts Options) (*Recorder, error) {
 		Title:     opts.Title,
 		SessionID: opts.SessionID,
 		User:      opts.User,
+		Principal: opts.Principal,
 	}); err != nil {
 		_ = gw.Close()
 		_ = f.Close()
