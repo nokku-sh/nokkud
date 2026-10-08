@@ -17,16 +17,12 @@ import (
 // Cache is the thread-safe, persisted state synced from the backend. It backs
 // SSH access decisions when the backend is unreachable.
 type Cache struct {
-	mu           sync.RWMutex
-	principals   map[string][]string
-	stateVersion int64
-	daemonConfig *nokkuv1.DaemonConfig
-	ca           string
-	retiredCAs   []*nokkuv1.RetiredCAKey
+	mu   sync.RWMutex
+	data cacheJSON
 }
 
-// cacheJSON is the on-disk representation of a Cache. Cache's fields stay
-// unexported so every access goes through the mutex.
+// cacheJSON is the cached state as it is stored on disk. It stays unexported
+// so every access goes through the mutex.
 type cacheJSON struct {
 	Principals   map[string][]string     `json:"principals"`
 	StateVersion int64                   `json:"state_version,omitempty"`
@@ -36,9 +32,7 @@ type cacheJSON struct {
 }
 
 func NewCache() *Cache {
-	return &Cache{
-		principals: make(map[string][]string),
-	}
+	return &Cache{data: cacheJSON{Principals: make(map[string][]string)}}
 }
 
 // CertPrincipals returns a copy of the certificate principals that may log in
@@ -48,13 +42,13 @@ func (c *Cache) CertPrincipals(username string) []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return slices.Clone(c.principals[username])
+	return slices.Clone(c.data.Principals[username])
 }
 
 func (c *Cache) GetStateVersion() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.stateVersion
+	return c.data.StateVersion
 }
 
 // SetDaemonConfig replaces the backend-synced daemon config, which session
@@ -62,14 +56,14 @@ func (c *Cache) GetStateVersion() int64 {
 func (c *Cache) SetDaemonConfig(dc *nokkuv1.DaemonConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.daemonConfig = dc
+	c.data.DaemonConfig = dc
 }
 
 // DaemonConfig returns the synced daemon config. Callers must treat it as read-only.
 func (c *Cache) DaemonConfig() *nokkuv1.DaemonConfig {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.daemonConfig
+	return c.data.DaemonConfig
 }
 
 // CAs returns the CA public key user certificates must be signed by, and the
@@ -78,7 +72,7 @@ func (c *Cache) DaemonConfig() *nokkuv1.DaemonConfig {
 func (c *Cache) CAs() (active string, retired []*nokkuv1.RetiredCAKey) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.ca, c.retiredCAs
+	return c.data.CA, c.data.RetiredCAs
 }
 
 // Replace atomically swaps the whole cached state so auth reads never observe
@@ -93,11 +87,13 @@ func (c *Cache) Replace(
 	next := validPrincipals(principals)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.principals = next
-	c.daemonConfig = dc
-	c.ca = ca
-	c.retiredCAs = retiredCAs
-	c.stateVersion = version
+	c.data = cacheJSON{
+		Principals:   next,
+		StateVersion: version,
+		DaemonConfig: dc,
+		CA:           ca,
+		RetiredCAs:   retiredCAs,
+	}
 }
 
 // validPrincipals deep-copies m, dropping any name that is not a safe POSIX
@@ -118,11 +114,7 @@ func validPrincipals(m map[string][]string) map[string][]string {
 func (c *Cache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.principals = make(map[string][]string)
-	c.stateVersion = 0
-	c.daemonConfig = nil
-	c.ca = ""
-	c.retiredCAs = nil
+	c.data = cacheJSON{Principals: make(map[string][]string)}
 }
 
 // Load reads the cache from disk, ignoring a corrupted file so the next sync
@@ -139,28 +131,19 @@ func (c *Cache) Save() error {
 func (c *Cache) MarshalJSON() ([]byte, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return json.Marshal(cacheJSON{
-		Principals:   c.principals,
-		StateVersion: c.stateVersion,
-		DaemonConfig: c.daemonConfig,
-		CA:           c.ca,
-		RetiredCAs:   c.retiredCAs,
-	})
+	return json.Marshal(c.data)
 }
 
 // UnmarshalJSON validates like Replace, so a hand-edited file cannot sneak
 // in an unsafe name.
 func (c *Cache) UnmarshalJSON(data []byte) error {
-	var dto cacheJSON
-	if err := json.Unmarshal(data, &dto); err != nil {
+	var next cacheJSON
+	if err := json.Unmarshal(data, &next); err != nil {
 		return err
 	}
+	next.Principals = validPrincipals(next.Principals)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.principals = validPrincipals(dto.Principals)
-	c.stateVersion = dto.StateVersion
-	c.daemonConfig = dto.DaemonConfig
-	c.ca = dto.CA
-	c.retiredCAs = dto.RetiredCAs
+	c.data = next
 	return nil
 }

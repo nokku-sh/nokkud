@@ -207,5 +207,5 @@ func TestCacheReplace(t *testing.T) {
 
 	// Replacing with an empty map must yield an empty map, not nil.
 	c.Replace(nil, nil, "", nil, 0)
-	is.NotNil(c.principals)
+	is.NotNil(c.data.Principals)
 }
