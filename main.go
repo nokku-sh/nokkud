@@ -39,14 +39,6 @@ SSH certificates. The host sshd on port 22 is never touched.`,
 		Version: buildinfo.String(),
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			logx.Init(cmd.Bool("debug"))
-
-			// The sftp-server harness subcommand runs against a caller-supplied
-			// home, so keep it away from the default data dir.
-			if cmd.Args().First() != "sftp-server" {
-				if err := paths.Verify(); err != nil {
-					return nil, err
-				}
-			}
 			return ctx, nil
 		},
 		Action: run,
@@ -198,9 +190,13 @@ func enroll(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// loadState reads the persisted state. The API URL is bound to the
-// enrollment, so it is persisted, and the flag only wins when given.
+// loadState sets up the data dir and reads the persisted state. Callers check
+// for root first. The API URL is bound to the enrollment, so it is persisted,
+// and the flag only wins when given.
 func loadState(cmd *cli.Command) (*state.Cache, *state.Config, error) {
+	if err := paths.Verify(); err != nil {
+		return nil, nil, err
+	}
 	cache := state.NewCache()
 	if err := cache.Load(); err != nil {
 		return nil, nil, err
