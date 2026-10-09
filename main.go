@@ -69,26 +69,7 @@ Run it again to move the host to another Nokku. Restart the service afterwards.`
 				Name:        "reset",
 				Usage:       "Cleanup application state and delete this daemon",
 				Description: `Cleans up all local certificates, principal caches, and enrollment data. Use this to decommission this machine or before re-enrolling.`,
-				Action: func(ctx context.Context, cmd *cli.Command) error {
-					if err := sysutil.IsRoot(); err != nil {
-						return err
-					}
-					// Local state goes regardless, or a broken identity could never be reset.
-					defer paths.Cleanup()
-					cache, cfg, err := loadState(cmd)
-					if err != nil {
-						slog.Warn("load local state, removing it anyway", "error", err)
-						return nil
-					}
-					cl, err := newDaemonClient(ctx, cmd, "", cache, cfg)
-					if err == nil {
-						err = cl.Unenroll(ctx)
-					}
-					if err != nil {
-						slog.Warn("delete daemon from backend failed, local state removed", "error", err)
-					}
-					return nil
-				},
+				Action:      reset,
 			},
 		},
 		Flags: []cli.Flag{
@@ -217,6 +198,27 @@ func enroll(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 	fmt.Println("Enrolled. Start the daemon with: sudo systemctl restart nokkud")
+	return nil
+}
+
+func reset(ctx context.Context, cmd *cli.Command) error {
+	if err := sysutil.IsRoot(); err != nil {
+		return err
+	}
+	// Local state goes regardless, or a broken identity could never be reset.
+	defer paths.Cleanup()
+	cache, cfg, err := loadState(cmd)
+	if err != nil {
+		slog.Warn("load local state, removing it anyway", "error", err)
+		return nil
+	}
+	cl, err := newDaemonClient(ctx, cmd, "", cache, cfg)
+	if err == nil {
+		err = cl.Unenroll(ctx)
+	}
+	if err != nil {
+		slog.Warn("delete daemon from backend failed, local state removed", "error", err)
+	}
 	return nil
 }
 
