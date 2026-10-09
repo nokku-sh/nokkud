@@ -20,6 +20,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/nokku-sh/mon/tpm"
+	"github.com/nokku-sh/mon/trust"
 	"github.com/nokku-sh/nokkud/internal/client"
 	"github.com/nokku-sh/nokkud/internal/paths"
 	"github.com/nokku-sh/nokkud/internal/sshd"
@@ -60,6 +61,8 @@ SSH certificates. The host sshd on port 22 is never touched.`,
 				Usage: "Enroll this host with Nokku, then exit",
 				Description: `Prompts for the enrollment token from the Nokku web app, or reads
 NOKKUD_ENROLL_TOKEN for unattended installs. The token never goes on the command line.
+A Nokku with a private certificate is trusted through NOKKUD_API_PIN, which the
+enroll command in the web app carries, or through NOKKUD_CA_FILE.
 Run it again to move the host to another Nokku. Restart the service afterwards.`,
 				Action: enroll,
 			},
@@ -111,6 +114,16 @@ Run it again to move the host to another Nokku. Restart the service afterwards.`
 				Name:    "api",
 				Usage:   "Nokku API URL, https only",
 				Sources: cli.EnvVars("NOKKUD_API_URL"),
+			},
+			&cli.StringFlag{
+				Name:    "api-pin",
+				Usage:   "Pin of the private CA of the Nokku API, read at enroll",
+				Sources: cli.EnvVars("NOKKUD_API_PIN"),
+			},
+			&cli.StringFlag{
+				Name:    "ca-file",
+				Usage:   "PEM file with the private CA of the Nokku API",
+				Sources: cli.EnvVars("NOKKUD_CA_FILE"),
 			},
 		},
 	}
@@ -179,11 +192,30 @@ func enroll(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	if pin := cmd.String("api-pin"); pin != "" {
+		ca, berr := trust.Bootstrap(ctx, cfg.APIURL, pin)
+		if berr != nil {
+			return berr
+		}
+		cfg.APICA = string(ca)
+		if err = cfg.Save(); err != nil {
+			return err
+		}
+	}
 	token, err := enrollToken()
 	if err != nil {
 		return err
 	}
-	if _, err = newDaemonClient(ctx, cmd, token, cache, cfg); err != nil {
+	_, err = newDaemonClient(ctx, cmd, token, cache, cfg)
+	if trust.Untrusted(err) {
+		return fmt.Errorf(
+			"this machine does not trust the certificate of %s. Copy the enroll command from the Nokku web app, "+
+				"it carries NOKKUD_API_PIN, or point NOKKUD_CA_FILE at the CA: %w",
+			cfg.APIURL,
+			err,
+		)
+	}
+	if err != nil {
 		return err
 	}
 	fmt.Println("Enrolled. Start the daemon with: sudo systemctl restart nokkud")
@@ -191,8 +223,8 @@ func enroll(ctx context.Context, cmd *cli.Command) error {
 }
 
 // loadState sets up the data dir and reads the persisted state. Callers check
-// for root first. The API URL is bound to the enrollment, so it is persisted,
-// and the flag only wins when given.
+// for root first. The API URL and the CA it is trusted through are bound to
+// the enrollment, so they are persisted, and the flags only win when given.
 func loadState(cmd *cli.Command) (*state.Cache, *state.Config, error) {
 	if err := paths.Verify(); err != nil {
 		return nil, nil, err
@@ -205,14 +237,25 @@ func loadState(cmd *cli.Command) (*state.Cache, *state.Config, error) {
 	if err := cfg.Load(); err != nil {
 		return nil, nil, err
 	}
-	if cmd.IsSet("api") {
-		cfg.APIURL = strings.TrimRight(cmd.String("api"), "/")
+	if api := strings.TrimRight(cmd.String("api"), "/"); cmd.IsSet("api") && api != cfg.APIURL {
+		// The CA of one Nokku is never trusted for another.
+		cfg.APIURL, cfg.APICA = api, ""
 	}
 	if cfg.APIURL == "" {
 		cfg.APIURL = state.DefaultAPIURL
 	}
 	if err := checkAPIURL(cfg.APIURL); err != nil {
 		return nil, nil, err
+	}
+	if path := cmd.String("ca-file"); path != "" {
+		ca, err := os.ReadFile(path) // #nosec G304 -- the operator names the file
+		if err != nil {
+			return nil, nil, fmt.Errorf("CA file: %w", err)
+		}
+		if _, err = trust.ParseBundle(ca); err != nil {
+			return nil, nil, fmt.Errorf("CA file %s: %w", path, err)
+		}
+		cfg.APICA = string(ca)
 	}
 	return cache, cfg, cfg.Save()
 }

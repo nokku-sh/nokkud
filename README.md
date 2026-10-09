@@ -45,6 +45,8 @@ On a self-hosted core, point the daemon at it:
 sudo nokkud --api https://nokku.example.com enroll
 ```
 
+A core with a certificate from a private CA also needs `NOKKUD_API_PIN`. The enroll commands in the web app carry it. `nokkud` checks the core's CA against the pin once and keeps it with the enrollment.
+
 The server shows up in the web app. Unless the token approves it automatically, someone has to approve it there before it serves logins.
 
 ## Network
@@ -103,6 +105,8 @@ On OpenRC or another init system, use [packaging/openrc/nokkud.openrc](packaging
 | Flag            | Environment          | Purpose                                             |
 | --------------- | -------------------- | --------------------------------------------------- |
 | `--api`         | `NOKKUD_API_URL`     | Address of the core, `https` only                   |
+| `--api-pin`     | `NOKKUD_API_PIN`     | Pin of the core's private CA, read at enroll        |
+| `--ca-file`     | `NOKKUD_CA_FILE`     | PEM file with the core's private CA                 |
 | `--ssh-addr`    | `NOKKUD_SSH_ADDR`    | Where the SSH server listens. Default `:4022`       |
 | `--require-tpm` | `NOKKUD_REQUIRE_TPM` | Require a TPM 2.0 and refuse the software key       |
 | `--debug`       | `NOKKUD_DEBUG`       | Debug logging                                       |

@@ -19,6 +19,7 @@ import (
 
 	"github.com/nokku-sh/mon/dpopclient"
 	"github.com/nokku-sh/mon/tpm"
+	"github.com/nokku-sh/mon/trust"
 
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 	nokkuv1connect "github.com/nokku-sh/protos/gen/nokku/v1/nokkuv1connect"
@@ -69,7 +70,11 @@ func New(
 	requireTPM bool,
 	enrollToken string,
 ) (*Client, error) {
-	httpc, err := dpopclient.NewHTTPClient(false, dialTimeout)
+	roots, err := trust.Pool([]byte(config.APICA))
+	if err != nil {
+		return nil, err
+	}
+	httpc, err := dpopclient.NewHTTPClient(roots, dialTimeout)
 	if err != nil {
 		return nil, err
 	}

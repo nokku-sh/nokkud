@@ -6,8 +6,8 @@ require (
 	connectrpc.com/connect v1.21.0
 	github.com/cenkalti/backoff/v7 v7.0.1
 	github.com/mizuchilabs/kata v0.1.15
-	github.com/nokku-sh/mon v0.1.7
-	github.com/nokku-sh/protos v0.2.8
+	github.com/nokku-sh/mon v0.1.8-0.20261009190952-573de22b5b6b
+	github.com/nokku-sh/protos v0.2.9-0.20261009190952-951069dfb419
 	github.com/pkg/sftp v1.13.11
 	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.14.0

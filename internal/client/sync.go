@@ -36,7 +36,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		if err = c.cache.Save(); err != nil {
 			slog.Error("persist cleared cache on rejection", "error", err)
 		}
-		if err = (&state.Config{APIURL: c.config.APIURL}).Save(); err != nil {
+		if err = (&state.Config{APIURL: c.config.APIURL, APICA: c.config.APICA}).Save(); err != nil {
 			slog.Error("persist cleared config on rejection", "error", err)
 		}
 		return errDaemonRejected
