@@ -68,10 +68,27 @@ On a cloud server, also allow TCP 4022 in the provider's firewall or security gr
 ## Enrollment
 
 - **Unattended installs:** set `NOKKUD_ENROLL_TOKEN` instead of answering the prompt. The token is never taken from the command line, where any local user could read it from the process list.
+- **The service enrolls itself** on start when `NOKKUD_ENROLL_TOKEN` is set and nothing is enrolled yet. Once enrolled, the variable is ignored, so a token that stays in an environment file cannot move the server or spend another use.
 - **Before enrollment** the service exits with a clear error, and systemd does not restart it.
 - **Enrolling again** is safe. With a token from another workspace it moves the server there and drops everything the old one trusted.
+- **A token can carry grants and tags.** Every server it enrolls starts with them. They are copied once, so changes made later in the web app stay.
 
 Everything `nokkud` owns lives under `/var/lib/nokkud/`.
+
+## Container
+
+The image at `ghcr.io/nokku-sh/nokkud` is for devboxes, CI runners and sandboxes, anything you want to SSH into without opening a port. It enrolls itself on start and is reached through the relay:
+
+```bash
+docker run -d --hostname alice -e NOKKUD_ENROLL_TOKEN=... ghcr.io/nokku-sh/nokkud
+ssh dev@alice
+```
+
+The image ships one login account, `dev`. Build on it with `FROM ghcr.io/nokku-sh/nokkud` to add your tools and users. The container has to run as root, which is the default.
+
+- **Ephemeral tokens** are made for this. A container enrolled with one is approved right away, deletes itself when it stops, and is removed by the core once it has been offline for a while. A new container of the same name takes over from one that went away.
+- **Names:** a hostname a person chose becomes the server's name in Nokku. A random Docker hostname gets a generated name instead, so pass `--hostname`.
+- **A persistent devbox** mounts `/var/lib/nokkud` and keeps its hostname fixed. The identity is bound to the host, so a new hostname on an old volume fails to start.
 
 ## Install options
 

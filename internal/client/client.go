@@ -27,6 +27,7 @@ import (
 	"github.com/nokku-sh/nokkud/internal/recording"
 	"github.com/nokku-sh/nokkud/internal/sshd"
 	"github.com/nokku-sh/nokkud/internal/state"
+	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
 const (
@@ -105,7 +106,8 @@ func New(
 func (c *Client) enroll(ctx context.Context, token string) error {
 	ctx, cancel := context.WithTimeout(ctx, enrollTimeout)
 	defer cancel()
-	res, err := c.ctl.EnrollDaemon(ctx, &nokkuv1.EnrollDaemonRequest{Token: &token})
+	// The hostname in the report may become the daemon's name.
+	res, err := c.ctl.EnrollDaemon(ctx, &nokkuv1.EnrollDaemonRequest{Token: &token, Metadata: sysutil.Metadata()})
 	if err != nil {
 		return fmt.Errorf("enroll: %w", err)
 	}

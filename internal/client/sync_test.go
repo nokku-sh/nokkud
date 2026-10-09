@@ -33,6 +33,22 @@ type fakeBackend struct {
 	signs atomic.Int32
 	// pending answers like a backend that has not approved the daemon.
 	pending atomic.Bool
+	// enrolled holds the last enroll request.
+	enrolled atomic.Pointer[nokkuv1.EnrollDaemonRequest]
+}
+
+func (b *fakeBackend) EnrollDaemon(
+	_ context.Context,
+	req *nokkuv1.EnrollDaemonRequest,
+) (*nokkuv1.EnrollDaemonResponse, error) {
+	b.enrolled.Store(req)
+	return &nokkuv1.EnrollDaemonResponse{
+		Id:          new("daemon-1"),
+		TargetId:    new("target-1"),
+		Status:      nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED.Enum(),
+		Config:      &nokkuv1.DaemonConfig{Ephemeral: new(true)},
+		AccessToken: new("session"),
+	}, nil
 }
 
 func (b *fakeBackend) SyncDaemon(
@@ -160,4 +176,19 @@ func TestSyncPendingDropsTrust(t *testing.T) {
 	loaded := state.NewCache()
 	require.NoError(t, loaded.Load())
 	assert.Empty(t, loaded.CertPrincipals("deploy"), "the old grants are still on disk")
+}
+
+// The backend names the daemon after the host when a person named it, so enroll has to say what it is called.
+func TestEnrollReportsTheHost(t *testing.T) {
+	backend := &fakeBackend{ca: newTestCAKey(t)}
+	c := newSyncClient(t, backend)
+
+	require.NoError(t, c.enroll(t.Context(), "token"))
+
+	req := backend.enrolled.Load()
+	require.NotNil(t, req, "no enroll call reached the backend")
+	hostname, _ := os.Hostname()
+	assert.Equal(t, hostname, req.GetMetadata()["hostname"])
+	assert.Equal(t, "daemon-1", c.config.DaemonID)
+	assert.True(t, c.cache.DaemonConfig().GetEphemeral(), "the enroll config is what the daemon keeps")
 }

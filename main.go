@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mizuchilabs/kata/buildinfo"
 	"github.com/mizuchilabs/kata/logx"
@@ -62,7 +63,10 @@ SSH certificates. The host sshd on port 22 is never touched.`,
 NOKKUD_ENROLL_TOKEN for unattended installs. The token never goes on the command line.
 A Nokku with a private certificate is trusted through NOKKUD_API_PIN, which the
 enroll command in the web app carries, or through NOKKUD_CA_FILE.
-Run it again to move the host to another Nokku. Restart the service afterwards.`,
+Run it again to move the host to another Nokku. Restart the service afterwards.
+
+The service enrolls itself on start when NOKKUD_ENROLL_TOKEN is set and nothing is
+enrolled yet, which is how a container joins. Once enrolled, the variable is ignored.`,
 				Action: enroll,
 			},
 			{
@@ -116,6 +120,9 @@ Run it again to move the host to another Nokku. Restart the service afterwards.`
 // errNotEnrolled exits with EX_CONFIG, which the unit file does not restart.
 var errNotEnrolled = cli.Exit("nokkud: this host is not enrolled, run: sudo nokkud enroll", 78)
 
+// unenrollTimeout fits in Docker's default stop grace period.
+const unenrollTimeout = 8 * time.Second
+
 func run(ctx context.Context, cmd *cli.Command) error {
 	if err := sysutil.IsRoot(); err != nil {
 		return err
@@ -124,10 +131,14 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	// Only an unenrolled host reads the variable, so a persistent one cannot re-enroll or move a host.
+	token := ""
 	if cfg.DaemonID == "" {
-		return errNotEnrolled
+		if token = os.Getenv("NOKKUD_ENROLL_TOKEN"); token == "" {
+			return errNotEnrolled
+		}
 	}
-	cl, err := newDaemonClient(ctx, cmd, "", cache, cfg)
+	cl, err := enrollHost(ctx, cmd, token, cache, cfg)
 	if err != nil {
 		return err
 	}
@@ -160,7 +171,22 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	err = cl.Run(ctx, srv, addr)
 	cancel()
 	wg.Wait()
+	// An ephemeral host is gone for good once it stops, so it takes its record with it.
+	if err == nil && cache.DaemonConfig().GetEphemeral() {
+		unenroll(context.WithoutCancel(ctx), cl)
+	}
 	return err
+}
+
+// unenroll deletes the daemon from the backend and wipes the local state. It has to fit in a container's
+// stop grace period, and the local state goes regardless, or a broken identity could never be reset.
+func unenroll(ctx context.Context, cl *client.Client) {
+	defer paths.Cleanup()
+	ctx, cancel := context.WithTimeout(ctx, unenrollTimeout)
+	defer cancel()
+	if err := cl.Unenroll(ctx); err != nil {
+		slog.Warn("delete daemon from backend failed, local state removed", "error", err)
+	}
 }
 
 func enroll(ctx context.Context, cmd *cli.Command) error {
@@ -171,54 +197,65 @@ func enroll(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if pin := cmd.String("api-pin"); pin != "" {
-		ca, berr := trust.Bootstrap(ctx, cfg.APIURL, pin)
-		if berr != nil {
-			return berr
-		}
-		cfg.APICA = string(ca)
-		if err = cfg.Save(); err != nil {
-			return err
-		}
-	}
 	token, err := enrollToken()
 	if err != nil {
 		return err
 	}
-	_, err = newDaemonClient(ctx, cmd, token, cache, cfg)
-	if trust.Untrusted(err) {
-		return fmt.Errorf(
-			"this machine does not trust the certificate of %s. Copy the enroll command from the Nokku web app, "+
-				"it carries NOKKUD_API_PIN, or point NOKKUD_CA_FILE at the CA: %w",
-			cfg.APIURL,
-			err,
-		)
-	}
-	if err != nil {
+	if _, err = enrollHost(ctx, cmd, token, cache, cfg); err != nil {
 		return err
 	}
 	fmt.Println("Enrolled. Start the daemon with: sudo systemctl restart nokkud")
 	return nil
 }
 
+// enrollHost builds the client, enrolling first when a token is given. The pin of a private CA is fetched
+// before, so the enroll call already trusts the backend.
+func enrollHost(
+	ctx context.Context,
+	cmd *cli.Command,
+	token string,
+	cache *state.Cache,
+	cfg *state.Config,
+) (*client.Client, error) {
+	if pin := cmd.String("api-pin"); token != "" && pin != "" {
+		ca, err := trust.Bootstrap(ctx, cfg.APIURL, pin)
+		if err != nil {
+			return nil, err
+		}
+		cfg.APICA = string(ca)
+		if err = cfg.Save(); err != nil {
+			return nil, err
+		}
+	}
+	cl, err := newDaemonClient(ctx, cmd, token, cache, cfg)
+	if trust.Untrusted(err) {
+		return nil, fmt.Errorf(
+			"this machine does not trust the certificate of %s. Copy the enroll command from the Nokku web app, "+
+				"it carries NOKKUD_API_PIN, or point NOKKUD_CA_FILE at the CA: %w",
+			cfg.APIURL,
+			err,
+		)
+	}
+	return cl, err
+}
+
 func reset(ctx context.Context, cmd *cli.Command) error {
 	if err := sysutil.IsRoot(); err != nil {
 		return err
 	}
-	// Local state goes regardless, or a broken identity could never be reset.
-	defer paths.Cleanup()
 	cache, cfg, err := loadState(cmd)
 	if err != nil {
 		slog.Warn("load local state, removing it anyway", "error", err)
+		paths.Cleanup()
 		return nil
 	}
 	cl, err := newDaemonClient(ctx, cmd, "", cache, cfg)
-	if err == nil {
-		err = cl.Unenroll(ctx)
-	}
 	if err != nil {
 		slog.Warn("delete daemon from backend failed, local state removed", "error", err)
+		paths.Cleanup()
+		return nil
 	}
+	unenroll(ctx, cl)
 	return nil
 }
 

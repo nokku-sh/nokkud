@@ -28,6 +28,24 @@ builds:
       - arm64
       - riscv64
 
+dockers_v2:
+  - images: [ghcr.io/nokku-sh/nokkud]
+    dockerfile: Dockerfile
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: "The Nokku daemon, for containers you want to SSH into"
+      org.opencontainers.image.source: "https://github.com/nokku-sh/nokkud"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.licenses: "Apache-2.0"
+
 signs:
   - cmd: cosign
     artifacts: checksum
@@ -36,6 +54,14 @@ signs:
       - "sign-blob"
       - "--bundle=${signature}"
       - "${artifact}"
+      - "--yes"
+
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    args:
+      - "sign"
+      - "${artifact}@${digest}"
       - "--yes"
 
 sboms:
