@@ -17,9 +17,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// TestBinaryInterop drives the embedded SSH server end to end. Build the
-// headless test server, seed a CA + principal cache, launch it, and run real
-// clients (ssh, scp -O/-s, sftp, rsync, git, -L, -R, -A) against it.
 func TestBinaryInterop(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -27,13 +24,9 @@ func TestBinaryInterop(t *testing.T) {
 
 	ca := newTestCA(t)
 	configDir := t.TempDir()
-	// Seed the synced state: the trusted CA, and the current user may log in
-	// as testPrincipal. Written directly in the daemon's on-disk format
-	// (cache.json) rather than via Cache.Save, keeping this harness
-	// independent of state wiring.
+	// Written in the daemon's on-disk format, not via Cache.Save, so the harness stays independent of state wiring.
 	must.NoError(writeCacheFile(configDir, ca.pub, currentUser(t), []string{testPrincipal}), "seed cache")
 
-	// Launch the headless server and wait for it to print its address.
 	cmd := exec.Command(
 		bin,
 		"--config-dir", configDir,
@@ -167,8 +160,7 @@ func TestBinaryInterop(t *testing.T) {
 	)
 	runGit(t, "-C", work, "-c", "core.sshCommand="+gitSSH, "push", "origin", "HEAD")
 
-	// 7. -L forward through the real binary: start `ssh -L -N` in the
-	// background, then connect to the local end and verify echo works.
+	// 7. -L forward through the real binary
 	echo := testEchoServer(t)
 	defer echo.Close()
 	_, echoPortStr, _ := net.SplitHostPort(echo.Addr().String())
@@ -185,7 +177,6 @@ func TestBinaryInterop(t *testing.T) {
 		_, _ = fwd.Process.Wait()
 	}()
 
-	// Wait for the local forward port to accept, then round-trip through it.
 	var fconn net.Conn
 	is.Eventually(func() bool {
 		fconn, err = net.Dial("tcp", "127.0.0.1:"+localPort)
@@ -201,9 +192,7 @@ func TestBinaryInterop(t *testing.T) {
 	must.NoError(err, "-L read")
 	is.Equal("forward", string(buf))
 
-	// 8. -A agent forwarding through the real binary. A dedicated ssh-agent
-	// is started so the check does not depend on the host environment (CI
-	// runners have no SSH_AUTH_SOCK and would silently disable forwarding).
+	// 8. -A agent forwarding. CI runners have no SSH_AUTH_SOCK, so a dedicated ssh-agent is started.
 	sock, stopAgent := testAgent(t)
 	defer stopAgent()
 	agentSSH := exec.Command(
@@ -215,17 +204,13 @@ func TestBinaryInterop(t *testing.T) {
 	must.NoError(aerr, "ssh -A: %s", aout)
 	is.NotEmpty(strings.TrimSpace(string(aout)), "ssh -A did not expose SSH_AUTH_SOCK")
 
-	// 9. Audit events were logged for the real clients above. Wait reaps the
-	// server and finishes the stderr copy.
+	// 9. Audit events were logged for the clients above. Wait reaps the server and finishes the stderr copy.
 	_ = cmd.Process.Kill()
 	_ = cmd.Wait()
 	is.Contains(stderr.String(), "type=auth_success")
 	is.Contains(stderr.String(), "type=command")
 }
 
-// --- helpers ---------------------------------------------------------------
-
-// writeCacheFile seeds the synced state file in the daemon's JSON format.
 func writeCacheFile(configDir string, ca ssh.PublicKey, username string, uuids []string) error {
 	data, err := json.MarshalIndent(map[string]any{
 		"principals": map[string][]string{username: uuids},
@@ -309,9 +294,7 @@ func runGit(t *testing.T, args ...string) {
 	require.NoError(t, err, "git %v: %s", args, out)
 }
 
-// testAgent starts a dedicated ssh-agent and returns its socket path plus a
-// stop func that kills it. Using a dedicated agent keeps the -A forwarding
-// check independent of the host's environment.
+// A dedicated ssh-agent keeps the -A check independent of the host's environment.
 func testAgent(t *testing.T) (string, func()) {
 	t.Helper()
 	if _, err := exec.LookPath("ssh-agent"); err != nil {

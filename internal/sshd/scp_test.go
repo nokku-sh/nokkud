@@ -12,8 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestServerSCPLegacy exercises the legacy SCP protocol (scp -O) end to end,
-// using the real scp binary as the client. Skip when scp is unavailable.
 func TestServerSCPLegacy(t *testing.T) {
 	if !isTestBinary() {
 		t.Skip("legacy scp test requires the test binary on PATH")
@@ -72,8 +70,7 @@ func TestServerSCPLegacy(t *testing.T) {
 			want:   "legacy scp payload\n",
 		},
 		{
-			// Destination must exist for the source directory name to be
-			// preserved (scp quirk).
+			// The destination must exist for scp to keep the source directory name.
 			name:      "recursive up",
 			extraOpts: []string{"-r"},
 			setup: func(t *testing.T) {

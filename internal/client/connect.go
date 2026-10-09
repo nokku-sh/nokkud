@@ -11,15 +11,12 @@ import (
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
-// heartbeatInterval keeps the stream alive through proxies that close idle
-// streams after 60s. The backend drops a stream silent for 2 minutes, and
-// pokes a StateUpdate when the heartbeat's version is stale.
+// Proxies close a stream idle for 60s, and the backend drops one silent for 2 minutes.
 const heartbeatInterval = 30 * time.Second
 
 type controlStream = connect.BidiStreamForClientSimple[nokkuv1.ConnectRequest, nokkuv1.ConnectResponse]
 
-// runControlStream serves one control stream until it breaks. Only a daemon
-// rejection is fatal to the caller.
+// Only a daemon rejection is fatal to the caller.
 func (c *Client) runControlStream(ctx context.Context) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -44,8 +41,7 @@ func (c *Client) runControlStream(ctx context.Context) error {
 				slog.Warn("sync after state update failed", "error", err)
 			}
 		case *nokkuv1.ConnectResponse_RelayOpen:
-			// Relays get ctx, not streamCtx, so a stream reconnect does not
-			// cut live web sessions.
+			// Relays get ctx, not streamCtx, so a stream reconnect does not cut live web sessions.
 			c.relays.Go(func() { c.runRelay(ctx, m.RelayOpen) })
 		}
 	}

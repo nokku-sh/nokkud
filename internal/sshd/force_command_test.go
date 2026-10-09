@@ -8,8 +8,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// TestServerForceCommand verifies a certificate force-command critical option
-// replaces whatever the client requested, matching sshd.
 func TestServerForceCommand(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -29,14 +27,11 @@ func TestServerForceCommand(t *testing.T) {
 	must.NoError(err)
 	defer sess.Close()
 
-	// The requested command must be ignored. The forced command runs instead.
 	out, err := sess.Output("echo original")
 	must.NoError(err)
 	is.Equal("forced\n", string(out))
 }
 
-// TestServerForceCommandSubsystem verifies a force-command blocks subsystem
-// requests (sftp), matching sshd.
 func TestServerForceCommandSubsystem(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)

@@ -9,8 +9,6 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
-// TestServerSourceAddress verifies the source-address critical option is
-// enforced: logins from an allowed source succeed, others are refused.
 func TestServerSourceAddress(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -32,8 +30,6 @@ func TestServerSourceAddress(t *testing.T) {
 	is.Error(err, "dial from disallowed source succeeded")
 }
 
-// TestServerRejectsHostCert verifies a host-type certificate signed by the
-// trusted CA cannot authenticate a user.
 func TestServerRejectsHostCert(t *testing.T) {
 	is := assert.New(t)
 	ca := newTestCA(t)
@@ -48,8 +44,6 @@ func TestServerRejectsHostCert(t *testing.T) {
 	is.Error(err, "host certificate authenticated a user")
 }
 
-// TestServerCertExtensionPTY verifies a certificate without permit-pty gets
-// its pty-req refused while exec keeps working.
 func TestServerCertExtensionPTY(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -71,9 +65,6 @@ func TestServerCertExtensionPTY(t *testing.T) {
 	is.Error(err, "pty-req succeeded without permit-pty")
 }
 
-// TestServerCertExtensionForwarding verifies a certificate without
-// permit-port-forwarding cannot open direct-tcpip (-L) channels even when
-// forwarding is enabled by tunables.
 func TestServerCertExtensionForwarding(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -91,8 +82,6 @@ func TestServerCertExtensionForwarding(t *testing.T) {
 	is.Error(err, "direct-tcpip succeeded without permit-port-forwarding")
 }
 
-// TestServerCertExtensionAgent verifies a certificate without
-// permit-agent-forwarding gets its agent forwarding request refused.
 func TestServerCertExtensionAgent(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)

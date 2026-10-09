@@ -8,8 +8,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// echoEnabled must track the pty's ECHO flag so recordings can omit input
-// while password prompts have echo disabled.
 func TestEchoEnabled(t *testing.T) {
 	t.Parallel()
 	is := assert.New(t)

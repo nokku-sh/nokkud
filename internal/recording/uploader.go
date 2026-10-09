@@ -35,7 +35,6 @@ type Uploader struct {
 	close  func() error
 }
 
-// NewUploader builds an Uploader and starts its sender goroutine.
 func NewUploader(
 	ctx context.Context,
 	client nokkuv1connect.DaemonControlServiceClient,
@@ -56,8 +55,7 @@ func NewUploader(
 	return u
 }
 
-// Write queues one batch for upload. It always reports success so the local
-// recording never fails because of the backend.
+// Write always reports success, so the local recording never fails because of the backend.
 func (u *Uploader) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -72,16 +70,13 @@ func (u *Uploader) Write(p []byte) (int, error) {
 	select {
 	case u.chunks <- append([]byte(nil), p...):
 	default:
-		// Dropping middle chunks would corrupt the rest of the gzip stream,
-		// so the whole upload is abandoned instead.
+		// Dropping middle chunks would corrupt the rest of the gzip stream, so the whole upload is abandoned.
 		u.failLocked("upload queue full", errors.New("queue full"))
 	}
 	return len(p), nil
 }
 
-// Close finalizes the upload and reports whether the backend has all of it.
-// Safe to call after a failure or twice. The wait for the backend is bounded
-// by uploadCloseTimeout.
+// Close reports whether the backend has all of it. Safe after a failure or twice.
 func (u *Uploader) Close() error { return u.close() }
 
 func (u *Uploader) finish() error {
@@ -91,24 +86,21 @@ func (u *Uploader) finish() error {
 
 	close(u.chunks)
 
-	// Wait for the sender to drain the queue and finalize the stream, so a
-	// session that exits immediately is not cut off mid-upload.
+	// Let the sender drain the queue, so a session that exits right away is not cut off mid-upload.
 	var err error
 	select {
 	case <-u.done:
 	case <-time.After(uploadCloseTimeout):
 		err = errors.New("upload timed out")
 	}
-	// Abort a send that outlived the drain window so the sender goroutine
-	// cannot hang forever on a stalled stream.
+	// Abort a send that outlived the drain window, or the sender hangs forever on a stalled stream.
 	u.cancel()
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return cmp.Or(u.err, err)
 }
 
-// sendLoop sends queued chunks until Close drains the queue, then finalizes
-// the stream. After a failure chunks are discarded so writers never block.
+// After a failure chunks are discarded so writers never block.
 func (u *Uploader) sendLoop(ctx context.Context) {
 	defer close(u.done)
 
@@ -130,8 +122,7 @@ func (u *Uploader) sendLoop(ctx context.Context) {
 		if err := stream.Send(&nokkuv1.UploadRecordingRequest{
 			Msg: &nokkuv1.UploadRecordingRequest_Chunk{Chunk: chunk},
 		}); err != nil {
-			// A failed send only says the backend ended the stream. Its
-			// answer says why, like a workspace that is full.
+			// A failed send only says the stream ended. The backend's answer says why, like a full workspace.
 			if _, answer := stream.CloseAndReceive(); answer != nil {
 				err = answer
 			}
@@ -154,7 +145,6 @@ func (u *Uploader) sendLoop(ctx context.Context) {
 	slog.Debug("recording uploaded", "session_id", u.sessionID)
 }
 
-// open starts the upload stream and sends the metadata message.
 func (u *Uploader) open(ctx context.Context) (
 	*connect.ClientStreamForClientSimple[nokkuv1.UploadRecordingRequest, nokkuv1.UploadRecordingResponse],
 	error,
@@ -177,8 +167,7 @@ func (u *Uploader) open(ctx context.Context) (
 	return stream, nil
 }
 
-// fail records the failure. The stream is left open, the backend marks the
-// recording truncated.
+// The stream is left open, the backend marks the recording truncated.
 func (u *Uploader) fail(where string, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()

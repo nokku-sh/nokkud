@@ -1,6 +1,5 @@
 #!/bin/sh
-# Runs after a package install or upgrade and at the end of the tarball
-# installer. Copies what fits this host out of /usr/share/nokkud.
+# Runs after a package install or upgrade, and at the end of the tarball installer.
 set -e
 
 share=/usr/share/nokkud

@@ -6,10 +6,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// FuzzParseCertificate feeds arbitrary bytes into the certificate parser that
-// consumes control-plane responses. It must never panic, only accept host
-// certificates, and any certificate it does accept must round-trip through
-// authorized_keys serialization and never crash the renewal/validity checks.
+// Arbitrary control-plane bytes must never panic, and only host certificates that round-trip are accepted.
 func FuzzParseCertificate(f *testing.F) {
 	ca := newTestCA(f)
 	certText := signHostCert(f, ca, newHostPub(f), "some-target-id", 0, ssh.CertTimeInfinity)
@@ -39,9 +36,7 @@ func FuzzParseCertificate(f *testing.F) {
 	})
 }
 
-// FuzzSaveCertificate drives the store path: a certificate from the control
-// plane against a scratch dir. Whatever is accepted must be signed by the
-// trusted CA and leave a parseable file behind, and nothing may panic.
+// Whatever is stored must be signed by the trusted CA and leave a parseable file behind.
 func FuzzSaveCertificate(f *testing.F) {
 	ca := newTestCA(f)
 	certText := signHostCert(f, ca, newHostPub(f), "some-target-id", 0, ssh.CertTimeInfinity)

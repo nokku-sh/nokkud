@@ -39,15 +39,12 @@ func newTestCA(t *testing.T) testCA {
 	return testCA{pub: pub, signer: signer}
 }
 
-// userCert builds a client auth method presenting a user certificate signed
-// by ca, valid for the given principals.
 func userCert(t *testing.T, ca testCA, principals ...string) ssh.AuthMethod {
 	t.Helper()
 	return userCertOpts(t, ca, nil, principals...)
 }
 
-// defaultExtensions mirrors the backend's default cert template. The daemon
-// enforces permit-* semantics, so tests need them granted explicitly.
+// The backend's default cert template. The daemon enforces permit-*, so tests grant them explicitly.
 var defaultExtensions = map[string]string{
 	"permit-pty":              "",
 	"permit-user-rc":          "",
@@ -55,8 +52,6 @@ var defaultExtensions = map[string]string{
 	"permit-agent-forwarding": "",
 }
 
-// userCertOpts is userCert with certificate options applied before signing
-// (critical options or extensions).
 func userCertOpts(
 	t *testing.T,
 	ca testCA,
@@ -88,14 +83,12 @@ func userCertOpts(
 	return ssh.PublicKeys(certSigner)
 }
 
-// startTestServer boots a server on an ephemeral port trusting ca. The
-// default principals allow testPrincipal for the current user only.
+// The default principals allow testPrincipal for the current user only.
 func startTestServer(t *testing.T, ca testCA) (addr string, closeFn func()) {
 	t.Helper()
 	return startTestServerOpts(t, ca, Options{})
 }
 
-// startTestServerOpts is startTestServer with extra Options applied.
 func startTestServerOpts(
 	t *testing.T,
 	ca testCA,
@@ -193,9 +186,7 @@ func TestServerExecExitSignal(t *testing.T) {
 	must.NoError(err, "new session")
 	defer sess.Close()
 
-	// The command kills its own shell, so the server must report exit-signal
-	// (RFC 4254) instead of exit-status, like OpenSSH. The Go client maps
-	// that to the conventional 128+signal exit status.
+	// The command kills its own shell, so the server reports exit-signal and the Go client maps it to 128+signal.
 	err = sess.Run("kill -TERM $$")
 	var ee *ssh.ExitError
 	must.ErrorAs(err, &ee)
@@ -224,8 +215,7 @@ func TestServerPTYExec(t *testing.T) {
 	is.Equal("pty-ok", string(out))
 }
 
-// TestServerPTYEmptyTerm verifies a client without TERM gets the default. It
-// sends an empty one, which must not replace it.
+// A client without TERM sends an empty one, which must not replace the default.
 func TestServerPTYEmptyTerm(t *testing.T) {
 	must := require.New(t)
 	// Setenv restores the value after the test, Unsetenv takes it away for it.
@@ -271,8 +261,7 @@ func TestServerDeniesWrongPrincipal(t *testing.T) {
 	is.Error(err, "expected auth to fail with unauthorized principal")
 }
 
-// A certificate is signed for one server and one account. The principal is
-// compared as a whole, so one for another server or account opens nothing.
+// The principal is compared as a whole, so one for another server or account opens nothing.
 func TestServerDeniesCertificateOfAnotherServerOrAccount(t *testing.T) {
 	ca := newTestCA(t)
 	cur := currentUser(t)
@@ -328,8 +317,7 @@ func currentUser(t *testing.T) string {
 	return cur.Username
 }
 
-// TestHostKeysStable verifies that a generated host key survives reloads: if
-// it changed, every known_hosts entry would break on daemon restart.
+// If the host key changed, every known_hosts entry would break on daemon restart.
 func TestHostKeysStable(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -347,9 +335,6 @@ func TestHostKeysStable(t *testing.T) {
 	is.Equal(first, second)
 }
 
-// TestHostKeysDropStaleCert verifies a certificate issued for a previous
-// identity is removed on load, so the sync renews it for the current key
-// instead of leaving a stale certificate the server would reject.
 func TestHostKeysDropStaleCert(t *testing.T) {
 	must := require.New(t)
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
@@ -372,9 +357,6 @@ func TestHostKeysDropStaleCert(t *testing.T) {
 	must.ErrorIs(err, os.ErrNotExist, "certificate for a previous identity must be dropped")
 }
 
-// TestNewWithoutTrustedCA verifies the server starts with no trusted CA on
-// first boot (the CA file lands after the first certificate sync). Reload
-// picks it up. Without CAs, no login can succeed until then.
 func TestNewWithoutTrustedCA(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -388,8 +370,6 @@ func TestNewWithoutTrustedCA(t *testing.T) {
 	is.Empty(srv.trustedCAs)
 }
 
-// TestServerLivePrincipals verifies that adding a principal to the shared
-// cache takes effect on the next connection, without restarting the server.
 func TestServerLivePrincipals(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -411,11 +391,9 @@ func TestServerLivePrincipals(t *testing.T) {
 	go srv.Serve(t.Context(), l)
 	defer l.Close()
 
-	// No rules yet: denied.
 	_, err = dial(t, l.Addr().String(), cur.Username, userCert(t, ca, testPrincipal))
 	must.Error(err, "expected auth to fail before the principal is granted")
 
-	// Backend push lands in the shared cache: now allowed.
 	cache.Replace(map[string][]string{cur.Username: {testPrincipal}}, nil, "", nil, 0)
 	client, err := dial(t, l.Addr().String(), cur.Username, userCert(t, ca, testPrincipal))
 	must.NoError(err, "dial after cache update")
@@ -428,8 +406,7 @@ func TestServerLivePrincipals(t *testing.T) {
 	must.NoError(err, "exec")
 }
 
-// TestPolicyFrom verifies a field the backend never set keeps the default, so
-// a partial config cannot silently turn recording off.
+// A partial config must not silently turn recording off.
 func TestPolicyFrom(t *testing.T) {
 	t.Parallel()
 	is := assert.New(t)
@@ -451,9 +428,6 @@ type relayed struct {
 
 func (c relayed) RemoteAddr() net.Addr { return c.remote }
 
-// TestServeConnReportsRelayedClient verifies a relayed connection is served
-// without a pre-auth slot, and that the session and source-address options
-// see the address the relay reported, not the relay itself.
 func TestServeConnReportsRelayedClient(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)

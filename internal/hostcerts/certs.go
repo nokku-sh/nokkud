@@ -1,4 +1,3 @@
-// Package hostcerts manages the host SSH certificate lifecycle for the embedded SSH server.
 package hostcerts
 
 import (
@@ -18,19 +17,13 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// renewFraction is the share of its validity a certificate has left when it
-// is renewed. Half of it keeps the host verifiable through a backend outage
-// of that length, and a fresh certificate never starts inside the window.
+// Renewing at half the validity keeps the host verifiable through a backend outage of that length.
 const renewFraction = 0.5
 
-// SignFunc asks the backend to sign the host public key, given in
-// authorized_keys form. The certificate comes back in the same form.
+// SignFunc signs the host public key. Key and certificate are in authorized_keys form.
 type SignFunc func(ctx context.Context, pub []byte) (string, error)
 
-// needsRenewal returns the host public key when its certificate is missing,
-// issued for another principal or key, signed by another CA than ca, or
-// inside its renewal window. ok is false when there is nothing to do,
-// including when no host key exists yet.
+// ok is false when there is nothing to do, including when no host key exists yet.
 func needsRenewal(targetID string, ca ssh.PublicKey) (pub []byte, ok bool) {
 	pub, err := os.ReadFile(paths.HostKeyPub())
 	if err != nil {
@@ -43,8 +36,7 @@ func needsRenewal(targetID string, ca ssh.PublicKey) (pub []byte, ok bool) {
 	return nil, false
 }
 
-// matchesKey reports whether cert was issued for pub. A cert for a previous
-// key must be re-issued even inside its validity window.
+// A cert for a previous key must be re-issued even inside its validity window.
 func matchesKey(cert *ssh.Certificate, pub []byte) bool {
 	key, _, _, _, err := ssh.ParseAuthorizedKey(bytes.TrimSpace(pub))
 	return err == nil && bytes.Equal(cert.Key.Marshal(), key.Marshal())
@@ -54,11 +46,7 @@ func signedBy(cert *ssh.Certificate, ca ssh.PublicKey) bool {
 	return cert.SignatureKey != nil && bytes.Equal(cert.SignatureKey.Marshal(), ca.Marshal())
 }
 
-// RenewHostCerts signs and stores a fresh host certificate when it is due,
-// reporting whether one was written. caKey is the CA the daemon trusts, in
-// authorized_keys form. A certificate from any other CA is due and is never
-// stored, clients verify the host against the same CA. Without a CA there is
-// nothing to renew yet.
+// RenewHostCerts reports whether a certificate was written. One from another CA than caKey is never stored.
 func RenewHostCerts(ctx context.Context, targetID, caKey string, sign SignFunc) (bool, error) {
 	if caKey == "" {
 		return false, nil
@@ -81,9 +69,6 @@ func RenewHostCerts(ctx context.Context, targetID, caKey string, sign SignFunc) 
 	return true, nil
 }
 
-// NextRenewal returns the renewal deadline for the host certificate, or now
-// if it is already out of date or none exists. A certificate that never
-// expires is looked at again in a day.
 func NextRenewal(targetID, caKey string) time.Time {
 	now := time.Now()
 
@@ -108,8 +93,6 @@ func NextRenewal(targetID, caKey string) time.Time {
 	return renewalTime
 }
 
-// saveCertificate stores a signed certificate where the embedded SSH server
-// reads it, once it is a host certificate signed by ca.
 func saveCertificate(signed []byte, ca ssh.PublicKey) error {
 	cert, err := parseCertificateBytes(signed)
 	if err != nil {
@@ -124,8 +107,6 @@ func saveCertificate(signed []byte, ca ssh.PublicKey) error {
 	return nil
 }
 
-// isValid reports whether cert is acceptable for targetID and not yet due for
-// renewal.
 func isValid(cert *ssh.Certificate, targetID string) bool {
 	now := time.Now()
 
@@ -143,7 +124,6 @@ func isValid(cert *ssh.Certificate, targetID string) bool {
 	return now.Before(renewalDeadline(cert))
 }
 
-// renewalDeadline returns the moment cert enters its renewal window.
 func renewalDeadline(cert *ssh.Certificate) time.Time {
 	validAfter := uint64ToUnixTime(cert.ValidAfter)
 	validBefore := uint64ToUnixTime(cert.ValidBefore)
@@ -167,7 +147,6 @@ func parseCertificateBytes(data []byte) (*ssh.Certificate, error) {
 	return cert, nil
 }
 
-// Load reads the host certificate from disk.
 func Load() (*ssh.Certificate, error) {
 	data, err := os.ReadFile(paths.HostKeyCert())
 	if err != nil {

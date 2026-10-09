@@ -19,8 +19,6 @@ die() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# install_tarball checks the release tarball against the release checksums and
-# runs the installer inside it.
 install_tarball() {
 	case "$(uname -m)" in
 	x86_64 | amd64) arch=amd64 ;;
@@ -41,9 +39,7 @@ install_tarball() {
 	echo "Downloading $tarball..."
 	curl -fsSL -O "$url/$tarball" -O "$url/$sums" || die "no release at $url"
 
-	# The release signs the checksum file. Without cosign only the download
-	# is checked, not where it came from. Every Nokku release is signed by the
-	# same shared workflow, so the repository is pinned as well.
+	# Without cosign only the download is checked, not where it came from. The repository is pinned too.
 	if have cosign; then
 		curl -fsSL -O "$url/$sums.sigstore.json"
 		cosign verify-blob --bundle "$sums.sigstore.json" \

@@ -170,7 +170,6 @@ func TestCacheConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 
-	// No data corruption after concurrent access.
 	is.True(
 		slices.Contains(c.CertPrincipals("user"), "uuid-1") ||
 			slices.Contains(c.CertPrincipals("user2"), "uuid-1"),

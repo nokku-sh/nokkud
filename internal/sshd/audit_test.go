@@ -19,8 +19,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// TestServerAuditEvents verifies auth success/failure, session, and command
-// events are emitted to the audit sink.
 func TestServerAuditEvents(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -29,7 +27,6 @@ func TestServerAuditEvents(t *testing.T) {
 	addr, closeFn := startTestServerOpts(t, ca, Options{Log: log})
 	defer closeFn()
 
-	// A successful login + command.
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
 	must.NoError(err)
 	sess, err := client.NewSession()
@@ -40,7 +37,6 @@ func TestServerAuditEvents(t *testing.T) {
 	_ = sess.Close()
 	_ = client.Close()
 
-	// A failed login (wrong principal).
 	_, err = dial(t, addr, currentUser(t), userCert(t, ca, "some-other-principal"))
 	must.Error(err, "login with wrong principal unexpectedly succeeded")
 
@@ -57,8 +53,6 @@ func TestServerAuditEvents(t *testing.T) {
 	}
 }
 
-// auditLog returns a logger for Options.Log and a reader of the audit event
-// types it has seen so far.
 func auditLog() (*slog.Logger, func() []eventType) {
 	var mu sync.Mutex
 	var buf bytes.Buffer
@@ -91,8 +85,7 @@ func (l lockedWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
-// wrongKeySigner presents a valid certificate but signs with another key, like
-// a client that copied someone's public cert without the private key.
+// A valid certificate signed with another key, like a client that copied a cert without the private key.
 type wrongKeySigner struct {
 	cert  ssh.PublicKey
 	other ssh.Signer
@@ -135,8 +128,6 @@ func TestServerAuditNoSuccessWithoutKey(t *testing.T) {
 	assert.NotContains(t, events(), eventAuthSuccess)
 }
 
-// TestServerAuditFileTransferAndRemoteForward verifies SFTP (which scp uses)
-// and -R forwards land on the audit trail.
 func TestServerAuditFileTransferAndRemoteForward(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)

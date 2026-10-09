@@ -1,4 +1,3 @@
-// Package state manages the daemon's persisted enrollment config and synced cache.
 package state
 
 import (
@@ -14,15 +13,13 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// Cache is the thread-safe, persisted state synced from the backend. It backs
-// SSH access decisions when the backend is unreachable.
+// Cache backs SSH access decisions when the backend is unreachable.
 type Cache struct {
 	mu   sync.RWMutex
 	data cacheJSON
 }
 
-// cacheJSON is the cached state as it is stored on disk. It stays unexported
-// so every access goes through the mutex.
+// Unexported so every access goes through the mutex.
 type cacheJSON struct {
 	Principals   map[string][]string     `json:"principals"`
 	StateVersion int64                   `json:"state_version,omitempty"`
@@ -35,9 +32,7 @@ func NewCache() *Cache {
 	return &Cache{data: cacheJSON{Principals: make(map[string][]string)}}
 }
 
-// CertPrincipals returns a copy of the certificate principals that may log in
-// as username. The backend builds them, one per subject for this server and
-// account, and they are only ever compared as whole strings.
+// CertPrincipals returns a copy. The principals are only ever compared as whole strings.
 func (c *Cache) CertPrincipals(username string) []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -51,32 +46,27 @@ func (c *Cache) GetStateVersion() int64 {
 	return c.data.StateVersion
 }
 
-// SetDaemonConfig replaces the backend-synced daemon config, which session
-// goroutines read concurrently.
 func (c *Cache) SetDaemonConfig(dc *nokkuv1.DaemonConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.data.DaemonConfig = dc
 }
 
-// DaemonConfig returns the synced daemon config. Callers must treat it as read-only.
+// DaemonConfig is shared, callers must treat it as read-only.
 func (c *Cache) DaemonConfig() *nokkuv1.DaemonConfig {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.data.DaemonConfig
 }
 
-// CAs returns the CA public key user certificates must be signed by, and the
-// rolled-over keys that are still trusted. Callers must treat the retired
-// keys as read-only.
+// CAs returns the active CA key and the rolled-over ones still trusted. The retired keys are read-only.
 func (c *Cache) CAs() (active string, retired []*nokkuv1.RetiredCAKey) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.data.CA, c.data.RetiredCAs
 }
 
-// Replace atomically swaps the whole cached state so auth reads never observe
-// an intermediate empty map and a concurrent login is not denied mid-sync.
+// Replace swaps everything at once, so a concurrent login never sees an empty map mid-sync.
 func (c *Cache) Replace(
 	principals map[string][]string,
 	dc *nokkuv1.DaemonConfig,
@@ -96,8 +86,6 @@ func (c *Cache) Replace(
 	}
 }
 
-// validPrincipals deep-copies m, dropping any name that is not a safe POSIX
-// username.
 func validPrincipals(m map[string][]string) map[string][]string {
 	next := make(map[string][]string, len(m))
 	for principal, uuids := range m {
@@ -110,20 +98,17 @@ func validPrincipals(m map[string][]string) map[string][]string {
 	return next
 }
 
-// Clear drops all cached synced state, persisted on the next Save.
 func (c *Cache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.data = cacheJSON{Principals: make(map[string][]string)}
 }
 
-// Load reads the cache from disk, ignoring a corrupted file so the next sync
-// rebuilds it. A missing file is not an error.
+// Load ignores a corrupted file so the next sync rebuilds it.
 func (c *Cache) Load() error {
 	return fsutil.LoadJSON(paths.CacheFile(), c)
 }
 
-// Save writes the cache atomically, skipping unchanged content.
 func (c *Cache) Save() error {
 	return fsutil.SaveJSON(paths.CacheFile(), c, 0o640)
 }
@@ -134,8 +119,7 @@ func (c *Cache) MarshalJSON() ([]byte, error) {
 	return json.Marshal(c.data)
 }
 
-// UnmarshalJSON validates like Replace, so a hand-edited file cannot sneak
-// in an unsafe name.
+// UnmarshalJSON validates like Replace, so a hand-edited file cannot sneak in an unsafe name.
 func (c *Cache) UnmarshalJSON(data []byte) error {
 	var next cacheJSON
 	if err := json.Unmarshal(data, &next); err != nil {

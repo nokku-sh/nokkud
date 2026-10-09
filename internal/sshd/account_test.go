@@ -12,9 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Non-root processes must never set Credential: Go calls setgroups(2)
-// whenever Credential is non-nil, and setgroups requires CAP_SETGID, so
-// every session sshd spawns as a regular user would fail with EPERM.
+// Go calls setgroups(2) whenever Credential is set, and non-root gets EPERM for it.
 func TestSysProcAttrNoCredentialWhenNonRoot(t *testing.T) {
 	t.Parallel()
 
@@ -51,9 +49,7 @@ func TestSysProcAttrCredentialWhenRoot(t *testing.T) {
 	is.NotNil(attr.Credential)
 }
 
-// withFakeGetent puts a fake getent binary first on PATH that prints output
-// for every invocation, so the NSS/LDAP fallback paths can be exercised
-// without a real directory service.
+// A fake getent first on PATH exercises the NSS/LDAP paths without a real directory service.
 func withFakeGetent(t *testing.T, script string) {
 	t.Helper()
 	dir := t.TempDir()

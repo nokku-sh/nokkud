@@ -17,10 +17,7 @@ KillMode=process
 OOMPolicy=continue
 LimitNOFILE=65536
 
-# No sandboxing. Sessions are children of the daemon and inherit every
-# restriction set here, so a root shell could not load modules, set sysctls,
-# capture packets, or change the clock. Sessions are isolated by the target
-# user's own privileges, like OpenSSH.
+# No sandboxing. Sessions are children of the daemon and would inherit every restriction, even a root shell.
 
 [Install]
 WantedBy=multi-user.target

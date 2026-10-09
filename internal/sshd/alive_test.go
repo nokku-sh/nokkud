@@ -16,8 +16,6 @@ import (
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
-// TestServerMaxConnections verifies the concurrent connection cap: an
-// over-cap connection is refused immediately.
 func TestServerMaxConnections(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -32,7 +30,6 @@ func TestServerMaxConnections(t *testing.T) {
 	must.NoError(err, "first connection")
 	defer c1.Close()
 
-	// A second connection while the first is live must be refused.
 	_, err = dial(t, addr, user, auth)
 	must.Error(err, "second connection unexpectedly accepted")
 
@@ -48,9 +45,6 @@ func TestServerMaxConnections(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "connection cap never released")
 }
 
-// TestServerMaxStartups verifies the pre-auth connection cap: a half-open
-// connection (never completing the handshake) holds a slot and a second
-// connection is refused until it frees it.
 func TestServerMaxStartups(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -58,19 +52,16 @@ func TestServerMaxStartups(t *testing.T) {
 	addr, closeFn := startTestServerOpts(t, ca, Options{}, func(s *Server) { s.localStartups = make(chan struct{}, 1) })
 	defer closeFn()
 
-	// A raw TCP connection that never completes the SSH handshake holds the
-	// single pre-auth slot.
+	// A raw TCP connection that never completes the handshake holds the single pre-auth slot.
 	nc, err := net.Dial("tcp", addr)
 	must.NoError(err)
 	defer nc.Close()
 	// Give the server time to accept and take the slot.
 	time.Sleep(100 * time.Millisecond)
 
-	// A real SSH dial must be refused while the slot is held.
 	_, err = dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
 	must.Error(err, "dial succeeded while the pre-auth slot was held")
 
-	// Closing the half-open connection frees the slot.
 	nc.Close()
 	is.Eventually(func() bool {
 		c, derr := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
@@ -82,9 +73,7 @@ func TestServerMaxStartups(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "pre-auth slot never released")
 }
 
-// TestServerMaxStartupsReleasedAfterHandshake verifies the pre-auth slot is
-// freed once the handshake completes. An authenticated, idle connection must
-// not consume a MaxStartups slot, which exists only to bound half-open peers.
+// The slot only bounds half-open peers, an authenticated idle connection must not hold one.
 func TestServerMaxStartupsReleasedAfterHandshake(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -103,9 +92,6 @@ func TestServerMaxStartupsReleasedAfterHandshake(t *testing.T) {
 	_ = second.Close()
 }
 
-// TestServerMaxChannels verifies the per-connection channel cap counts every
-// channel type: with two slots held by live sessions, a third channel is
-// refused, and closing one frees a slot.
 func TestServerMaxChannels(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -138,8 +124,6 @@ func TestServerMaxChannels(t *testing.T) {
 	defer s3.Close()
 }
 
-// TestServerClientAlive verifies an unresponsive client is disconnected after
-// three alive intervals of silence, while a responsive one survives.
 func TestServerClientAlive(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -152,14 +136,11 @@ func TestServerClientAlive(t *testing.T) {
 	)
 	defer closeFn()
 
-	// A "responsive" client. Send a global request (e.g. keepalive) from time
-	// to time so the server sees inbound traffic.
+	// A responsive client sends a global request now and then, so the server sees inbound traffic.
 	client, err := dial(t, addr, currentUser(t), userCert(t, ca, testPrincipal))
 	must.NoError(err)
 	defer client.Close()
 
-	// Keep sending requests. Connection must stay alive well past the probe
-	// window.
 	stop := make(chan struct{})
 	go func() {
 		for {
@@ -174,7 +155,6 @@ func TestServerClientAlive(t *testing.T) {
 	time.Sleep(700 * time.Millisecond)
 	close(stop)
 
-	// The session still works.
 	sess, err := client.NewSession()
 	must.NoError(err, "session after keepalives")
 	defer sess.Close()
@@ -183,8 +163,6 @@ func TestServerClientAlive(t *testing.T) {
 	is.Equal("alive\n", string(out))
 }
 
-// TestServerClientAliveSilent verifies a client that stops responding is
-// dropped.
 func TestServerClientAliveSilent(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -196,8 +174,7 @@ func TestServerClientAliveSilent(t *testing.T) {
 	)
 	defer closeFn()
 
-	// Complete the handshake but never service global requests. The
-	// server's keepalives go unanswered and the connection stays silent.
+	// The handshake completes but global requests are never serviced, so the keepalives go unanswered.
 	nc, err := net.Dial("tcp", addr)
 	must.NoError(err)
 	defer nc.Close()
@@ -211,9 +188,6 @@ func TestServerClientAliveSilent(t *testing.T) {
 	conn, _, _, err := ssh.NewClientConn(nc, "tcp", cfg)
 	must.NoError(err)
 
-	// The server must close the connection once its keepalives stop getting
-	// answered (three alive intervals). Wait() blocks until the connection
-	// ends, so run it on a goroutine.
 	done := make(chan error, 1)
 	go func() { done <- conn.Wait() }()
 	select {
@@ -224,9 +198,6 @@ func TestServerClientAliveSilent(t *testing.T) {
 	}
 }
 
-// TestServerBackgroundProcessReleasesConnection verifies a process left
-// holding the session's stdout and stderr cannot pin the connection slot once
-// the client is gone.
 func TestServerBackgroundProcessReleasesConnection(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -255,9 +226,7 @@ func TestServerBackgroundProcessReleasesConnection(t *testing.T) {
 	}, 8*time.Second, 50*time.Millisecond, "background process kept the connection slot")
 }
 
-// TestServerBackgroundProcessOnPTYReleasesConnection is the pty variant: a
-// process that keeps the terminal open cannot pin the slot either. It ignores
-// SIGHUP, like a job an interactive shell put in the background.
+// The process ignores SIGHUP, like a job an interactive shell put in the background.
 func TestServerBackgroundProcessOnPTYReleasesConnection(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -287,8 +256,6 @@ func TestServerBackgroundProcessOnPTYReleasesConnection(t *testing.T) {
 	}, 8*time.Second, 50*time.Millisecond, "background process on the pty kept the connection slot")
 }
 
-// TestStartupSlotsPerSource verifies one remote address cannot take every
-// pre-auth slot, and that loopback draws from its own budget.
 func TestStartupSlotsPerSource(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -332,8 +299,6 @@ func TestStartupSlotsPerSource(t *testing.T) {
 	is.True(ok, "a released slot was not reusable")
 }
 
-// TestDropRevoked verifies a revoke ends the sessions that are already open,
-// not only future logins.
 func TestDropRevoked(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -377,9 +342,7 @@ func TestDropRevoked(t *testing.T) {
 	}
 }
 
-// TestRevokeDuringHandshake verifies a revoke that lands while a login is
-// still in its handshake ends that connection too. The sync's DropRevoked
-// cannot see it yet.
+// The sync's DropRevoked cannot see a connection that is still in its handshake.
 func TestRevokeDuringHandshake(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -392,8 +355,7 @@ func TestRevokeDuringHandshake(t *testing.T) {
 			}
 			return allowed(username)
 		}
-		// The account lookup runs after the principal check, so this revoke
-		// lands in the middle of the handshake.
+		// The account lookup runs after the principal check, so this revoke lands mid-handshake.
 		lookup := s.lookupAccount
 		s.lookupAccount = func(name string) (*account, error) {
 			revoked.Store(true)
@@ -418,8 +380,6 @@ func TestRevokeDuringHandshake(t *testing.T) {
 	}
 }
 
-// TestDropRevokedCA verifies a connection ends once the CA that signed its
-// certificate is no longer trusted, as after an emergency rollover.
 func TestDropRevokedCA(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)

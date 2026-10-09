@@ -9,8 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// A full workspace is asked again after an hour, everything else in five
-// minutes. The code is read through the way UploadPending wraps it.
+// The code is read through the way UploadPending wraps it.
 func TestUploadRetryWait(t *testing.T) {
 	full := connect.NewError(connect.CodeResourceExhausted, errors.New("the workspace is full"))
 	down := connect.NewError(connect.CodeUnavailable, errors.New("backend down"))

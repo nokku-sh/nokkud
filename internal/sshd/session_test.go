@@ -29,9 +29,6 @@ func TestRecoverPanic(t *testing.T) {
 	})
 }
 
-// TestServerDisconnectReapsCommand verifies that when the client disconnects
-// mid-command, the running process is killed and the session winds down
-// instead of hanging.
 func TestServerDisconnectReapsCommand(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -47,8 +44,7 @@ func TestServerDisconnectReapsCommand(t *testing.T) {
 
 	must.NoError(sess.Start("sleep 30"), "start")
 
-	// Drop the connection while the command is running. The server must
-	// kill the child and return promptly.
+	// Drop the connection mid-command. The server must kill the child and return promptly.
 	done := make(chan struct{})
 	go func() {
 		_ = client.Close()
@@ -62,8 +58,6 @@ func TestServerDisconnectReapsCommand(t *testing.T) {
 	}
 }
 
-// TestServerSignalForwards verifies a client signal reaches the running
-// process and terminates it with the expected status.
 func TestServerSignalForwards(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -81,7 +75,6 @@ func TestServerSignalForwards(t *testing.T) {
 	must.NoError(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "request pty")
 	must.NoError(sess.Start("sleep 30"), "start")
 
-	// The signal is forwarded to the running command's process.
 	must.NoError(sess.Signal(ssh.SIGTERM), "signal")
 
 	done := make(chan error, 1)
@@ -96,8 +89,6 @@ func TestServerSignalForwards(t *testing.T) {
 	}
 }
 
-// TestServerWindowChange verifies pty resize requests reach the running
-// process.
 func TestServerWindowChange(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -122,8 +113,6 @@ func TestServerWindowChange(t *testing.T) {
 	is.Equal("40 20", strings.TrimSpace(string(out)))
 }
 
-// TestServerEnvWhitelist verifies only whitelisted client environment
-// variables reach the session. Shell/loader-affecting variables are dropped.
 func TestServerEnvWhitelist(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -156,15 +145,11 @@ func TestServerEnvWhitelist(t *testing.T) {
 	is.Equal("fr_FR.UTF-8", fields[1])
 	is.Empty(fields[2])
 	is.Empty(fields[3])
-	// SSH_AUTH_SOCK must not be the client-injected value (it may inherit the
-	// daemon's own agent socket).
+	// Not the client-injected value. It may still inherit the daemon's own agent socket.
 	is.NotEqual("/tmp/evil.sock", fields[4])
 }
 
-// TestServerForceCommandBlocksEnv verifies a certificate force-command runs
-// with the server-provided environment only. Client-supplied variables (even
-// whitelisted ones) are refused so an injected BASH_ENV cannot override a
-// restricted command.
+// Even whitelisted client variables are refused, so an injected BASH_ENV cannot bend a restricted command.
 func TestServerForceCommandBlocksEnv(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -186,18 +171,12 @@ func TestServerForceCommandBlocksEnv(t *testing.T) {
 	_ = sess.Setenv("BASH_ENV", "boom")
 	_ = sess.Setenv("LC_MESSAGES", "fr_FR.UTF-8")
 
-	// The requested command is ignored. The certificate's force-command runs
-	// instead, and sees neither variable.
 	out, err := sess.Output("echo this-should-be-ignored")
 	must.NoError(err, "exec")
 	is.Equal("force:", string(out))
 }
 
-// syncedBuffer appends into a shared string under a mutex, for asserting on
-// slog output.
-
-// captureSink collects recorder sink writes and signals Close, so tests can
-// assert what the daemon would have uploaded.
+// captureSink lets tests assert what the daemon would have uploaded.
 type captureSink struct {
 	mu      sync.Mutex
 	data    bytes.Buffer
@@ -216,9 +195,6 @@ func (s *captureSink) Close() error {
 	return nil
 }
 
-// TestPlainSessionRecorded verifies a non-pty exec session is recorded and
-// streamed to the sink, so commands that bypass a terminal are still
-// captured.
 func TestPlainSessionRecorded(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -272,8 +248,7 @@ func TestPlainSessionRecorded(t *testing.T) {
 	must.NoError(sess.Wait(), "wait")
 	is.Equal("piped-input\n", string(out))
 
-	// finish() closes the recorder before the exit status is sent, so the
-	// sink is complete by the time Wait returns.
+	// finish closes the recorder before the exit status is sent, so the sink is complete once Wait returns.
 	select {
 	case <-sink.closed:
 	case <-time.After(5 * time.Second):
@@ -289,8 +264,7 @@ func TestPlainSessionRecorded(t *testing.T) {
 	is.NotContains(string(cast), `"i"`, "plain sessions must not record stdin")
 }
 
-// TestLoginDeniedByNologin verifies /etc/nologin refuses the login itself, so
-// it stops forwards as well as sessions.
+// /etc/nologin refuses the login itself, so it stops forwards as well as sessions.
 func TestLoginDeniedByNologin(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root, where /etc/nologin does not apply")
@@ -320,10 +294,7 @@ func TestLoginDeniedByNologin(t *testing.T) {
 	must.Error(err, "login succeeded while /etc/nologin was present")
 }
 
-// TestRecordingCorrelatesWebSessionID verifies the env NOKKU_SESSION_ID is
-// honoured only for certificates the control plane minted for a web terminal
-// session. A direct login must not be able to label its recording with
-// another session's id, so it falls back to the daemon-generated one.
+// A direct login must not label its recording with another session's id, only a web terminal cert may.
 func TestRecordingCorrelatesWebSessionID(t *testing.T) {
 	const webSessionID = "0197a3f2-7c1b-7de1-9a2b-3f4c5d6e7f80"
 
@@ -411,8 +382,7 @@ func TestRecordingCorrelatesWebSessionID(t *testing.T) {
 	}
 }
 
-// TestServerSecondPtyRejected verifies a second pty-req is refused, so a
-// client cannot pile up ptys it never uses.
+// A client must not pile up ptys it never uses.
 func TestServerSecondPtyRejected(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -430,9 +400,6 @@ func TestServerSecondPtyRejected(t *testing.T) {
 	must.Error(sess.RequestPty("xterm", 80, 24, ssh.TerminalModes{}), "second pty was accepted")
 }
 
-// TestShellStartsLikeOpenSSH verifies how the user's shell is started. A
-// shell request gets a login shell, argv[0] with a dash, so the profile is
-// read. A command runs under the shell's plain name. A pty changes neither.
 func TestShellStartsLikeOpenSSH(t *testing.T) {
 	account, err := lookupAccount(currentUser(t))
 	require.NoError(t, err)
@@ -489,9 +456,6 @@ func TestShellStartsLikeOpenSSH(t *testing.T) {
 	}
 }
 
-// TestSessionConnectionEnv verifies SSH_CLIENT and SSH_CONNECTION are set like
-// sshd sets them. bash only reads ~/.bashrc for a remote command when it sees
-// SSH_CLIENT.
 func TestSessionConnectionEnv(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -515,8 +479,6 @@ func TestSessionConnectionEnv(t *testing.T) {
 	)
 }
 
-// TestMissingHomeRunsInRoot verifies a user who cannot enter the home
-// directory gets sshd's warning and runs in /.
 func TestMissingHomeRunsInRoot(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone")
 	ca := newTestCA(t)
@@ -558,8 +520,6 @@ func TestMissingHomeRunsInRoot(t *testing.T) {
 	})
 }
 
-// TestNoTermWithoutPTY verifies a session without a pty has no TERM, like
-// under sshd, not even the daemon's own.
 func TestNoTermWithoutPTY(t *testing.T) {
 	t.Setenv("TERM", "screen")
 	ca := newTestCA(t)
@@ -578,8 +538,6 @@ func TestNoTermWithoutPTY(t *testing.T) {
 	assert.Equal(t, "unset\n", string(out))
 }
 
-// TestFullRecordingEndsSession verifies a session is closed when its
-// recording reaches the size limit, so nothing runs unrecorded.
 func TestFullRecordingEndsSession(t *testing.T) {
 	ca := newTestCA(t)
 	addr, closeFn := startTestServerOpts(t, ca, Options{Policy: Policy{Record: true}}, func(s *Server) {

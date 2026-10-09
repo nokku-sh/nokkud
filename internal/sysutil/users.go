@@ -11,12 +11,9 @@ import (
 	"time"
 )
 
-// maxReportedUsers caps how many local usernames the daemon reports. The list
-// is sorted before truncating, so only the tail can ever change between syncs.
+// The list is sorted before truncating, so only the tail can ever change between syncs.
 const maxReportedUsers = 200
 
-// SystemUsers returns local usernames that could plausibly log in over SSH
-// (root and human accounts with a real shell), capped at maxReportedUsers.
 func SystemUsers() []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -50,7 +47,6 @@ func SystemUsers() []string {
 	return capUsers(users)
 }
 
-// capUsers sorts and truncates so the backend always sees a stable head.
 func capUsers(users []string) []string {
 	slices.Sort(users)
 	if len(users) > maxReportedUsers {

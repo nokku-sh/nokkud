@@ -10,9 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Expired recordings go first, then the oldest ones until the rest fits the
-// space limit. Files that are not recordings, and recordings still being
-// written, are never touched.
+// Files that are not recordings, and recordings still being written, are never touched.
 func TestEnforceRetention(t *testing.T) {
 	dir := newRecordsDir(t)
 	is := assert.New(t)

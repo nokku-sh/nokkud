@@ -5,8 +5,6 @@ import (
 	"os"
 )
 
-// IsRoot returns nil when running as root. The SSH server must start as
-// root so sessions can be dropped to the target user.
 func IsRoot() error {
 	if os.Geteuid() == 0 {
 		return nil

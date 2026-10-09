@@ -14,8 +14,7 @@ import (
 
 const sessionTTL = 8 * time.Hour
 
-// relayStream is the part of the connect stream the relay uses, so tests can
-// drive it without a backend.
+// A test seam, so the relay can be driven without a backend.
 type relayStream interface {
 	Send(*nokkuv1.DaemonRelayRequest) error
 	Receive() (*nokkuv1.DaemonRelayResponse, error)
@@ -25,9 +24,7 @@ var relayClosed = &nokkuv1.DaemonRelayRequest{
 	Msg: &nokkuv1.DaemonRelayRequest_Closed{Closed: &nokkuv1.DaemonRelayClosed{}},
 }
 
-// runRelay dials back to the backend and hands the stream to the sshd as a
-// connection of its own. The sshd enforces its connection cap, so relays need
-// none.
+// The sshd enforces its connection cap, so relays need none.
 func (c *Client) runRelay(ctx context.Context, req *nokkuv1.RelayOpen) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -39,8 +36,7 @@ func (c *Client) runRelay(ctx context.Context, req *nokkuv1.RelayOpen) {
 	defer cancel()
 	stream, err := c.ctl.DaemonRelay(ctx)
 	if err == nil {
-		// Ready must be the first message, the backend resolves its pending
-		// relay on it.
+		// Ready must be the first message, the backend resolves its pending relay on it.
 		err = stream.Send(&nokkuv1.DaemonRelayRequest{
 			Msg: &nokkuv1.DaemonRelayRequest_Ready{Ready: &nokkuv1.DaemonRelayReady{RelayId: req.RelayId}},
 		})
@@ -59,10 +55,7 @@ func (c *Client) runRelay(ctx context.Context, req *nokkuv1.RelayOpen) {
 	slog.Debug("relay disconnected", "relay", req.GetRelayId())
 }
 
-// clientAddr parses the address the backend reports for the user. It has to
-// be a TCP address, the ssh stack checks source-address options against one.
-// An address that does not parse is the unspecified one, which matches no
-// source-address option.
+// Source-address options need a TCP address. One that does not parse is unspecified and matches none.
 func clientAddr(addr string) net.Addr {
 	if ap, err := netip.ParseAddrPort(addr); err == nil {
 		return net.TCPAddrFromAddrPort(ap)
@@ -74,17 +67,14 @@ func clientAddr(addr string) net.Addr {
 	return net.TCPAddrFromAddrPort(netip.AddrPortFrom(ip, 0))
 }
 
-// relayConn is a relay stream as the connection the sshd serves. Its remote
-// address is the user's as the backend saw it, so audit events, SSH_CLIENT
-// and source-address options see the user and not the relay.
+// Its remote address is the user's, so audit events and source-address options see the user, not the relay.
 type relayConn struct {
 	stream relayStream
 	// cancel ends the stream, which unblocks a pending Receive or Send.
 	cancel        context.CancelFunc
 	remote, local net.Addr
 
-	// pending is the unread tail of the last frame. Only the ssh transport's
-	// reader touches it.
+	// pending is the unread tail of the last frame. Only the ssh transport's reader touches it.
 	pending []byte
 
 	// sendMu makes Closed the last frame, the stream takes one sender at a time.
@@ -128,9 +118,7 @@ func (c *relayConn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Close tells the backend the relay is over and ends the stream. A Write
-// stuck on a backend that stopped reading skips the frame, the canceled
-// stream unblocks it.
+// Close skips the Closed frame while a Write is stuck on a dead backend. The cancel unblocks that Write.
 func (c *relayConn) Close() error {
 	if c.sendMu.TryLock() {
 		if !c.closed {
@@ -143,8 +131,7 @@ func (c *relayConn) Close() error {
 	return c.SetDeadline(time.Time{})
 }
 
-// SetDeadline bounds the ssh handshake. A stream cannot time out one read,
-// so a deadline that passes ends the connection.
+// SetDeadline ends the connection when it passes, a stream cannot time out one read.
 func (c *relayConn) SetDeadline(t time.Time) error {
 	c.deadlineMu.Lock()
 	defer c.deadlineMu.Unlock()

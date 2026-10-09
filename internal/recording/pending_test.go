@@ -18,7 +18,6 @@ import (
 	"github.com/nokku-sh/protos/gen/nokku/v1/nokkuv1connect"
 )
 
-// resultSink reports a fixed upload result from Close.
 type resultSink struct {
 	err  error
 	done chan struct{}
@@ -114,8 +113,7 @@ func TestUploadPending(t *testing.T) {
 	is.Equal(1, opens)
 }
 
-// A full workspace refuses the upload. The file stays, and the answer keeps
-// its code on the way out, the retry loop reads it to wait longer.
+// The answer keeps its code on the way out, the retry loop reads it to wait longer.
 func TestUploadPendingReportsAFullWorkspace(t *testing.T) {
 	dir := newRecordsDir(t)
 	handler := connect.NewClientStreamHandlerSimple(

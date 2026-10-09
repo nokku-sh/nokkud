@@ -16,11 +16,10 @@ import (
 // hostKeySalt namespaces the host key. Salt registry: mon/README.md.
 const hostKeySalt = "nokku-daemon-host"
 
-// newHostSigner opens the host key. Tests swap it.
+// Tests swap it.
 var newHostSigner = tpm.NewSigner
 
-// loadHostKey opens the host key. It is not the enrollment anchor, so an
-// identity change just gets a fresh key and the sync renews the cert.
+// The host key is not the enrollment anchor, so an identity change just gets a fresh key and a renewed cert.
 func loadHostKey() (ssh.Signer, io.Closer, error) {
 	signer, err := newHostSigner(tpm.SignerOptions{
 		Salt:      []byte(hostKeySalt),
@@ -42,7 +41,6 @@ func loadHostKey() (ssh.Signer, io.Closer, error) {
 	return sshSigner, signer, nil
 }
 
-// withHostCert wraps key in the host certificate on disk when it matches.
 func withHostCert(key ssh.Signer) ssh.Signer {
 	cert, err := hostcerts.Load()
 	if err != nil {
@@ -55,8 +53,7 @@ func withHostCert(key ssh.Signer) ssh.Signer {
 	return signer
 }
 
-// writeHostPubKey persists the public half for the cert renewal. A cert for a
-// previous key is dropped so the sync renews it.
+// A cert for a previous key is dropped so the sync renews it.
 func writeHostPubKey(signer tpm.Signer) error {
 	pub, err := ssh.NewPublicKey(signer.Public())
 	if err != nil {

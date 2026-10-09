@@ -13,8 +13,7 @@ import (
 // minRenewDelay is the poll interval while no host cert exists yet.
 const minRenewDelay = 30 * time.Second
 
-// watchCertificates keeps the host certificate renewed. It owns every
-// renewal, a sync only wakes it.
+// The watcher owns every renewal, a sync only wakes it.
 func (c *Client) watchCertificates(ctx context.Context) {
 	b := backoff.NewExponentialBackOff()
 	b.InitialInterval = minRenewDelay

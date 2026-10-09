@@ -8,7 +8,6 @@ import (
 // maxSnakeCaseLen bounds the result so it always fits a single filename.
 const maxSnakeCaseLen = 64
 
-// toSnakeCase converts s into a safe, snake_case filename component.
 func toSnakeCase(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

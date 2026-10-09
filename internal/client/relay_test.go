@@ -19,16 +19,14 @@ import (
 	nokkuv1 "github.com/nokku-sh/protos/gen/nokku/v1"
 )
 
-// fakeRelayStream is the backend end of a relay. Canceling ctx fails Receive,
-// like a canceled connect stream.
+// Canceling ctx fails Receive, like a canceled connect stream.
 type fakeRelayStream struct {
 	ctx  context.Context
 	sent chan *nokkuv1.DaemonRelayRequest
 	recv chan *nokkuv1.DaemonRelayResponse
 }
 
-// Send copies the frame like the real stream, which marshals it before it
-// returns. The ssh transport reuses its write buffer.
+// Send copies the frame like the real stream. The ssh transport reuses its write buffer.
 func (s *fakeRelayStream) Send(req *nokkuv1.DaemonRelayRequest) error {
 	s.sent <- proto.CloneOf(req)
 	return nil
@@ -75,8 +73,6 @@ func TestClientAddr(t *testing.T) {
 	}
 }
 
-// TestRelayConnRead verifies frames come out as a byte stream, a frame larger
-// than the read buffer is not lost, and a Closed frame is the end of it.
 func TestRelayConnRead(t *testing.T) {
 	t.Parallel()
 	conn, stream := newTestRelayConn(t)
@@ -99,8 +95,6 @@ func TestRelayConnRead(t *testing.T) {
 	assert.Equal(t, "hello sshd", string(got))
 }
 
-// TestRelayConnWriteAndClose verifies writes go out as data frames, and Close
-// sends one Closed frame as the last one and ends the stream.
 func TestRelayConnWriteAndClose(t *testing.T) {
 	t.Parallel()
 	is := assert.New(t)
@@ -122,8 +116,7 @@ func TestRelayConnWriteAndClose(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled, "a closed relay still reads")
 }
 
-// TestRelayConnDeadline verifies a deadline that passes ends the connection,
-// which is what bounds a relayed peer that never finishes the handshake.
+// A deadline is what bounds a relayed peer that never finishes the handshake.
 func TestRelayConnDeadline(t *testing.T) {
 	t.Parallel()
 	conn, stream := newTestRelayConn(t)
@@ -148,8 +141,7 @@ func TestRelayConnDeadline(t *testing.T) {
 	}
 }
 
-// userEnd is the user's side of a fake relay as the connection an ssh client
-// dials over, the mirror image of relayConn.
+// The user's side of a fake relay, the mirror image of relayConn.
 type userEnd struct {
 	stream  *fakeRelayStream
 	pending []byte
@@ -198,8 +190,6 @@ func (u *userEnd) SetDeadline(time.Time) error      { return nil }
 func (u *userEnd) SetReadDeadline(time.Time) error  { return nil }
 func (u *userEnd) SetWriteDeadline(time.Time) error { return nil }
 
-// TestRelayServesSSH runs a real ssh login and command over a relay stream:
-// the sshd serves the stream itself and reports the user's address.
 func TestRelayServesSSH(t *testing.T) {
 	must := require.New(t)
 	c := newSyncClient(t, &fakeBackend{})

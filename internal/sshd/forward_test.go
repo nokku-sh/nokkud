@@ -14,7 +14,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// testEchoServer runs a TCP server that echoes any data it receives.
 func testEchoServer(t *testing.T) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -34,8 +33,6 @@ func testEchoServer(t *testing.T) net.Listener {
 	return ln
 }
 
-// TestServerDirectTCPIP verifies -L style forwarding: a direct-tcpip channel
-// reaches the requested destination.
 func TestServerDirectTCPIP(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -64,9 +61,6 @@ func TestServerDirectTCPIP(t *testing.T) {
 	is.Equal("ping", string(buf))
 }
 
-// TestServerMaxChannelsHeldForRelay verifies a live direct-tcpip relay keeps
-// its channel slot: with a cap of one, a second -L relay is refused until the
-// first one closes.
 func TestServerMaxChannelsHeldForRelay(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -99,7 +93,6 @@ func TestServerMaxChannelsHeldForRelay(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "channel slot never released")
 }
 
-// TestServerDirectTCPIPDisabled verifies forwarding is rejected when off.
 func TestServerDirectTCPIPDisabled(t *testing.T) {
 	is := assert.New(t)
 	ca := newTestCA(t)
@@ -118,8 +111,6 @@ func TestServerDirectTCPIPDisabled(t *testing.T) {
 	is.Error(err, "forwarding unexpectedly allowed")
 }
 
-// TestServerRemoteForward verifies -R style forwarding: a listener is bound on
-// the server and connections are delivered to the client.
 func TestServerRemoteForward(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -135,8 +126,6 @@ func TestServerRemoteForward(t *testing.T) {
 	must.NoError(err, "remote listen")
 	defer ln.Close()
 
-	// The client's listener accepts the forwarded-tcpip channel opened for
-	// each inbound server-side connection, echoing the data.
 	go func() {
 		for {
 			c, aerr := ln.Accept()
@@ -150,7 +139,6 @@ func TestServerRemoteForward(t *testing.T) {
 		}
 	}()
 
-	// Connect to the server-side listener as a plain TCP client.
 	sconn, err := net.Dial("tcp", ln.Addr().String())
 	must.NoError(err, "dial server-side forward")
 	defer sconn.Close()
@@ -164,8 +152,6 @@ func TestServerRemoteForward(t *testing.T) {
 	is.Equal("pong", string(buf))
 }
 
-// TestServerRemoteForwardPortZero verifies -R 0 forwards: each one gets its own
-// port, and cancelling one closes its listener.
 func TestServerRemoteForwardPortZero(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -189,8 +175,6 @@ func TestServerRemoteForwardPortZero(t *testing.T) {
 	is.Error(err, "the cancelled forward still listens")
 }
 
-// TestServerRemoteForwardListenersCapped verifies -R listeners draw from the
-// connection's channel budget, so one connection cannot open them without end.
 func TestServerRemoteForwardListenersCapped(t *testing.T) {
 	must := require.New(t)
 	ca := newTestCA(t)
@@ -222,10 +206,7 @@ func TestServerRemoteForwardListenersCapped(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "a cancelled forward never released its slot")
 }
 
-// TestServerRemoteForwardLocalhost verifies a -R forward requested on the
-// hostname "localhost" works: clients key their forward by the requested
-// address, so the server must report it back verbatim even though the listener
-// itself is pinned to loopback.
+// Clients key a forward by the address they asked for, so the server must report "localhost" back verbatim.
 func TestServerRemoteForwardLocalhost(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -267,9 +248,6 @@ func TestServerRemoteForwardLocalhost(t *testing.T) {
 	is.Equal("pong", string(buf))
 }
 
-// TestServerRemoteForwardInterop drives ssh -R with the real OpenSSH client:
-// the server binds a listener and delivers inbound connections to the client's
-// end of the forward.
 func TestServerRemoteForwardInterop(t *testing.T) {
 	if !isTestBinary() {
 		t.Skip("requires the test binary on PATH")
@@ -286,14 +264,11 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	defer closeFn()
 	host, port := hostPort(t, addr)
 
-	// Echo server: what the client's forwarded end talks to.
 	echo := testEchoServer(t)
 	defer echo.Close()
 	_, echoPortStr, _ := net.SplitHostPort(echo.Addr().String())
 
-	// A TCP listener that represents the -R bound port on the server side.
-	// The remote forward is bound via a placeholder port. OpenSSH -R binds on
-	// the server to the requested port. Use a free port.
+	// Picks a free port for -R to bind on the server side.
 	bound, err := net.Listen("tcp", "127.0.0.1:0")
 	must.NoError(err)
 	_, boundPortStr, _ := net.SplitHostPort(bound.Addr().String())
@@ -323,8 +298,6 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	// Give the forward a moment to be established.
 	time.Sleep(500 * time.Millisecond)
 
-	// Connect to the server-side bound port. Traffic should be delivered to
-	// the client's -R end and echoed.
 	sconn, err := net.Dial("tcp", "127.0.0.1:"+boundPortStr)
 	if err != nil {
 		must.NoError(err, "dial server-side forward\n%s", slurpAfterKill(cmd, stderr))
@@ -342,9 +315,7 @@ func TestServerRemoteForwardInterop(t *testing.T) {
 	is.Equal("interop", string(buf))
 }
 
-// slurpAfterKill drains ssh's stderr for the failure message. ssh -N never
-// exits on its own, so reading the pipe blocks forever unless the process is
-// killed first.
+// ssh -N never exits on its own, so reading its stderr blocks forever unless it is killed first.
 func slurpAfterKill(cmd *exec.Cmd, stderr io.Reader) string {
 	_ = cmd.Process.Kill()
 	b, _ := io.ReadAll(stderr)
@@ -352,8 +323,7 @@ func slurpAfterKill(cmd *exec.Cmd, stderr io.Reader) string {
 	return string(b)
 }
 
-// TestForwardAddr verifies remote forwards are pinned to loopback unless
-// gateway ports are enabled, matching OpenSSH's GatewayPorts=no default.
+// Matches OpenSSH's GatewayPorts=no default.
 func TestForwardAddr(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -414,8 +384,7 @@ func TestServerForwardingLargeTransfer(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 }
 
-// TestTCPIPForwardAfterClose verifies a forward request racing connection
-// teardown is refused instead of leaking a listener.
+// A forward request racing connection teardown must not leak a listener.
 func TestTCPIPForwardAfterClose(t *testing.T) {
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
 	srv, err := New(Options{Principals: func(string) []string { return nil }, Policy: Policy{AllowForwarding: true}})

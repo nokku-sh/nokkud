@@ -12,15 +12,10 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// fuzzMaxEvent bounds the per-iteration payload so the fuzzer cannot spend
-// the whole run gzipping multi-megabyte inputs.
+// Keeps the fuzzer from spending the whole run gzipping multi-megabyte inputs.
 const fuzzMaxEvent = 64 << 10
 
-// FuzzRecordEvents checks the recording format end to end: after recording
-// arbitrary session bytes the file must be valid gzip holding a valid
-// asciicast v3 header plus well-formed event lines, and the recorded payload
-// must round-trip through the JSON wire format (invalid UTF-8 is replaced by
-// U+FFFD by the format itself, so byte equality only holds for valid UTF-8).
+// Invalid UTF-8 becomes U+FFFD in the format itself, so byte equality only holds for valid UTF-8.
 func FuzzRecordEvents(f *testing.F) {
 	f.Add([]byte("hello\n"), "session-1")
 	f.Add([]byte{}, "s")
@@ -129,18 +124,13 @@ func FuzzRecordEvents(f *testing.F) {
 		if !sawOutput || !sawInput {
 			t.Fatalf("recording missing output/input events (o=%v i=%v)", sawOutput, sawInput)
 		}
-		// A character cut short at the end of the input is held back and
-		// recorded at close, so the payload of a type can span two events.
+		// A character cut short at the end is recorded at close, so a type's payload can span two events.
 		assertPayload(t, output.String(), data)
 		assertPayload(t, input.String(), data)
 	})
 }
 
-// assertPayload checks the decoded payload equals the encoder's own
-// round-trip: the recorder writes exactly what [json.Marshal] produces for
-// the input, and parsing that line must yield it back unchanged. Invalid
-// UTF-8 is replaced by U+FFFD by the format itself, so byte equality is not
-// asserted.
+// Compares against [json.Marshal]'s own round-trip, invalid UTF-8 becomes U+FFFD so bytes are not compared.
 func assertPayload(t *testing.T, payload string, data []byte) {
 	t.Helper()
 	enc, err := json.Marshal(string(data))

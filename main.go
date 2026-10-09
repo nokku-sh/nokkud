@@ -1,4 +1,3 @@
-// Command nokkud enrolls this host with the backend and serves certificate-authenticated SSH.
 package main
 
 import (
@@ -74,8 +73,7 @@ Run it again to move the host to another Nokku. Restart the service afterwards.`
 					if err := sysutil.IsRoot(); err != nil {
 						return err
 					}
-					// Local state goes even when the backend or the signing
-					// key is gone, else a broken identity could never be reset.
+					// Local state goes regardless, or a broken identity could never be reset.
 					defer paths.Cleanup()
 					cache, cfg, err := loadState(cmd)
 					if err != nil {
@@ -222,9 +220,7 @@ func enroll(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// loadState sets up the data dir and reads the persisted state. Callers check
-// for root first. The API URL and the CA it is trusted through are bound to
-// the enrollment, so they are persisted, and the flags only win when given.
+// The API URL and its CA are bound to the enrollment, so they are persisted and flags only win when given.
 func loadState(cmd *cli.Command) (*state.Cache, *state.Config, error) {
 	if err := paths.Verify(); err != nil {
 		return nil, nil, err
@@ -260,9 +256,7 @@ func loadState(cmd *cli.Command) (*state.Cache, *state.Config, error) {
 	return cache, cfg, cfg.Save()
 }
 
-// checkAPIURL refuses plain http to anything but this machine. A sync answer
-// carries the CA the daemon trusts, so whoever can change it in transit can
-// log in as root.
+// A sync answer carries the CA the daemon trusts, so plain http would let anyone in transit log in as root.
 func checkAPIURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -278,8 +272,7 @@ func checkAPIURL(raw string) error {
 	return fmt.Errorf("the API URL %q must use https, plain http is only accepted for localhost", raw)
 }
 
-// enrollToken reads the token from the env, or prompts on a terminal. Tokens
-// never go on argv, where any local user could read them.
+// Tokens never go on argv, where any local user could read them.
 func enrollToken() (string, error) {
 	if token := os.Getenv("NOKKUD_ENROLL_TOKEN"); token != "" {
 		return token, nil

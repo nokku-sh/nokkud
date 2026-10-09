@@ -18,8 +18,7 @@ func TestValidatePrincipal(t *testing.T) {
 	}
 }
 
-// FuzzValidatePrincipal checks an accepted name is always safe as a path
-// component.
+// An accepted name must always be safe as a path component.
 func FuzzValidatePrincipal(f *testing.F) {
 	f.Add("roxas")
 	f.Add("..")

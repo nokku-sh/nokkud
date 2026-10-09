@@ -12,14 +12,10 @@ import (
 	"github.com/nokku-sh/nokkud/internal/leaktest"
 )
 
-// TestMain checks the goroutine leak profile once after every test has torn
-// down, so a leak in any test fails the suite.
 func TestMain(m *testing.M) {
 	os.Exit(leaktest.Exit(m.Run()))
 }
 
-// Open and close session channels without sending shell/exec/subsystem,
-// repeatedly, and verify the server still accepts fresh connections.
 func TestSessionChannelNoCommandDoesNotLeak(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)

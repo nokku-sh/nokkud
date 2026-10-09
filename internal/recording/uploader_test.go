@@ -17,8 +17,6 @@ import (
 	"github.com/nokku-sh/protos/gen/nokku/v1/nokkuv1connect"
 )
 
-// testServer runs an in-memory UploadRecording endpoint and captures every
-// received message and stream lifecycle.
 type testServer struct {
 	mu     sync.Mutex
 	msgs   []*nokkuv1.UploadRecordingRequest
@@ -47,8 +45,7 @@ func newTestServer(t *testing.T) *testServer {
 			size := int64(123)
 			return &nokkuv1.UploadRecordingResponse{SizeBytes: &size}, nil
 		},
-		// The schema carries the stream type, without it the handler would
-		// frame the RPC as unary and never read the body.
+		// Without the schema's stream type the handler frames the RPC as unary and never reads the body.
 		connect.WithSchema(
 			nokkuv1.File_nokku_v1_daemon_proto.Services().
 				ByName("DaemonControlService").
@@ -60,8 +57,7 @@ func newTestServer(t *testing.T) *testServer {
 	mux.Handle(nokkuv1connect.DaemonControlServiceUploadRecordingProcedure, handler)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(func() {
-		// Close client connections first: httptest.Close waits for
-		// keep-alive connections and would block on a live one.
+		// Client connections first, httptest.Close would block on a live keep-alive one.
 		srv.CloseClientConnections()
 		srv.Close()
 	})
@@ -75,9 +71,6 @@ func (ts *testServer) snapshot() (msgs []*nokkuv1.UploadRecordingRequest, opens,
 	return append([]*nokkuv1.UploadRecordingRequest(nil), ts.msgs...), ts.opens, ts.closed
 }
 
-// TestUploaderStreamsPlaintext verifies the uploader opens once, sends the
-// metadata without a key fingerprint, streams raw chunks untouched, and
-// finalizes with a final message on Close.
 func TestUploaderStreamsPlaintext(t *testing.T) {
 	ts := newTestServer(t)
 	is := assert.New(t)
@@ -101,9 +94,7 @@ func TestUploaderStreamsPlaintext(t *testing.T) {
 	is.NotNil(msgs[2].GetFinal())
 }
 
-// TestUploaderKeepsLocalOnFailure verifies a backend error never fails the
-// caller: the chunk is dropped, the uploader stops, but Write still reports
-// success so the local file keeps the data.
+// Write still reports success after a backend error, so the local file keeps the data.
 func TestUploaderKeepsLocalOnFailure(t *testing.T) {
 	ts := newTestServer(t)
 	is := assert.New(t)
@@ -113,16 +104,13 @@ func TestUploaderKeepsLocalOnFailure(t *testing.T) {
 
 	_, err := u.Write([]byte("first"))
 	must.NoError(err)
-	// Force a failure by sending after the server stream is gone is awkward;
-	// the uploader is best-effort, writing after a failed or closed uploader
-	// must still report success.
+	// Forcing a mid-stream failure is awkward. A write after Close must report success just the same.
 	must.NoError(u.Close())
 	n, err := u.Write([]byte("after close"))
 	must.NoError(err)
 	is.NotZero(n)
 }
 
-// TestUploaderZeroSlicesAreNoop verifies empty writes do not open a stream.
 func TestUploaderZeroSlicesAreNoop(t *testing.T) {
 	ts := newTestServer(t)
 	is := assert.New(t)
@@ -138,8 +126,6 @@ func TestUploaderZeroSlicesAreNoop(t *testing.T) {
 	is.Zero(opens)
 }
 
-// TestUploaderReportsWhyTheBackendRefused verifies the reason reaches the log
-// and the caller when the backend ends the upload, like a full workspace.
 func TestUploaderReportsWhyTheBackendRefused(t *testing.T) {
 	handler := connect.NewClientStreamHandlerSimple(
 		nokkuv1connect.DaemonControlServiceUploadRecordingProcedure,

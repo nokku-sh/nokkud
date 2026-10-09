@@ -28,17 +28,14 @@ const castSuffix = ".cast.gz"
 // active holds the paths of recordings still being written or live uploaded.
 var active sync.Map
 
-// removeUploaded drops the local copy once the backend has the whole
-// recording, so every file left in the records dir is active or pending.
+// With uploaded copies gone, every file left in the records dir is active or pending.
 func removeUploaded(path string) {
 	if err := os.Remove(path); err != nil {
 		slog.Warn("remove uploaded recording", "path", path, "error", err)
 	}
 }
 
-// UploadPending uploads finished recordings the backend does not have yet,
-// oldest first, such as sessions recorded while it was unreachable. It stops
-// at the first failure, the next call retries.
+// UploadPending stops at the first failure, the next call retries.
 func UploadPending(ctx context.Context, client nokkuv1connect.DaemonControlServiceClient) error {
 	// Filenames start with the timestamp, so Glob's order is oldest first.
 	matches, err := filepath.Glob(filepath.Join(paths.RecordsDir(), "*"+castSuffix))
@@ -120,7 +117,6 @@ func uploadFile(ctx context.Context, client nokkuv1connect.DaemonControlServiceC
 	return err
 }
 
-// readHeader reads the asciicast header, the first line of the recording.
 func readHeader(path string) (header, error) {
 	var hdr header
 	f, err := os.Open(path) // #nosec G304 - a file from the recordings dir

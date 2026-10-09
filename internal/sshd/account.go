@@ -14,11 +14,9 @@ import (
 	"time"
 )
 
-// nologinPath is the maintenance lockout file, matching OpenSSH: only root may
-// log in while it exists.
+// Matching OpenSSH, only root may log in while this file exists.
 const nologinPath = "/etc/nologin"
 
-// account is a local account as the password database has it.
 type account struct {
 	Name  string
 	UID   uint32
@@ -27,8 +25,7 @@ type account struct {
 	Shell string
 }
 
-// loginAllowed reports whether the account may log in. Root is never blocked,
-// so an operator can still get in to fix the machine.
+// Root is never blocked, so an operator can still get in to fix the machine.
 func loginAllowed(a *account, nologinPath string) error {
 	if a.UID == 0 {
 		return nil
@@ -43,8 +40,7 @@ func loginAllowed(a *account, nologinPath string) error {
 	return fmt.Errorf("logins are disabled: %s", strings.TrimSpace(string(msg)))
 }
 
-// lookupAccount resolves a local account through getent, so NSS and LDAP
-// users resolve too. A static binary cannot see those on its own.
+// getent resolves NSS and LDAP users too, a static binary cannot see those on its own.
 func lookupAccount(name string) (*account, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -68,13 +64,11 @@ func lookupAccount(name string) (*account, error) {
 		UID:  uint32(uid),
 		GID:  uint32(gid),
 		Home: parts[5],
-		// The shell is used as it stands, so a lock shell (nologin, false)
-		// fails the session. Only an empty field means /bin/sh.
+		// A lock shell (nologin, false) is used as is and fails the session. Only an empty field means /bin/sh.
 		Shell: cmp.Or(parts[6], "/bin/sh"),
 	}, nil
 }
 
-// groupIDs returns the account's supplementary group ids.
 func groupIDs(a *account) ([]uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -93,8 +87,6 @@ func groupIDs(a *account) ([]uint32, error) {
 	return ids, nil
 }
 
-// cmdEnv builds the account's session environment: a fresh HOME/USER/
-// SHELL/PATH plus a locale allowlist. TERM is the session's to set.
 func cmdEnv(a *account) []string {
 	env := []string{
 		"HOME=" + a.Home,
@@ -103,8 +95,7 @@ func cmdEnv(a *account) []string {
 		"SHELL=" + a.Shell,
 		"PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
 	}
-	// Only innocuous locale variables are inherited. Connection variables are
-	// set per session, so the admin's agent socket cannot leak.
+	// Only harmless locale variables are inherited, so the admin's agent socket cannot leak.
 	for _, key := range []string{"LANG", "LC_ALL", "LC_CTYPE", "TZ", "MAIL"} {
 		if val, exists := os.LookupEnv(key); exists {
 			env = append(env, key+"="+val)
@@ -113,13 +104,10 @@ func cmdEnv(a *account) []string {
 	return env
 }
 
-// sysProcAttr builds session process attributes: a new session, plus a
-// credentials drop to the account and its groups when running as root.
 func sysProcAttr(a *account) (*syscall.SysProcAttr, error) {
 	attr := &syscall.SysProcAttr{Setsid: true}
 
-	// Non-root may not call setgroups(2) even to keep its own groups (EPERM),
-	// so Credential here would make every session fail at exec.
+	// Non-root gets EPERM from setgroups(2) even for its own groups, so Credential would fail every exec.
 	if os.Geteuid() != 0 {
 		return attr, nil
 	}

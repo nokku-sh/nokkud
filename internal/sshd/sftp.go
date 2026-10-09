@@ -9,11 +9,9 @@ import (
 	"github.com/pkg/sftp"
 )
 
-// sftpServerCmd re-execs the daemon as the sftp-server. Tests swap it to
-// re-enter the test binary.
+// Tests swap it to re-enter the test binary.
 var sftpServerCmd = func(home string) (*exec.Cmd, error) {
-	// os.Executable, not argv[0]: the child runs as the target user, so the
-	// binary must never be steerable through argv.
+	// os.Executable, not argv[0]: the child runs as the target user, so argv must never steer the binary.
 	bin, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -25,8 +23,7 @@ var sftpServerCmd = func(home string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-// ServeSFTP runs the SFTP protocol over stdin and stdout, rooted at home. It
-// runs as the target user, so the OS permissions bound what it can touch.
+// ServeSFTP runs as the target user, so the OS permissions bound what it can touch.
 func ServeSFTP(home string) error {
 	rw := struct {
 		io.Reader

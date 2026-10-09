@@ -29,8 +29,7 @@ func init() {
 	}
 }
 
-// TestSFTPHelperProcess re-enters the test binary as the sftp-server
-// subprocess, see the sftpServerCmd override in init.
+// Not a test: the binary re-entered as the sftp-server, see the sftpServerCmd override in init.
 func TestSFTPHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_SFTP_HELPER_PROCESS") != "1" {
 		return
@@ -55,9 +54,7 @@ func TestSFTPHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-// sftpClient dials a fresh server connection and returns an SFTP client. The
-// SFTP server roots at the target user's real home directory (like sshd), so
-// tests create a scratch subdirectory under it and use absolute paths.
+// The SFTP server roots at the user's real home like sshd, so tests use a scratch dir under it.
 func sftpClient(t *testing.T, ca testCA) (*sftp.Client, func()) {
 	t.Helper()
 	must := require.New(t)
@@ -82,9 +79,6 @@ func sftpClient(t *testing.T, ca testCA) (*sftp.Client, func()) {
 	}
 }
 
-// homeScratch creates a unique directory under the target user's real home,
-// which is where the SFTP server roots. Absolute paths are used throughout so
-// operations land in the scratch dir and are cleaned up afterwards.
 func homeScratch(t *testing.T) string {
 	t.Helper()
 	must := require.New(t)
@@ -105,7 +99,6 @@ func TestServerSFTPTransfer(t *testing.T) {
 	sc, closeFn := sftpClient(t, ca)
 	defer closeFn()
 
-	// Write a file, read it back, list the directory.
 	payload := []byte("hello nokkud sftp")
 	path := filepath.Join(scratch, "hello.txt")
 	f, err := sc.Create(path)
@@ -139,7 +132,6 @@ func TestServerSFTPOps(t *testing.T) {
 	sc, closeFn := sftpClient(t, ca)
 	defer closeFn()
 
-	// mkdir/rename/remove/stat round-trip.
 	must.NoError(sc.Mkdir(filepath.Join(scratch, "sub")))
 	must.NoError(sc.Rename(
 		filepath.Join(scratch, "sub"),
@@ -154,8 +146,6 @@ func TestServerSFTPOps(t *testing.T) {
 	is.Error(err, "expected stat to fail after rmdir")
 }
 
-// TestServerSFTPWorkingDir verifies relative paths resolve under the user's
-// real home directory, like sshd's sftp-server.
 func TestServerSFTPWorkingDir(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -168,15 +158,12 @@ func TestServerSFTPWorkingDir(t *testing.T) {
 	must.NoError(err)
 	is.Equal(home, wd)
 
-	// A relative path must resolve under home.
 	must.NoError(sc.Mkdir("nokkud-rel-test"))
 	defer func() { _ = os.RemoveAll(filepath.Join(home, "nokkud-rel-test")) }()
 	_, err = os.Stat(filepath.Join(home, "nokkud-rel-test"))
 	must.NoError(err, "relative dir not created under home")
 }
 
-// TestServerSCPModern drives the real scp binary in SFTP mode (scp -s), which
-// speaks the SFTP protocol through the sftp subsystem.
 func TestServerSCPModern(t *testing.T) {
 	scp, err := exec.LookPath("scp")
 	if err != nil {
@@ -220,8 +207,6 @@ func TestServerSCPModern(t *testing.T) {
 	is.Equal(payload, got)
 }
 
-// TestServerRsync drives the real rsync binary over the embedded server's
-// exec path (rsync --server), which is how `rsync user@host:src dst` works.
 func TestServerRsync(t *testing.T) {
 	rsync, err := exec.LookPath("rsync")
 	if err != nil {
@@ -265,8 +250,6 @@ func TestServerRsync(t *testing.T) {
 	is.Equal(payload, got)
 }
 
-// TestServerGit drives git over the embedded server: git speaks the pack
-// protocol through `exec git-receive-pack` on a session channel.
 func TestServerGit(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
@@ -292,7 +275,6 @@ func TestServerGit(t *testing.T) {
 	user := currentUser(t)
 	key := userCertFile(t, ca)
 
-	// Build a commit locally and push it over SSH.
 	work := t.TempDir()
 	write := func(p, c string) {
 		must.NoError(os.WriteFile(filepath.Join(work, p), []byte(c), 0o600), "write %s", p)
@@ -330,7 +312,6 @@ func TestServerGit(t *testing.T) {
 	out, err = push.CombinedOutput()
 	must.NoError(err, "git push: %s", out)
 
-	// The commit must be reachable in the remote repo.
 	verify := exec.Command(git, "rev-parse", "HEAD")
 	verify.Dir = work
 	head, err := verify.Output()
@@ -343,7 +324,6 @@ func TestServerGit(t *testing.T) {
 	is.True(bytes.Contains(out, head), "remote ref %q not pushed, show-ref = %q", head, out)
 }
 
-// hostPort splits a 127.0.0.1:port addr.
 func hostPort(t *testing.T, addr string) (string, string) {
 	t.Helper()
 	must := require.New(t)
@@ -352,7 +332,6 @@ func hostPort(t *testing.T, addr string) (string, string) {
 	return host, port
 }
 
-// currentHome returns the current user's home directory.
 func currentHome(t *testing.T) string {
 	t.Helper()
 	must := require.New(t)
@@ -361,8 +340,7 @@ func currentHome(t *testing.T) string {
 	return cur.HomeDir
 }
 
-// userCertFile writes a user key + certificate to a temp dir for real clients
-// and returns the path to the private key (scp -i).
+// Returns the path to the private key (scp -i).
 func userCertFile(t *testing.T, ca testCA) string {
 	t.Helper()
 	must := require.New(t)

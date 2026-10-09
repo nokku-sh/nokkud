@@ -14,15 +14,11 @@ import (
 )
 
 const (
-	// maxTotalSpace limits the total space used by recordings.
 	maxTotalSpace = 1 << 30
-	// maxAge sets the retention period.
-	maxAge = 30 * 24 * time.Hour
+	maxAge        = 30 * 24 * time.Hour
 )
 
-// enforceRetention removes recordings older than maxAge, then the oldest ones
-// while the rest exceeds maxTotalSpace. Uploaded recordings are gone already,
-// so whatever it removes never reached the backend.
+// Uploaded recordings are gone already, so whatever this removes never reached the backend.
 func enforceRetention() error {
 	recordsDir := paths.RecordsDir()
 	entries, err := os.ReadDir(recordsDir)
@@ -75,9 +71,7 @@ func dropPending(dir, name, reason string) {
 	}
 }
 
-// recordingPattern builds a timestamped [os.CreateTemp] pattern. The session
-// ID correlates the recording with its audit events and is sanitized like the
-// label, so it can never smuggle a path separator in.
+// The session ID is sanitized like the label, so it can never smuggle a path separator in.
 func recordingPattern(now time.Time, safeLabel, sessionID string) string {
 	parts := []string{now.Format("20060102T150405Z"), safeLabel}
 	if sessionID != "" {

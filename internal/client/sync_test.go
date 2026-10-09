@@ -25,8 +25,7 @@ import (
 	"github.com/nokku-sh/nokkud/internal/state"
 )
 
-// fakeBackend answers a sync with one grant under ca, and refuses to sign
-// host certificates, like a backend whose CA was deactivated.
+// fakeBackend refuses to sign host certificates, like a backend whose CA was deactivated.
 type fakeBackend struct {
 	nokkuv1connect.UnimplementedDaemonControlServiceHandler
 
@@ -70,7 +69,6 @@ func newTestCAKey(t *testing.T) string {
 	return string(ssh.MarshalAuthorizedKey(key))
 }
 
-// newSyncClient wires a client to backend with a real sshd behind it.
 func newSyncClient(t *testing.T, backend *fakeBackend) *Client {
 	t.Helper()
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
@@ -107,9 +105,7 @@ func newSyncClient(t *testing.T, backend *fakeBackend) *Client {
 	}
 }
 
-// TestSyncAppliesStateWithoutHostCert is the revoke that must not get stuck:
-// a new CA whose host certificate cannot be signed still replaces the trusted
-// CA and the principals. The certificate is the watcher's job.
+// The revoke that must not get stuck: a new CA whose host certificate cannot be signed still replaces trust.
 func TestSyncAppliesStateWithoutHostCert(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -148,8 +144,7 @@ func TestSyncAppliesStateWithoutHostCert(t *testing.T) {
 	is.Equal([]string{"subject-1"}, loaded.CertPrincipals("deploy"))
 }
 
-// An approval that is taken back must not leave the host serving what it
-// synced while it was approved.
+// An approval that is taken back must not leave the host serving what it synced while approved.
 func TestSyncPendingDropsTrust(t *testing.T) {
 	backend := &fakeBackend{ca: newTestCAKey(t)}
 	c := newSyncClient(t, backend)

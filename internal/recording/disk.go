@@ -8,8 +8,6 @@ import (
 // minFreeDisk leaves room for the system, small cloud disks rarely have more.
 const minFreeDisk = 512 << 20
 
-// checkDiskSpace errors when fewer than minFreeDisk bytes are free on path's
-// filesystem, so recording bails before filling the disk.
 func checkDiskSpace(path string) error {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {

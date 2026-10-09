@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// FuzzSignalByName checks RFC 4254 signal name resolution: every accepted
-// name maps to a concrete signal, and a signal never maps back to nothing.
 func FuzzSignalByName(f *testing.F) {
 	for name := range sshSignals {
 		f.Add(name)
@@ -36,8 +34,6 @@ func FuzzSignalByName(f *testing.F) {
 	})
 }
 
-// FuzzExitCodeToU32 checks exit status encoding: in-range codes pass
-// through, anything outside 0..255 collapses to 1.
 func FuzzExitCodeToU32(f *testing.F) {
 	f.Add(0)
 	f.Add(1)
@@ -63,8 +59,6 @@ func FuzzExitCodeToU32(f *testing.F) {
 	})
 }
 
-// FuzzAllowedEnv checks the client environment whitelist admits only the
-// documented locale/terminal variables.
 func FuzzAllowedEnv(f *testing.F) {
 	f.Add("TERM")
 	f.Add("LC_ALL")
@@ -87,8 +81,6 @@ func FuzzAllowedEnv(f *testing.F) {
 	})
 }
 
-// FuzzSetEnv checks env entries are deduplicated by key: after setting the
-// same key twice, exactly one entry exists and it holds the last value.
 func FuzzSetEnv(f *testing.F) {
 	f.Add("TERM", "xterm")
 	f.Add("LC_MESSAGES", "de_DE.UTF-8")

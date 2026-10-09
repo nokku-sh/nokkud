@@ -16,8 +16,6 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
-// agentForwardedSession starts a server with agent forwarding enabled, dials
-// it, and returns a session with the client-side agent forwarded.
 func agentForwardedSession(t *testing.T, ca testCA) *ssh.Session {
 	t.Helper()
 	must := require.New(t)
@@ -32,8 +30,7 @@ func agentForwardedSession(t *testing.T, ca testCA) *ssh.Session {
 	must.NoError(err)
 	t.Cleanup(func() { _ = client.Close() })
 
-	// Client side: serve auth-agent@openssh.com channels from an in-memory
-	// agent that holds one key.
+	// Client side: an in-memory agent that holds one key serves the auth-agent@openssh.com channels.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	must.NoError(err)
 	keyring := agent.NewKeyring()
@@ -47,48 +44,36 @@ func agentForwardedSession(t *testing.T, ca testCA) *ssh.Session {
 	return sess
 }
 
-// TestServerAgentForwarding verifies ssh -A. A session sees SSH_AUTH_SOCK and
-// can reach the client's agent through it.
 func TestServerAgentForwarding(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
 	sess := agentForwardedSession(t, ca)
 
-	// The session must see SSH_AUTH_SOCK set.
 	out, err := sess.Output("echo $SSH_AUTH_SOCK")
 	must.NoError(err)
 	is.NotEmpty(out, "SSH_AUTH_SOCK not set in session")
 	t.Logf("SSH_AUTH_SOCK=%s", out)
 }
 
-// TestServerAgentForwardingKeyList exercises the full agent protocol. The
-// session opens the socket and lists keys from the client's agent.
 func TestServerAgentForwardingKeyList(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
 	ca := newTestCA(t)
 	sess := agentForwardedSession(t, ca)
 
-	// Run a helper (this test binary, re-entered) that connects to the agent
-	// socket and prints the key count. The helper-activation flag is passed via
-	// the shell environment, not an env request: the daemon's env whitelist
-	// (correctly) refuses GO_* variables from clients.
+	// The helper flag goes through the shell, the daemon's env whitelist refuses GO_* from clients.
 	helper := "GO_WANT_AGENT_HELPER_PROCESS=1 " + helperProcessCommand(t, "agent")
 	out, err := sess.Output(helper)
 	must.NoError(err, "agent helper: %s", out)
 	is.Equal("keys=1\n", string(out))
 }
 
-// helperProcessCommand returns a shell command that re-enters the test binary
-// as the named helper.
 func helperProcessCommand(t *testing.T, name string) string {
 	t.Helper()
 	return fmt.Sprintf("%s -test.run=TestAgentHelperProcess -- %s", sshdTestBinary(t), name)
 }
 
-// sshdTestBinary returns the path of the running test binary so it can be
-// re-entered as a subprocess.
 func sshdTestBinary(t *testing.T) string {
 	t.Helper()
 	must := require.New(t)
@@ -97,8 +82,7 @@ func sshdTestBinary(t *testing.T) string {
 	return bin
 }
 
-// TestAgentHelperProcess re-enters the test binary as an agent client. It
-// connects to $SSH_AUTH_SOCK, lists the agent keys, and prints their count.
+// Not a test: the binary re-entered as an agent client that prints the key count.
 func TestAgentHelperProcess(_ *testing.T) {
 	if os.Getenv("GO_WANT_AGENT_HELPER_PROCESS") != "1" {
 		return
@@ -124,8 +108,6 @@ func TestAgentHelperProcess(_ *testing.T) {
 	os.Exit(0)
 }
 
-// TestServerAgentForwardingDisabled verifies agent forwarding is rejected when
-// AllowAgentForwarding is off.
 func TestServerAgentForwardingDisabled(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -144,8 +126,6 @@ func TestServerAgentForwardingDisabled(t *testing.T) {
 	is.Error(err, "agent forwarding unexpectedly allowed")
 }
 
-// TestServerAgentForwardingInterop drives ssh -A with the real OpenSSH
-// client. SSH_AUTH_SOCK is exposed and a real ssh-add sees the agent.
 func TestServerAgentForwardingInterop(t *testing.T) {
 	if !isTestBinary() {
 		t.Skip("requires the test binary on PATH")
@@ -174,16 +154,13 @@ func TestServerAgentForwardingInterop(t *testing.T) {
 	must.NoError(err)
 	defer client.Close()
 
-	// Client side serves the agent for this connection.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	must.NoError(err)
 	keyring := agent.NewKeyring()
 	must.NoError(keyring.Add(agent.AddedKey{PrivateKey: priv}))
 	must.NoError(agent.ForwardToAgent(client, keyring))
 
-	// The real ssh client opens the session with -A and runs ssh-add -L.
-	// It forwards its own agent, so a dedicated one is started and loaded
-	// with a key: CI runners have no agent and would silently disable -A.
+	// ssh forwards its own agent, so one is started here. CI runners have none and would silently drop -A.
 	sock, stopAgent := testAgent(t)
 	defer stopAgent()
 	agentEnv := append(os.Environ(), "SSH_AUTH_SOCK="+sock)

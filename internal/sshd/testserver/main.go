@@ -1,5 +1,4 @@
-// Command testserver runs the embedded SSH server headless for the interop
-// tests. It is built by internal/sshd/interop_test.go and is not shipped.
+// Command testserver is built by internal/sshd/interop_test.go for the interop tests. It is not shipped.
 package main
 
 import (
@@ -27,8 +26,7 @@ func main() {
 	allowNonRoot := flag.Bool("allow-nonroot", false, "run as non-root, sessions restricted to this account")
 	flag.Parse()
 
-	// Mirror the daemon's sftp-server entrypoint, which the embedded server
-	// re-execs as the target user for SFTP sessions.
+	// The embedded server re-execs this entrypoint as the target user for SFTP sessions.
 	if flag.Arg(0) == "sftp-server" {
 		if flag.NArg() != 2 {
 			fail("usage: testserver sftp-server <home>")
@@ -63,8 +61,7 @@ func main() {
 	policy.Record = false
 	opts := sshd.Options{Principals: cache.CertPrincipals, Policy: policy}
 	if *allowNonRoot {
-		// Without privilege dropping every session runs as this account, so
-		// only this account may log in.
+		// Without privilege dropping every session runs as this account, so only this account may log in.
 		self, userErr := user.Current()
 		if userErr != nil {
 			fail(userErr.Error())

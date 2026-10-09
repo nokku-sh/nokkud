@@ -14,8 +14,7 @@ import (
 	"github.com/nokku-sh/nokkud/internal/sysutil"
 )
 
-// syncDaemon pulls principals, config and CA from the backend and applies
-// them. A failed sync leaves the cache as it was, so auth keeps working.
+// A failed sync leaves the cache as it was, so auth keeps working.
 func (c *Client) syncDaemon(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, syncTimeout)
 	defer cancel()
@@ -30,8 +29,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 
 	switch res.GetStatus() {
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_REJECTED:
-		// Drop the enrollment on disk only. The in-memory config is read
-		// concurrently and the process exits right after.
+		// Drop the enrollment on disk only. The in-memory config is read concurrently and the process exits.
 		c.cache.Clear()
 		if err = c.cache.Save(); err != nil {
 			slog.Error("persist cleared cache on rejection", "error", err)
@@ -42,8 +40,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 		return errDaemonRejected
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_ACCEPTED:
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_PENDING:
-		// A pending answer carries no principals and no CA. Applying it drops
-		// what an earlier approval synced, so taking the approval back works.
+		// A pending answer carries no principals and no CA, so applying it takes an earlier approval back.
 	case nokkuv1.DaemonStatus_DAEMON_STATUS_UNSPECIFIED:
 		return nil
 	}
@@ -58,9 +55,7 @@ func (c *Client) syncDaemon(ctx context.Context) error {
 	c.srv.SetTrust(res.GetCaPublicKey(), res.GetRetiredCaKeys())
 	c.srv.DropRevoked()
 
-	// Users verify the host against the same CA, so a new one needs a new
-	// host certificate. The watcher signs it. A failure there must never hold
-	// back the state above, a revoke has to land whatever the CA does.
+	// A new CA needs a new host certificate. The watcher signs it so a failure never holds back a revoke.
 	if res.GetCaPublicKey() != previousCA {
 		select {
 		case c.renew <- struct{}{}:
@@ -90,8 +85,6 @@ func (c *Client) signHostCert(ctx context.Context, pub []byte) (string, error) {
 	return res.GetSignedCertificate(), nil
 }
 
-// sshEndpoints pairs each private IP with the SSH port, so the backend knows
-// how to reach this daemon directly.
 func (c *Client) sshEndpoints() []string {
 	port := strconv.Itoa(int(c.sshAddr.Port()))
 	var endpoints []string

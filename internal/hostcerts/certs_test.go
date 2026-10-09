@@ -36,8 +36,6 @@ func newTestCA(t testing.TB) testCA {
 	return testCA{pub: pub, signer: signer}
 }
 
-// signHostCert signs a host certificate for hostPub with the given validity
-// window and returns its authorized_keys text.
 func signHostCert(
 	t testing.TB,
 	ca testCA,
@@ -59,8 +57,6 @@ func signHostCert(
 	return ssh.MarshalAuthorizedKey(cert)
 }
 
-// newHostPub returns a fresh ECDSA P-256 host public key, matching the
-// identity the daemon now uses.
 func newHostPub(t testing.TB) ssh.PublicKey {
 	t.Helper()
 	must := require.New(t)
@@ -71,8 +67,6 @@ func newHostPub(t testing.TB) ssh.PublicKey {
 	return pub
 }
 
-// writeHostKey drops the host public key into dir so the certificate logic
-// finds it and returns the key for signing. Only the public half is read.
 func writeHostKey(t testing.TB, dir string) ssh.PublicKey {
 	t.Helper()
 	must := require.New(t)
@@ -283,13 +277,10 @@ func TestRenewHostCertsSignFailure(t *testing.T) {
 	is.False(renewed)
 	is.Equal(1, calls)
 
-	// Nothing must have landed on disk.
 	_, statErr := os.Stat(paths.HostKeyCert())
 	must.ErrorIs(statErr, os.ErrNotExist, "failed renewal must not write a certificate")
 }
 
-// TestRenewHostCertsWithoutCA verifies nothing is signed before a sync told
-// the daemon which CA to trust.
 func TestRenewHostCertsWithoutCA(t *testing.T) {
 	dir := t.TempDir()
 	writeHostKey(t, dir)
@@ -304,8 +295,6 @@ func TestRenewHostCertsWithoutCA(t *testing.T) {
 	assert.False(t, renewed)
 }
 
-// TestRenewHostCertsFollowsCA verifies a valid certificate is left alone, and
-// re-signed once the daemon trusts another CA than the one that signed it.
 func TestRenewHostCertsFollowsCA(t *testing.T) {
 	is := assert.New(t)
 	must := require.New(t)
@@ -334,8 +323,7 @@ func TestRenewHostCertsFollowsCA(t *testing.T) {
 	must.NoError(err, "renew under the same CA")
 	is.False(renewed, "a valid certificate was rewritten")
 
-	// The backend still signs with the old key: the certificate is refused
-	// and the one on disk stays.
+	// The backend still signs with the old key, so the certificate is refused and the one on disk stays.
 	renewed, err = RenewHostCerts(context.Background(), "target-1", nextKey, sign)
 	must.Error(err, "a certificate from another CA than the trusted one was stored")
 	is.False(renewed)

@@ -1,4 +1,3 @@
-// Package sysutil reports facts about the host: its users, addresses and metadata.
 package sysutil
 
 import (
@@ -9,8 +8,7 @@ import (
 	"strings"
 )
 
-// noisePrefixes are virtual interfaces that never make useful SSH endpoints:
-// container, VM, bridge, and Kubernetes CNI plumbing.
+// Container, VM, bridge and Kubernetes CNI plumbing never makes a useful SSH endpoint.
 var noisePrefixes = []string{
 	"docker", "veth", "br-", "virbr", "vmnet",
 	"vboxnet", "vnic", "vethernet",
@@ -22,11 +20,9 @@ var noisePrefixes = []string{
 	"podman", "containerd",
 }
 
-// tunnelPrefixes are mesh/point-to-point VPN interfaces, reported deliberately:
-// a WireGuard or Tailscale address is often the best way to reach the server.
+// A WireGuard or Tailscale address is often the best way to reach the server.
 var tunnelPrefixes = []string{"wg", "tun", "tap", "utun", "ppp"}
 
-// Metadata returns the static host description sent on every daemon sync.
 func Metadata() map[string]string {
 	hostname, _ := os.Hostname()
 	return map[string]string{
@@ -36,8 +32,6 @@ func Metadata() map[string]string {
 	}
 }
 
-// PrivateIPs returns up to two usable IPv4 addresses from physical NICs and
-// known mesh VPN tunnels, skipping loopback and container plumbing.
 func PrivateIPs() []string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -50,8 +44,7 @@ func PrivateIPs() []string {
 			continue
 		}
 
-		// Point-to-point links are usually VPN tunnels, so only known mesh
-		// interfaces make useful endpoints.
+		// Point-to-point links are usually VPN tunnels, so only known mesh interfaces make useful endpoints.
 		if i.Flags&net.FlagPointToPoint != 0 && !hasAnyPrefix(i.Name, tunnelPrefixes) {
 			continue
 		}

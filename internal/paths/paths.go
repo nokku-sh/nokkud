@@ -1,4 +1,3 @@
-// Package paths resolves the filesystem locations nokkud owns.
 package paths
 
 import (
@@ -32,18 +31,13 @@ func CacheFile() string { return filepath.Join(dataDir(), cacheFilename) }
 
 func SignerStateFile() string { return filepath.Join(dataDir(), signerStateFilename) }
 
-// HostSignerStateFile is the tpm.Signer state backing the host identity.
 func HostSignerStateFile() string { return filepath.Join(dataDir(), hostSignerFilename) }
 
-// HostKeyPub is the public half of the host identity, signed into a host
-// certificate by the sync. The key is ECDSA P-256 in both storage modes.
 func HostKeyPub() string { return filepath.Join(dataDir(), hostKeyName+".pub") }
 
-// HostKeyCert is the host certificate the embedded SSH server presents.
 func HostKeyCert() string { return filepath.Join(dataDir(), hostKeyName+"-cert.pub") }
 
-// Verify creates the owned directories with 0700 perms. MkdirAll leaves an
-// existing directory's mode alone, so the mode is applied explicitly.
+// Verify chmods explicitly, MkdirAll leaves an existing directory's mode alone.
 func Verify() error {
 	dir := dataDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -59,7 +53,6 @@ func Verify() error {
 	return nil
 }
 
-// Cleanup removes the application state owned by these paths.
 func Cleanup() {
 	if err := os.RemoveAll(dataDir()); err != nil {
 		slog.Error("remove data directory", "error", err)

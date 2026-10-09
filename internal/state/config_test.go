@@ -105,7 +105,6 @@ func TestConfigFileNeverContainsPaths(t *testing.T) {
 	data, err := os.ReadFile(paths.ConfigFile())
 	must.NoError(err)
 
-	// The data dir must not leak into the serialized enrollment state,
-	// which is shared with the control plane.
+	// The enrollment state is shared with the control plane, the data dir must not leak into it.
 	is.NotContains(string(data), dataDir)
 }

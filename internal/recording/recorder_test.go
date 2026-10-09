@@ -17,8 +17,6 @@ import (
 	"github.com/nokku-sh/nokkud/internal/paths"
 )
 
-// newRecordsDir points the daemon paths at a scratch dir and creates the
-// recordings directory inside it.
 func newRecordsDir(t *testing.T) string {
 	t.Helper()
 	t.Setenv("NOKKUD_DATA_DIR", t.TempDir())
@@ -28,9 +26,6 @@ func newRecordsDir(t *testing.T) string {
 	return dir
 }
 
-// TestRecorderCorrelatesSessionID verifies a recording embeds its session ID
-// in both the filename and the asciicast header so it can be matched to the
-// session's audit events.
 func TestRecorderCorrelatesSessionID(t *testing.T) {
 	recordsDir := newRecordsDir(t)
 	is := assert.New(t)
@@ -59,8 +54,6 @@ func TestRecorderCorrelatesSessionID(t *testing.T) {
 	is.Equal(sessionID, hdr["session_id"])
 }
 
-// TestRecorderV3Schema verifies the file carries the v3 term block in the
-// header and an exit event as the last line of the event stream.
 func TestRecorderV3Schema(t *testing.T) {
 	recordsDir := newRecordsDir(t)
 	is := assert.New(t)
@@ -113,8 +106,6 @@ type eventLine struct {
 	Data     []byte
 }
 
-// recRecordAndReadEvents records the events into rec, closes it, and hands
-// the decoded event lines to check.
 func recRecordAndReadEvents(
 	t *testing.T,
 	recordsDir string,
@@ -151,9 +142,6 @@ func recRecordAndReadEvents(
 	check(events)
 }
 
-// TestRecorderKeepsSplitCharacters verifies a multi-byte character that two
-// reads split is recorded whole, not as replacement runes. A character the
-// stream never completes is still recorded.
 func TestRecorderKeepsSplitCharacters(t *testing.T) {
 	recordsDir := newRecordsDir(t)
 	rec, err := New(Options{Width: 80, Height: 24, SessionID: "s1"})
@@ -175,9 +163,6 @@ func TestRecorderKeepsSplitCharacters(t *testing.T) {
 	})
 }
 
-// TestRecorderNoHTMLEscape verifies event data is marshaled without HTML
-// escapes, so terminal output like pipes/angles stays readable in the raw
-// cast instead of `\u003c`.
 func TestRecorderNoHTMLEscape(t *testing.T) {
 	recordsDir := newRecordsDir(t)
 	is := assert.New(t)
@@ -206,10 +191,7 @@ func TestRecorderNoHTMLEscape(t *testing.T) {
 	is.NotContains(raw, `\u0026`)
 }
 
-// TestRecorderEscapedUnicodeRoundTrips verifies event data containing a
-// literal `\u003c`-style sequence survives marshaling byte for byte. The
-// previous HTML-unescape pass corrupted these into invalid JSON, which broke
-// parsing of the whole cast.
+// A previous HTML-unescape pass turned a literal < into invalid JSON and broke the whole cast.
 func TestRecorderEscapedUnicodeRoundTrips(t *testing.T) {
 	recordsDir := newRecordsDir(t)
 	is := assert.New(t)
@@ -237,10 +219,6 @@ func mustReadAll(t *testing.T, r io.Reader) []byte {
 	return data
 }
 
-// TestRecorderFlushesWithoutClose verifies events reach disk while the
-// session is still running: the recorder flushes on a bounded interval, so
-// a crash loses only the tail, never everything since the last explicit
-// flush.
 func TestRecorderFlushesWithoutClose(t *testing.T) {
 	recordsDir := newRecordsDir(t)
 	is := assert.New(t)
@@ -253,8 +231,7 @@ func TestRecorderFlushesWithoutClose(t *testing.T) {
 	rec.RecordOutput([]byte("first"))
 	rec.RecordOutput([]byte("second"))
 
-	// The flush interval is 100ms, give the recorder generous slack. The
-	// file must already contain the events even though Close never ran.
+	// Generous slack over the flush interval. The file must hold the events though Close never ran.
 	time.Sleep(3 * maxFlushInterval)
 
 	entries, err := os.ReadDir(recordsDir)
@@ -269,9 +246,7 @@ func TestRecorderFlushesWithoutClose(t *testing.T) {
 	defer gz.Close()
 
 	data, err := io.ReadAll(gz)
-	// An unclosed recording has no gzip footer yet, so the reader reports
-	// the data it got plus io.ErrUnexpectedEOF. That is the intended crash
-	// behavior: everything up to the last flush stays readable.
+	// An unclosed recording has no gzip footer, so ErrUnexpectedEOF is the intended crash behavior.
 	is.True(err == nil || errors.Is(err, io.ErrUnexpectedEOF),
 		"read recording before close: %v", err)
 	body := string(data)
@@ -279,9 +254,7 @@ func TestRecorderFlushesWithoutClose(t *testing.T) {
 	is.Contains(body, "second")
 }
 
-// New returns (nil, nil) when recording is unavailable (e.g. low disk
-// space). A nil Recorder must be a safe no-op: sessions rely on it and
-// must never panic, including via interface-wrapped nil receivers.
+// New returns a nil Recorder when recording is unavailable, and sessions rely on it being a safe no-op.
 func TestNilRecorderIsNoOp(t *testing.T) {
 	t.Parallel()
 
@@ -292,15 +265,12 @@ func TestNilRecorderIsNoOp(t *testing.T) {
 	rec.Close()
 	rec.Close()
 
-	// Through an interface, as the resize watcher receives it. Note the
-	// typed-nil trap: this interface is non-nil even though rec is, which
-	// is exactly why the methods themselves must be nil-safe.
+	// The typed-nil trap: this interface is non-nil though rec is, so the methods themselves must be nil-safe.
 	var iface interface{ RecordResize(int, int) } = rec
 	iface.RecordResize(80, 24)
 }
 
-// slowSink blocks in Close until released, standing in for an upload stream
-// waiting on the backend.
+// slowSink blocks in Close until released, like an upload stream waiting on the backend.
 type slowSink struct {
 	release chan struct{}
 	done    chan struct{}
@@ -314,9 +284,6 @@ func (s *slowSink) Close() error {
 	return nil
 }
 
-// TestRecorderCloseDoesNotBlockOnSink verifies the session path is not held
-// waiting for the upload sink. Close must complete the local file immediately
-// and let the sink drain off the caller's goroutine.
 func TestRecorderCloseDoesNotBlockOnSink(t *testing.T) {
 	recordsDir := newRecordsDir(t)
 	is := assert.New(t)

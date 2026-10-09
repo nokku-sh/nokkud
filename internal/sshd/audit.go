@@ -2,21 +2,18 @@ package sshd
 
 import "golang.org/x/crypto/ssh"
 
-// Security events go to the log as "audit" lines, and from there to journald
-// or the service's log file. Operators filter on the type, keep the names
-// stable.
+// Operators filter the "audit" log lines on the type, keep the names stable.
 type eventType string
 
 const (
-	eventAuthSuccess   eventType = "auth_success"
-	eventAuthFailure   eventType = "auth_failure"
-	eventSessionStart  eventType = "session_start"
-	eventSessionEnd    eventType = "session_end"
-	eventCommand       eventType = "command"
-	eventSubsystem     eventType = "subsystem"
-	eventForward       eventType = "forward"
-	eventRemoteForward eventType = "remote_forward"
-	// eventRecordingDegraded marks a session that is not fully recorded.
+	eventAuthSuccess       eventType = "auth_success"
+	eventAuthFailure       eventType = "auth_failure"
+	eventSessionStart      eventType = "session_start"
+	eventSessionEnd        eventType = "session_end"
+	eventCommand           eventType = "command"
+	eventSubsystem         eventType = "subsystem"
+	eventForward           eventType = "forward"
+	eventRemoteForward     eventType = "remote_forward"
 	eventRecordingDegraded eventType = "recording_degraded"
 )
 
@@ -42,7 +39,6 @@ func connEvent(conn ssh.ConnMetadata, typ eventType) auditEvent {
 	}
 }
 
-// emit logs one event. Empty fields are left out.
 func (s *Server) emit(ev auditEvent) {
 	args := []any{"type", string(ev.Type)}
 	for _, field := range [][2]string{

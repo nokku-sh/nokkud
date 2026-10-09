@@ -1,6 +1,5 @@
 #!/bin/sh
-# Installs nokkud from the release tarball. Puts down the files a package
-# ships, then runs the package's own post-install step.
+# Puts down the files a package ships, then runs the package's own post-install step.
 set -eu
 
 if [ "$(id -u)" -ne 0 ]; then

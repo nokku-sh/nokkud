@@ -6,10 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-// FuzzToSnakeCase checks the invariants the recorder relies on: the result
-// must never be empty, must be a single filename component (no separators,
-// no traversal), and must fit NAME_MAX so recording files can always be
-// created.
+// The result must be a non-empty single filename component that fits NAME_MAX.
 func FuzzToSnakeCase(f *testing.F) {
 	f.Add("")
 	f.Add("untitled")

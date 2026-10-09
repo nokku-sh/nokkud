@@ -8,9 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// openPTY opens a pty pair. Every ioctl on the master goes through
-// ptyControl, so the master stays in non-blocking mode and closing it
-// interrupts a pending read.
+// Every ioctl on the master goes through ptyControl, so it stays non-blocking and a close interrupts a read.
 func openPTY() (ptmx, tty *os.File, err error) {
 	if ptmx, err = os.OpenFile("/dev/ptmx", os.O_RDWR, 0); err != nil {
 		return nil, nil, err
@@ -32,8 +30,7 @@ func openPTY() (ptmx, tty *os.File, err error) {
 	return ptmx, tty, nil
 }
 
-// ptyControl runs fn on f's descriptor. Unlike Fd, it does not put f in
-// blocking mode.
+// Unlike Fd, this does not put f in blocking mode.
 func ptyControl(f *os.File, fn func(fd int) error) error {
 	rc, err := f.SyscallConn()
 	if err != nil {
@@ -45,8 +42,6 @@ func ptyControl(f *os.File, fn func(fd int) error) error {
 	return err
 }
 
-// setWinsize resizes the pty, clamping a client's window size to what the tty
-// can hold.
 func setWinsize(ptmx *os.File, cols, rows uint32) error {
 	return ptyControl(ptmx, func(fd int) error {
 		return unix.IoctlSetWinsize(fd, unix.TIOCSWINSZ, &unix.Winsize{
@@ -56,8 +51,7 @@ func setWinsize(ptmx *os.File, cols, rows uint32) error {
 	})
 }
 
-// echoEnabled reports whether the pty currently has ECHO set. Password
-// prompts turn echo off. Fails closed so secrets cannot leak.
+// Password prompts turn echo off. Fails closed so secrets cannot leak.
 func echoEnabled(ptmx *os.File) bool {
 	echo := false
 	_ = ptyControl(ptmx, func(fd int) error {

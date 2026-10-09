@@ -18,8 +18,6 @@ const (
 	agentChannelType = "auth-agent@openssh.com"
 )
 
-// agentRequest handles the client's auth-agent-req@openssh.com request
-// (ssh -A), wiring the session's agent socket to the client's agent.
 func (sess *session) agentRequest(req *ssh.Request) bool {
 	if sess.handled {
 		_ = req.Reply(false, nil)
@@ -45,8 +43,7 @@ func (sess *session) agentRequest(req *ssh.Request) bool {
 	return true
 }
 
-// newAgentSock creates a Unix socket only the session user can reach. The
-// MkdirTemp dir is root-owned and 0700, so both dir and socket get chowned.
+// The MkdirTemp dir is root-owned and 0700, so both dir and socket get chowned to the session user.
 func newAgentSock(sysUser *account) (ln net.Listener, sock string, err error) {
 	dir, err := os.MkdirTemp("", "auth-agent")
 	if err != nil {
@@ -69,8 +66,7 @@ func newAgentSock(sysUser *account) (ln net.Listener, sock string, err error) {
 		return ln, sock, nil
 	}
 	uid, gid := int(sysUser.UID), int(sysUser.GID)
-	// The socket goes first, while the dir is still root-only. Once the user
-	// owns the dir they could swap the socket for a symlink.
+	// The socket goes first, while the dir is still root-only. A user owning the dir could swap in a symlink.
 	if err = os.Lchown(sock, uid, gid); err != nil {
 		return nil, "", fmt.Errorf("chown agent socket: %w", err)
 	}
@@ -83,8 +79,6 @@ func newAgentSock(sysUser *account) (ln net.Listener, sock string, err error) {
 	return ln, sock, nil
 }
 
-// serveAgent relays agent socket connections to the client's agent for the
-// lifetime of the session.
 func (sess *session) serveAgent() {
 	defer os.RemoveAll(filepath.Dir(sess.agentSock))
 	stop := context.AfterFunc(sess.ctx, func() { _ = sess.agentLn.Close() })

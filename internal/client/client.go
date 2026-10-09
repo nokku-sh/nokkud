@@ -1,4 +1,3 @@
-// Package client implements the daemon's connection to the Nokku backend.
 package client
 
 import (
@@ -31,14 +30,11 @@ import (
 )
 
 const (
-	dialTimeout   = 30 * time.Second
-	enrollTimeout = 30 * time.Second
-	syncTimeout   = 15 * time.Second
-	// retryUploadsEvery is how often recordings the backend missed are
-	// uploaded again.
+	dialTimeout       = 30 * time.Second
+	enrollTimeout     = 30 * time.Second
+	syncTimeout       = 15 * time.Second
 	retryUploadsEvery = 5 * time.Minute
-	// retryUploadsWhenFull is the wait once the backend said the workspace
-	// is full. Every refused upload is a failed call in its audit log.
+	// A full workspace refuses every upload, and each one is a failed call in its audit log.
 	retryUploadsWhenFull = time.Hour
 )
 
@@ -62,7 +58,6 @@ type Client struct {
 	renew chan struct{}
 }
 
-// New builds the backend clients and enrolls when enrollToken is set.
 func New(
 	ctx context.Context,
 	cache *state.Cache,
@@ -78,8 +73,7 @@ func New(
 	if err != nil {
 		return nil, err
 	}
-	// The identity is bound to the enrollment, so only a new enrollment may
-	// replace a changed one. It registers the new key anyway.
+	// The identity is bound to the enrollment, so only a new enrollment may recreate it.
 	proofer, err := dpopclient.NewProofer(tpm.SignerOptions{
 		Salt:       []byte(signerSalt),
 		StatePath:  paths.SignerStateFile(),
@@ -107,8 +101,7 @@ func New(
 	return c, nil
 }
 
-// enroll trades the token for a daemon session. The DPoP proof is unbound,
-// the server binds the issued session to the daemon's key.
+// The DPoP proof is unbound, the server binds the issued session to the daemon's key.
 func (c *Client) enroll(ctx context.Context, token string) error {
 	ctx, cancel := context.WithTimeout(ctx, enrollTimeout)
 	defer cancel()
@@ -119,8 +112,7 @@ func (c *Client) enroll(ctx context.Context, token string) error {
 	if res.GetTargetId() == "" || res.GetId() == "" || res.GetAccessToken() == "" {
 		return errors.New("enroll: backend returned an incomplete enrollment")
 	}
-	// A re-enrollment may move the host to another Nokku, so nothing the
-	// old one trusted may survive until the first sync.
+	// A re-enrollment may move the host to another Nokku, so nothing the old one trusted may survive.
 	c.cache.Clear()
 	if err = os.Remove(paths.HostKeyCert()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("enroll: drop previous host certificate: %w", err)
@@ -135,13 +127,10 @@ func (c *Client) enroll(ctx context.Context, token string) error {
 	return c.cache.Save()
 }
 
-// RecordingSink streams one session recording to the backend.
 func (c *Client) RecordingSink(ctx context.Context, sessionID, username, principal string) io.WriteCloser {
 	return recording.NewUploader(ctx, c.ctl, sessionID, username, principal)
 }
 
-// retryUploads uploads recordings whose live upload never completed, such as
-// sessions recorded while the backend was down.
 func (c *Client) retryUploads(ctx context.Context) {
 	for {
 		err := recording.UploadPending(ctx, c.ctl)
@@ -156,7 +145,6 @@ func (c *Client) retryUploads(ctx context.Context) {
 	}
 }
 
-// uploadRetryWait is how long to wait after a round of pending uploads.
 func uploadRetryWait(err error) time.Duration {
 	if connect.CodeOf(err) == connect.CodeResourceExhausted {
 		return retryUploadsWhenFull
@@ -164,9 +152,6 @@ func uploadRetryWait(err error) time.Duration {
 	return retryUploadsEvery
 }
 
-// Run syncs, keeps the host cert fresh, and holds the control stream open
-// until ctx is done or the backend rejects the daemon. sshAddr is where srv
-// listens.
 func (c *Client) Run(ctx context.Context, srv *sshd.Server, sshAddr netip.AddrPort) error {
 	c.srv = srv
 	c.sshAddr = sshAddr
@@ -201,8 +186,7 @@ func (c *Client) Run(ctx context.Context, srv *sshd.Server, sshAddr netip.AddrPo
 		// A rejected stream may carry a fresh DPoP nonce for the next dial.
 		c.dpop.LearnFromError(err)
 
-		// Connect returns before the backend answers, so only a stream that
-		// stayed up proves the backend was reachable.
+		// Connect returns before the backend answers, so only a stream that stayed up proves it was reachable.
 		if time.Since(start) > 2*heartbeatInterval {
 			b.Reset()
 			warned = false
@@ -219,15 +203,13 @@ func (c *Client) Run(ctx context.Context, srv *sshd.Server, sshAddr netip.AddrPo
 			return nil
 		case <-time.After(next):
 		}
-		// A daemon deleted while it was offline gets no stream and so no
-		// poke. Only a sync tells it to stop.
+		// A daemon deleted while offline gets no stream and no poke, only a sync tells it to stop.
 		if errors.Is(c.syncDaemon(ctx), errDaemonRejected) {
 			return errDaemonRejected
 		}
 	}
 }
 
-// Unenroll removes this daemon's registration from the backend.
 func (c *Client) Unenroll(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()

@@ -5,7 +5,7 @@ import (
 	"syscall"
 )
 
-// sshSignals maps RFC 4254 signal names to OS signals.
+// RFC 4254 signal names.
 var sshSignals = map[string]os.Signal{
 	"ABRT": syscall.SIGABRT,
 	"ALRM": syscall.SIGALRM,
@@ -27,8 +27,7 @@ func signalByName(name string) (os.Signal, bool) {
 	return sig, ok
 }
 
-// processSignal reports the terminating signal and its shell exit code
-// (128+n). ok is false on a normal exit, where the caller sends exit-status.
+// code is the shell exit code (128+n). ok is false on a normal exit, where the caller sends exit-status.
 func processSignal(st *os.ProcessState) (name string, code int, ok bool) {
 	if st == nil {
 		return "", 0, false

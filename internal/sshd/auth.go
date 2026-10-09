@@ -19,7 +19,6 @@ func (s *Server) trustedCA(key ssh.PublicKey) bool {
 	return s.trustedCAWire(string(key.Marshal()))
 }
 
-// trustedCAWire takes the CA key in its wire encoding.
 func (s *Server) trustedCAWire(wire string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -30,9 +29,7 @@ func (s *Server) trustedCAWire(wire string) bool {
 	return ok && time.Now().Before(until)
 }
 
-// SetTrust replaces the CAs a login may be signed by: the active one, and the
-// rolled-over ones the backend still trusts, each until its deadline. An
-// empty active key trusts no CA, an emergency rollover sends no retired key.
+// SetTrust with an empty active key trusts no CA. An emergency rollover sends no retired key.
 func (s *Server) SetTrust(active string, retiredKeys []*nokkuv1.RetiredCAKey) {
 	trusted := map[string]struct{}{}
 	if active != "" {
@@ -59,9 +56,7 @@ func (s *Server) SetTrust(active string, retiredKeys []*nokkuv1.RetiredCAKey) {
 	s.retiredCAs = retired
 }
 
-// publicKeyCallback authenticates a user certificate. Its principals each name
-// a subject, this server and an account, and one has to match the list synced
-// for the requested account as a whole string.
+// One certificate principal has to match the list synced for the requested account as a whole string.
 func (s *Server) publicKeyCallback(
 	conn ssh.ConnMetadata,
 	key ssh.PublicKey,
@@ -70,8 +65,7 @@ func (s *Server) publicKeyCallback(
 	if !ok {
 		return nil, s.deny(conn, errNoCertificates)
 	}
-	// CheckCert does not validate the cert type, so a host certificate from a
-	// shared or misconfigured CA would otherwise authenticate a user.
+	// CheckCert does not validate the cert type, so a host certificate from a shared CA could log in as a user.
 	if cert.CertType != ssh.UserCert {
 		return nil, s.deny(conn, fmt.Errorf("sshd: certificate has type %d, want user certificate", cert.CertType))
 	}
@@ -99,9 +93,7 @@ func (s *Server) publicKeyCallback(
 		)
 	}
 
-	// Built per-auth so a new trust applies to new connections immediately.
-	// x/crypto/ssh enforces the critical options, validity window, and CA
-	// signature.
+	// Built per auth so a new trust applies at once. CheckCert enforces critical options, validity and signature.
 	checker := ssh.CertChecker{
 		IsUserAuthority:          s.trustedCA,
 		SupportedCriticalOptions: []string{"force-command", "source-address"},
@@ -110,8 +102,7 @@ func (s *Server) publicKeyCallback(
 		return nil, s.deny(conn, err)
 	}
 
-	// CriticalOptions are enforced by the stack, Extensions by the session.
-	// A hand-built cert can have a nil Extensions map, which panics on write.
+	// The stack enforces CriticalOptions, the session Extensions. A nil Extensions map would panic on write.
 	perms := &ssh.Permissions{
 		CriticalOptions: maps.Clone(cert.CriticalOptions),
 		Extensions:      maps.Clone(cert.Extensions),
@@ -122,8 +113,7 @@ func (s *Server) publicKeyCallback(
 	perms.Extensions["nokku-principal"] = matched
 	// DropRevoked closes the connection once this CA is no longer trusted.
 	perms.Extensions["nokku-ca"] = string(cert.SignatureKey.Marshal())
-	// The key id is covered by the CA signature, so the session can trust it
-	// to tell a control-plane web session from a direct login.
+	// The CA signature covers the key id, so the session can trust it to tell a web session from a direct login.
 	perms.Extensions["nokku-cert-key-id"] = cert.KeyId
 	if fc := cert.CriticalOptions["force-command"]; fc != "" {
 		perms.Extensions["force-command"] = fc
@@ -134,10 +124,7 @@ func (s *Server) publicKeyCallback(
 // accountKey is where the login's local account sits in the permissions.
 const accountKey = "nokku-account"
 
-// verifiedPublicKey finishes the login once the client proved it holds the
-// key. publicKeyCallback also answers key queries, which prove nothing. The
-// local account is checked here and not per channel, so a missing account or
-// /etc/nologin stops forwards as well as sessions.
+// Runs once the client proved it holds the key. The account is checked here so nologin stops forwards too.
 func (s *Server) verifiedPublicKey(
 	conn ssh.ConnMetadata,
 	_ ssh.PublicKey,
@@ -159,8 +146,7 @@ func (s *Server) verifiedPublicKey(
 	return perms, nil
 }
 
-// certExt reports whether the certificate carries the named extension. Absent
-// means deny.
+// Absent means deny.
 func certExt(conn *ssh.ServerConn, name string) bool {
 	if conn == nil || conn.Permissions == nil {
 		return false
@@ -169,7 +155,6 @@ func certExt(conn *ssh.ServerConn, name string) bool {
 	return ok
 }
 
-// deny audits a rejected login, then returns err.
 func (s *Server) deny(conn ssh.ConnMetadata, err error) error {
 	ev := connEvent(conn, eventAuthFailure)
 	ev.Error = err.Error()

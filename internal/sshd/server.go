@@ -1,4 +1,3 @@
-// Package sshd implements the embedded SSH server.
 package sshd
 
 import (
@@ -23,25 +22,20 @@ import (
 const (
 	maxConns    = 100
 	maxStartups = 10
-	// maxSourceStartups caps one remote address, so a single peer cannot hold
-	// every pre-auth slot.
+	// One remote address cannot hold every pre-auth slot.
 	maxSourceStartups = 3
-	// maxChannels caps the channels one connection holds open, sessions and
-	// forwards alike.
+	// Per connection, sessions and forwards alike.
 	maxChannels      = 50
 	handshakeTimeout = 10 * time.Second
-	// aliveInterval is how often an idle client is probed. A probe left
-	// unanswered for three intervals drops the client, like OpenSSH.
+	// A probe left unanswered for three intervals drops the client, like OpenSSH.
 	aliveInterval = time.Minute
-	// acceptBackoff bounds the accept retry delay under fd exhaustion, so the
-	// loop does not spin a core and flood the log.
+	// Under fd exhaustion the accept loop would otherwise spin a core and flood the log.
 	acceptBackoff = 10 * time.Millisecond
 )
 
 var errBusy = errors.New("too many unauthenticated connections")
 
-// Policy is the backend-controlled part of the server config. It applies to
-// new sessions without a restart.
+// Policy is the backend-controlled part of the config. It applies to new sessions without a restart.
 type Policy struct {
 	Record               bool
 	AllowForwarding      bool
@@ -50,17 +44,14 @@ type Policy struct {
 	GatewayPorts bool
 }
 
-// DefaultPolicy applies until the backend sends a config, and to any field
-// the backend leaves unset.
+// DefaultPolicy also fills any field the backend leaves unset.
 var DefaultPolicy = Policy{Record: true, AllowForwarding: true, AllowAgentForwarding: true}
 
-// RecordingSink opens the upload stream for one session's recording. The ctx
-// outlives the session teardown.
+// RecordingSink gets a ctx that outlives the session teardown.
 type RecordingSink func(ctx context.Context, sessionID, username, principal string) io.WriteCloser
 
 type Options struct {
-	// Principals returns the certificate principals allowed to log in as
-	// username. They are compared as whole strings.
+	// Principals are compared as whole strings.
 	Principals func(username string) []string
 	// Log gets the audit events. Nil means the default logger.
 	Log           *slog.Logger
@@ -80,8 +71,7 @@ type Server struct {
 
 	// Limits live on the server so tests can shrink them.
 	conns chan struct{}
-	// Loopback has its own pre-auth budget, a local proxy puts every client
-	// behind that one address.
+	// Loopback has its own pre-auth budget, a local proxy puts every client behind that one address.
 	startups      chan struct{}
 	localStartups chan struct{}
 	maxChannels   int
@@ -94,8 +84,7 @@ type Server struct {
 	liveMu sync.Mutex
 	live   map[*ssh.ServerConn]struct{}
 
-	// The host key stays open as long as the server runs. A connection signs
-	// with it again on every rekey, long after its handshake.
+	// The host key stays open while the server runs, a connection signs with it again on every rekey.
 	hostKey    ssh.Signer
 	hostKeyDev io.Closer
 
@@ -105,8 +94,7 @@ type Server struct {
 	retiredCAs map[string]time.Time
 }
 
-// New loads the host key. The trusted CAs come from SetTrust, a server that
-// never got any refuses every login.
+// New trusts no CA. Those come from SetTrust, and until then every login is refused.
 func New(opts Options) (*Server, error) {
 	if opts.Principals == nil {
 		return nil, errors.New("sshd: Principals is required")
@@ -134,15 +122,12 @@ func New(opts Options) (*Server, error) {
 	return s, nil
 }
 
-// PolicyFrom overlays a synced daemon config on DefaultPolicy. Fields the
-// backend never set keep the default.
 func PolicyFrom(cfg *nokkuv1.DaemonConfig) Policy {
 	p := DefaultPolicy
 	if cfg == nil {
 		return p
 	}
-	// The raw pointers carry presence, the getters would flatten unset to
-	// false.
+	// The raw pointers carry presence, the getters would flatten unset to false.
 	set := func(dst *bool, v *bool) {
 		if v != nil {
 			*dst = *v
@@ -159,8 +144,7 @@ func (s *Server) SetPolicy(p Policy) {
 	s.policy.Store(&p)
 }
 
-// Reload rereads the host certificate. Established connections keep the
-// certificate they handshook with.
+// Reload rereads the host certificate. Established connections keep the one they handshook with.
 func (s *Server) Reload() {
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback:         s.publicKeyCallback,
@@ -175,9 +159,7 @@ func (s *Server) Reload() {
 	s.cfg = cfg
 }
 
-// Serve accepts connections on l until ctx is done or l is closed, then
-// releases the host key. Established sessions are left to die
-// with the process.
+// Serve leaves established sessions to die with the process.
 func (s *Server) Serve(ctx context.Context, l net.Listener) {
 	stop := context.AfterFunc(ctx, func() { _ = l.Close() })
 	defer stop()
@@ -211,10 +193,7 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) {
 	}
 }
 
-// ServeConn serves one connection the backend relayed, until it ends. The
-// backend only relays users it authenticated and who hold a grant on this
-// host, so the connection takes no pre-auth slot from network peers. It
-// still counts against the connection cap.
+// ServeConn takes no pre-auth slot, the backend already authenticated the user. The connection cap still counts.
 func (s *Server) ServeConn(nc net.Conn) {
 	select {
 	case s.conns <- struct{}{}:
@@ -227,10 +206,7 @@ func (s *Server) ServeConn(nc net.Conn) {
 	s.handleConn(nc, true)
 }
 
-// DropRevoked closes every open connection whose principal lost access to
-// its account, or whose certificate came from a CA that is no longer trusted.
-// Both only gate new logins, so a sync calls this to make a revoke end the
-// sessions that are already open.
+// DropRevoked makes a revoke end open sessions too. Principals and CA trust only gate new logins.
 func (s *Server) DropRevoked() {
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()
@@ -303,8 +279,7 @@ func (s *Server) handleConn(nc net.Conn, relayed bool) {
 	}
 }
 
-// handshake holds a pre-auth slot only while the handshake runs, and bounds a
-// peer that never finishes it. A relayed connection takes no slot.
+// A pre-auth slot is held only while the handshake runs. A relayed connection takes none.
 func (s *Server) handshake(
 	nc net.Conn,
 	relayed bool,
@@ -329,7 +304,7 @@ func (s *Server) handshake(
 	return conn, chans, reqs, nc.SetDeadline(time.Time{})
 }
 
-// acquireStartup takes a pre-auth slot for addr. IPv6 peers count per /64.
+// IPv6 peers count per /64.
 func (s *Server) acquireStartup(addr net.Addr) (release func(), ok bool) {
 	var source netip.Addr
 	if ap, err := netip.ParseAddrPort(addr.String()); err == nil {
@@ -386,7 +361,6 @@ func (s *Server) keepAlive(conn *ssh.ServerConn, done <-chan struct{}) {
 	}
 }
 
-// banner tells the client before auth that the session is recorded.
 func (s *Server) banner(ssh.ConnMetadata) string {
 	if !s.policy.Load().Record {
 		return ""
@@ -394,8 +368,7 @@ func (s *Server) banner(ssh.ConnMetadata) string {
 	return "This session is recorded and audited.\r\n"
 }
 
-// recoverPanic keeps one bad connection or channel from killing the daemon.
-// Deferred cleanup in the caller still runs.
+// Keeps one bad connection or channel from killing the daemon.
 func recoverPanic(where string) {
 	if r := recover(); r != nil {
 		slog.Error("recovered panic", "where", where, "panic", r, "stack", string(debug.Stack()))

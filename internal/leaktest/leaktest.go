@@ -1,4 +1,3 @@
-// Package leaktest detects goroutine leaks in a test suite via the runtime/pprof "goroutineleak" profile.
 package leaktest
 
 import (
@@ -8,12 +7,7 @@ import (
 	"runtime/pprof"
 )
 
-// Exit checks the goroutineleak profile after a test suite finishes, returning
-// 1 when goroutines leaked. Wire it to m.Run()'s result, after teardown:
-//
-//	func TestMain(m *testing.M) {
-//		os.Exit(leaktest.Exit(m.Run()))
-//	}
+// Exit returns 1 when goroutines leaked. Wire it to m.Run()'s result in TestMain, after teardown.
 func Exit(code int) int {
 	p := pprof.Lookup("goroutineleak")
 	if p == nil {
